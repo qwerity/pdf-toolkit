@@ -3,7 +3,6 @@ name: Release
 on:
   push:
     branches:
-      - develop
       - main
   workflow_dispatch:
 
@@ -107,6 +106,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           TARGET_SHA: ${{ github.sha }}

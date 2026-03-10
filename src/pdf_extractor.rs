@@ -31,14 +31,14 @@ pub fn create_pdfium() -> Result<Pdfium, String> {
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
+    let fallback_paths = fallback_library_paths();
     exe_lib_path.push(Pdfium::pdfium_platform_library_name());
 
     let bind = Pdfium::bind_to_library(exe_lib_path.to_string_lossy().as_ref())
         .or_else(|_| Pdfium::bind_to_system_library())
-        .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./")))
-        .or_else(|_| {
-            Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./bin/"))
-        })
+        .or_else(|_| Pdfium::bind_to_library(&fallback_paths[0]))
+        .or_else(|_| Pdfium::bind_to_library(&fallback_paths[1]))
+        .or_else(|_| Pdfium::bind_to_library(&fallback_paths[2]))
         .map_err(|e| {
             format!("Failed to bind to pdfium library: {e}. Make sure pdfium is installed.")
         })?;
@@ -180,6 +180,14 @@ fn save_and_get_size(image: &image::DynamicImage, output_path: &Path) -> Result<
     Ok(metadata.len() / 1024)
 }
 
+fn fallback_library_paths() -> [PathBuf; 3] {
+    [
+        Pdfium::pdfium_platform_library_name_at_path("./"),
+        Pdfium::pdfium_platform_library_name_at_path("./dist/"),
+        Pdfium::pdfium_platform_library_name_at_path("./bin/"),
+    ]
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -195,6 +203,21 @@ mod tests {
     }
 
     const PDF: &str = "test_assets/input.pdf";
+
+    #[test]
+    fn test_fallback_library_paths_include_dist() {
+        let paths = fallback_library_paths();
+
+        assert_eq!(paths[0], Pdfium::pdfium_platform_library_name_at_path("./"));
+        assert_eq!(
+            paths[1],
+            Pdfium::pdfium_platform_library_name_at_path("./dist/")
+        );
+        assert_eq!(
+            paths[2],
+            Pdfium::pdfium_platform_library_name_at_path("./bin/")
+        );
+    }
 
     #[test]
     fn test_out_of_range_pages_are_skipped() {

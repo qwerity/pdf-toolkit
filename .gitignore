@@ -3,5 +3,6 @@
 /test_assets
 /target
 /dist
+/out/
 
 *.png

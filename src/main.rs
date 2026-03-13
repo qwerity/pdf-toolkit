@@ -46,13 +46,21 @@ fn resolve_output_format(args: &Args) -> Result<OutputFormat> {
                 bail!("--scale can only be used with --format png");
             }
 
-            Ok(OutputFormat::Pdf)
+            Ok(OutputFormat::Pdf {
+                concat: args.concat,
+            })
         }
-        CliOutputFormat::Png => Ok(OutputFormat::Png {
-            scale: args
-                .scale
-                .context("--scale is required when --format png")?,
-        }),
+        CliOutputFormat::Png => {
+            if args.concat {
+                bail!("--concat can only be used with --format pdf");
+            }
+
+            Ok(OutputFormat::Png {
+                scale: args
+                    .scale
+                    .context("--scale is required when --format png")?,
+            })
+        }
     }
 }
 
@@ -68,17 +76,33 @@ fn print_report(report: &ExtractionReport, elapsed: Duration) -> Result<()> {
     }
 
     for page in &report.pages {
-        println!(
-            "Extracted -> {} ({:.1}x{:.1} mm, {} KB)",
-            page.output_path.display(),
-            page.width_mm,
-            page.height_mm,
-            page.size_kb,
-        );
+        if page.page_count == 1 {
+            println!(
+                "Extracted -> {} ({:.1}x{:.1} mm, {} KB)",
+                page.output_path.display(),
+                page.width_mm,
+                page.height_mm,
+                page.size_kb,
+            );
+        } else {
+            println!(
+                "Extracted -> {} ({} pages, {} KB)",
+                page.output_path.display(),
+                page.page_count,
+                page.size_kb,
+            );
+        }
     }
 
+    let extracted_page_count = report
+        .pages
+        .iter()
+        .map(|page| page.page_count)
+        .sum::<usize>();
+
     println!(
-        "Done - {} page(s) extracted in {:.2?}",
+        "Done - {} page(s) extracted into {} file(s) in {:.2?}",
+        extracted_page_count,
         report.pages.len(),
         elapsed,
     );
@@ -101,6 +125,7 @@ fn ensure_input_file(path: &Path) -> LibraryResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pdf_cutter::PageSelection;
     use std::fs::{self, File};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -179,5 +204,37 @@ mod tests {
         assert!(
             matches!(result, Err(PdfCutterError::InputNotFile(error_path)) if error_path == dir.path)
         );
+    }
+
+    #[test]
+    fn test_resolve_output_format_accepts_concat_pdf() {
+        let args = Args {
+            input: PathBuf::from("test_assets/input.pdf"),
+            pages: PageSelection::All,
+            format: CliOutputFormat::Pdf,
+            concat: true,
+            output: None,
+            scale: None,
+        };
+
+        let output_format = resolve_output_format(&args).expect("pdf concat should be valid");
+
+        assert_eq!(output_format, OutputFormat::Pdf { concat: true });
+    }
+
+    #[test]
+    fn test_resolve_output_format_rejects_concat_png() {
+        let args = Args {
+            input: PathBuf::from("test_assets/input.pdf"),
+            pages: PageSelection::All,
+            format: CliOutputFormat::Png,
+            concat: true,
+            output: None,
+            scale: Some(2.0),
+        };
+
+        let error = resolve_output_format(&args).expect_err("png concat should be rejected");
+
+        assert!(error.to_string().contains("--concat"));
     }
 }

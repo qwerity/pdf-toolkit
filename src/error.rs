@@ -49,8 +49,8 @@ pub enum PdfCutterError {
         #[source]
         source: io::Error,
     },
-    #[error("could not find an available output filename for page {page_number} in '{dir}'", dir = .dir.display())]
-    ExhaustedOutputNames { dir: PathBuf, page_number: u16 },
+    #[error("could not find an available output filename for '{base_name}' in '{dir}'", dir = .dir.display())]
+    ExhaustedOutputNames { dir: PathBuf, base_name: String },
     #[error("failed to read metadata for '{path}': {source}", path = .path.display())]
     ReadMetadata {
         path: PathBuf,

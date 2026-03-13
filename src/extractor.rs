@@ -1,6 +1,7 @@
 use crate::error::{PdfCutterError, Result};
 use crate::output::{
-    OutputFormat, PageResult, file_size_kb, output_stem, reserve_output_file, resolve_output_dir,
+    OutputFormat, PageResult, file_size_kb, output_stem, reserve_named_output_file,
+    reserve_output_file, resolve_output_dir,
 };
 use crate::page_selection::PageSelection;
 use pdfium_render::prelude::*;
@@ -44,6 +45,7 @@ impl fmt::Display for ExtractionWarning {
 
 struct SavedPage {
     output_path: PathBuf,
+    page_count: usize,
     size_kb: u64,
 }
 
@@ -89,9 +91,33 @@ pub fn extract_pages(
             total_pages,
         })
         .collect::<Vec<_>>();
-    let mut results = Vec::with_capacity(resolved_selection.page_numbers.len());
+    let page_numbers = resolved_selection.page_numbers;
 
-    for page_number in resolved_selection.page_numbers {
+    if let OutputFormat::Pdf { concat: true } = output_format {
+        let pages = save_concat_pdf(
+            pdfium,
+            &document,
+            &page_numbers,
+            &output_dir,
+            &stem,
+            &mut warnings,
+        )?
+        .into_iter()
+        .map(|saved_page| PageResult {
+            output_path: saved_page.output_path,
+            page_count: saved_page.page_count,
+            width_mm: 0.0,
+            height_mm: 0.0,
+            size_kb: saved_page.size_kb,
+        })
+        .collect();
+
+        return Ok(ExtractionReport { pages, warnings });
+    }
+
+    let mut results = Vec::with_capacity(page_numbers.len());
+
+    for page_number in page_numbers {
         let source_page_index = page_number.get() - 1;
         let page = match pages.get(source_page_index) {
             Ok(page) => page,
@@ -121,6 +147,7 @@ pub fn extract_pages(
         ) {
             Ok(saved_page) => results.push(PageResult {
                 output_path: saved_page.output_path,
+                page_count: saved_page.page_count,
                 width_mm,
                 height_mm,
                 size_kb: saved_page.size_kb,
@@ -138,6 +165,70 @@ pub fn extract_pages(
     })
 }
 
+fn save_concat_pdf(
+    pdfium: &Pdfium,
+    source_document: &PdfDocument<'_>,
+    page_numbers: &[NonZeroU16],
+    output_dir: &Path,
+    stem: &str,
+    warnings: &mut Vec<ExtractionWarning>,
+) -> Result<Option<SavedPage>> {
+    if page_numbers.is_empty() {
+        return Ok(None);
+    }
+
+    let mut reserved_output = reserve_named_output_file(
+        output_dir,
+        &format!("{stem}_concat"),
+        OutputFormat::Pdf { concat: true },
+    )?;
+    let mut output_document =
+        pdfium
+            .create_new_pdf()
+            .map_err(|source| PdfCutterError::CreateOutputPdf {
+                path: reserved_output.path.clone(),
+                source,
+            })?;
+    let mut copied_pages = 0usize;
+
+    for &page_number in page_numbers {
+        let destination_page_index =
+            u16::try_from(copied_pages).expect("copied page counts must fit in u16");
+
+        match output_document.pages_mut().copy_page_from_document(
+            source_document,
+            page_number.get() - 1,
+            destination_page_index,
+        ) {
+            Ok(()) => copied_pages += 1,
+            Err(error) => warnings.push(ExtractionWarning::SavePage {
+                page_number: page_number.get(),
+                reason: error.to_string(),
+            }),
+        }
+    }
+
+    if copied_pages == 0 {
+        drop(reserved_output.file);
+        let _ = std::fs::remove_file(&reserved_output.path);
+        return Ok(None);
+    }
+
+    output_document
+        .save_to_writer(&mut reserved_output.file)
+        .map_err(|source| PdfCutterError::SavePdf {
+            path: reserved_output.path.clone(),
+            source,
+        })?;
+    let size_kb = file_size_kb(&reserved_output.file, &reserved_output.path)?;
+
+    Ok(Some(SavedPage {
+        output_path: reserved_output.path,
+        page_count: copied_pages,
+        size_kb,
+    }))
+}
+
 fn save_page(
     pdfium: &Pdfium,
     source_document: &PdfDocument<'_>,
@@ -146,7 +237,7 @@ fn save_page(
     output_context: OutputContext<'_>,
 ) -> Result<SavedPage> {
     match output_context.output_format {
-        OutputFormat::Pdf => {
+        OutputFormat::Pdf { .. } => {
             save_pdf_page(pdfium, source_document, source_page_index, &output_context)
         }
         OutputFormat::Png { .. } => save_png_page(source_page, &output_context),
@@ -163,7 +254,7 @@ fn save_pdf_page(
         output_context.output_dir,
         output_context.stem,
         output_context.page_number,
-        OutputFormat::Pdf,
+        OutputFormat::Pdf { concat: false },
     )?;
     let mut output_document =
         pdfium
@@ -188,10 +279,12 @@ fn save_pdf_page(
             path: reserved_output.path.clone(),
             source,
         })?;
+    let size_kb = file_size_kb(&reserved_output.file, &reserved_output.path)?;
 
     Ok(SavedPage {
-        size_kb: file_size_kb(&reserved_output.file, &reserved_output.path)?,
         output_path: reserved_output.path,
+        page_count: 1,
+        size_kb,
     })
 }
 
@@ -218,10 +311,12 @@ fn save_png_page(
             path: reserved_output.path.clone(),
             source,
         })?;
+    let size_kb = file_size_kb(&reserved_output.file, &reserved_output.path)?;
 
     Ok(SavedPage {
-        size_kb: file_size_kb(&reserved_output.file, &reserved_output.path)?,
         output_path: reserved_output.path,
+        page_count: 1,
+        size_kb,
     })
 }
 
@@ -290,7 +385,7 @@ mod tests {
             &pdfium,
             Path::new(PDF),
             PageSelection::Specific(vec![nz(18)]),
-            OutputFormat::Pdf,
+            OutputFormat::Pdf { concat: false },
             None,
         )
         .expect("out-of-range pages should be reported as warnings");
@@ -315,7 +410,7 @@ mod tests {
             &pdfium,
             Path::new(PDF),
             PageSelection::Specific(vec![nz(1)]),
-            OutputFormat::Pdf,
+            OutputFormat::Pdf { concat: false },
             Some(&output_dir),
         )
         .expect("extraction should succeed");
@@ -325,6 +420,7 @@ mod tests {
 
         let result = &report.pages[0];
         assert!(result.output_path.exists());
+        assert_eq!(result.page_count, 1);
         assert_eq!(
             result.output_path.extension().and_then(|ext| ext.to_str()),
             Some("pdf")
@@ -333,6 +429,37 @@ mod tests {
         assert!(result.height_mm > 0.0);
         assert!(result.size_kb > 0);
         let bytes = fs::read(&result.output_path).expect("failed to read output PDF");
+        assert_eq!(&bytes[..5], b"%PDF-");
+
+        cleanup_dir(&output_dir);
+    }
+
+    #[test]
+    fn test_concat_pdf_combines_selected_pages() {
+        let _guard = test_guard();
+        let pdfium = pdfium();
+        let output_dir = temp_output_dir("concat_pdf");
+
+        let report = extract_pages(
+            &pdfium,
+            Path::new(PDF),
+            PageSelection::Specific(vec![nz(1), nz(2)]),
+            OutputFormat::Pdf { concat: true },
+            Some(&output_dir),
+        )
+        .expect("concat extraction should succeed");
+
+        assert!(report.warnings.is_empty());
+        assert_eq!(report.pages.len(), 1);
+
+        let result = &report.pages[0];
+        assert!(result.output_path.exists());
+        assert_eq!(result.page_count, 2);
+        assert_eq!(
+            result.output_path.extension().and_then(|ext| ext.to_str()),
+            Some("pdf")
+        );
+        let bytes = fs::read(&result.output_path).expect("failed to read concatenated PDF");
         assert_eq!(&bytes[..5], b"%PDF-");
 
         cleanup_dir(&output_dir);
@@ -358,6 +485,7 @@ mod tests {
 
         let result = &report.pages[0];
         assert!(result.output_path.exists());
+        assert_eq!(result.page_count, 1);
         assert_eq!(
             result.output_path.extension().and_then(|ext| ext.to_str()),
             Some("png")
@@ -419,7 +547,7 @@ mod tests {
             &pdfium,
             Path::new(PDF),
             PageSelection::Specific(vec![nz(1), nz(1), nz(1)]),
-            OutputFormat::Pdf,
+            OutputFormat::Pdf { concat: false },
             Some(&output_dir),
         )
         .expect("extraction should succeed");
@@ -443,7 +571,7 @@ mod tests {
             &pdfium,
             Path::new(PDF),
             PageSelection::Specific(vec![nz(1)]),
-            OutputFormat::Pdf,
+            OutputFormat::Pdf { concat: false },
             Some(&output_dir),
         )
         .expect("extraction should succeed");

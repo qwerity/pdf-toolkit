@@ -8,6 +8,7 @@ const MAX_OUTPUT_NAME_ATTEMPTS: u16 = 1024;
 
 pub struct PageResult {
     pub output_path: PathBuf,
+    pub page_count: usize,
     pub width_mm: f32,
     pub height_mm: f32,
     pub size_kb: u64,
@@ -15,21 +16,21 @@ pub struct PageResult {
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum OutputFormat {
-    Pdf,
+    Pdf { concat: bool },
     Png { scale: f32 },
 }
 
 impl OutputFormat {
     pub(crate) fn extension(self) -> &'static str {
         match self {
-            Self::Pdf => "pdf",
+            Self::Pdf { .. } => "pdf",
             Self::Png { .. } => "png",
         }
     }
 
     pub(crate) fn validate(self) -> Result<()> {
         match self {
-            Self::Pdf => Ok(()),
+            Self::Pdf { .. } => Ok(()),
             Self::Png { scale } if scale.is_finite() && scale > 0.0 => Ok(()),
             Self::Png { scale } => Err(PdfCutterError::InvalidImageScale { value: scale }),
         }
@@ -70,6 +71,22 @@ pub(crate) fn reserve_output_file(
 ) -> Result<OutputReservation> {
     let base_name = format!("{stem}_page_{}", page_number.get());
 
+    reserve_output_file_for_base_name(output_dir, &base_name, output_format)
+}
+
+pub(crate) fn reserve_named_output_file(
+    output_dir: &Path,
+    base_name: &str,
+    output_format: OutputFormat,
+) -> Result<OutputReservation> {
+    reserve_output_file_for_base_name(output_dir, base_name, output_format)
+}
+
+fn reserve_output_file_for_base_name(
+    output_dir: &Path,
+    base_name: &str,
+    output_format: OutputFormat,
+) -> Result<OutputReservation> {
     for attempt in 0..=MAX_OUTPUT_NAME_ATTEMPTS {
         let file_name = match attempt {
             0 => format!("{base_name}.{}", output_format.extension()),
@@ -88,7 +105,7 @@ pub(crate) fn reserve_output_file(
 
     Err(PdfCutterError::ExhaustedOutputNames {
         dir: output_dir.to_path_buf(),
-        page_number: page_number.get(),
+        base_name: base_name.to_string(),
     })
 }
 
@@ -168,10 +185,20 @@ mod tests {
         let output_dir = temp_output_dir("reserve_output");
         let page_number = NonZeroU16::new(1).expect("page number must be non-zero");
 
-        let first = reserve_output_file(&output_dir, "input", page_number, OutputFormat::Pdf)
-            .expect("first output file should be reserved");
-        let second = reserve_output_file(&output_dir, "input", page_number, OutputFormat::Pdf)
-            .expect("second output file should be reserved");
+        let first = reserve_output_file(
+            &output_dir,
+            "input",
+            page_number,
+            OutputFormat::Pdf { concat: false },
+        )
+        .expect("first output file should be reserved");
+        let second = reserve_output_file(
+            &output_dir,
+            "input",
+            page_number,
+            OutputFormat::Pdf { concat: false },
+        )
+        .expect("second output file should be reserved");
 
         assert_eq!(
             first.path.file_name().and_then(|name| name.to_str()),

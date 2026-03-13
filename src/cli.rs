@@ -23,6 +23,10 @@ pub struct Args {
     #[arg(short = 'f', long, value_enum, default_value_t = CliOutputFormat::Pdf)]
     pub format: CliOutputFormat,
 
+    /// Merge selected pages into a single PDF.
+    #[arg(short = 'c', long)]
+    pub concat: bool,
+
     /// Output folder for extracted files. Defaults to the current directory.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
@@ -89,6 +93,7 @@ mod tests {
         let args = Args::try_parse_from(["pdf_cutter", "--input", "test_assets/input.pdf"])
             .expect("CLI args should parse");
 
+        assert!(!args.concat);
         assert_eq!(args.scale, None);
     }
 
@@ -184,6 +189,15 @@ mod tests {
         .expect("CLI args should parse");
 
         assert_eq!(args.pages, PageSelection::Specific(vec![nz(1), nz(2)]));
+    }
+
+    #[test]
+    fn test_cli_accepts_concat_flag() {
+        let args =
+            Args::try_parse_from(["pdf_cutter", "--input", "test_assets/input.pdf", "--concat"])
+                .expect("CLI args should parse");
+
+        assert!(args.concat);
     }
 
     #[test]

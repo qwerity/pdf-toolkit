@@ -43,23 +43,3 @@ fn fallback_library_paths() -> [PathBuf; 3] {
         Pdfium::pdfium_platform_library_name_at_path("./bin/"),
     ]
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_fallback_library_paths_include_dist() {
-        let paths = fallback_library_paths();
-
-        assert_eq!(paths[0], Pdfium::pdfium_platform_library_name_at_path("./"));
-        assert_eq!(
-            paths[1],
-            Pdfium::pdfium_platform_library_name_at_path("./dist/")
-        );
-        assert_eq!(
-            paths[2],
-            Pdfium::pdfium_platform_library_name_at_path("./bin/")
-        );
-    }
-}

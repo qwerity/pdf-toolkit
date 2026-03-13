@@ -16,6 +16,8 @@ pub enum PdfCutterError {
     EmptyPageSelection,
     #[error("page selection entry #{position} ('{value}') is invalid; expected a positive integer")]
     InvalidPageSelectionToken { position: usize, value: String },
+    #[error("image scale must be a finite number greater than zero, got {value}")]
+    InvalidImageScale { value: f32 },
     #[error("the document contains no pages")]
     EmptyDocument,
     #[error(

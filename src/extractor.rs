@@ -8,8 +8,6 @@ use std::fmt;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
 
-const PNG_RENDER_SCALE_FACTOR: f32 = 2.0;
-
 pub struct ExtractionReport {
     pub pages: Vec<PageResult>,
     pub warnings: Vec<ExtractionWarning>,
@@ -64,6 +62,8 @@ pub fn extract_pages(
     output_format: OutputFormat,
     output_folder: Option<&Path>,
 ) -> Result<ExtractionReport> {
+    output_format.validate()?;
+
     let document = pdfium
         .load_pdf_from_file(pdf_path, None)
         .map_err(|source| PdfCutterError::OpenPdf {
@@ -149,7 +149,7 @@ fn save_page(
         OutputFormat::Pdf => {
             save_pdf_page(pdfium, source_document, source_page_index, &output_context)
         }
-        OutputFormat::Png => save_png_page(source_page, &output_context),
+        OutputFormat::Png { .. } => save_png_page(source_page, &output_context),
     }
 }
 
@@ -205,7 +205,10 @@ fn save_png_page(
         output_context.page_number,
         output_context.output_format,
     )?;
-    let bitmap = render_page_to_bitmap(source_page)?;
+    let OutputFormat::Png { scale } = output_context.output_format else {
+        unreachable!("PNG pages must use PNG output format");
+    };
+    let bitmap = render_page_to_bitmap(source_page, scale)?;
 
     bitmap
         .as_image()
@@ -222,9 +225,12 @@ fn save_png_page(
     })
 }
 
-fn render_page_to_bitmap<'page>(page: &'page PdfPage<'page>) -> Result<PdfBitmap<'page>> {
+fn render_page_to_bitmap<'page>(
+    page: &'page PdfPage<'page>,
+    scale: f32,
+) -> Result<PdfBitmap<'page>> {
     let render_config = PdfRenderConfig::new()
-        .scale_page_by_factor(PNG_RENDER_SCALE_FACTOR)
+        .scale_page_by_factor(scale)
         .set_clear_color(PdfColor::WHITE);
 
     page.render_with_config(&render_config)
@@ -342,7 +348,7 @@ mod tests {
             &pdfium,
             Path::new(PDF),
             PageSelection::Specific(vec![nz(1)]),
-            OutputFormat::Png,
+            OutputFormat::Png { scale: 2.0 },
             Some(&output_dir),
         )
         .expect("extraction should succeed");
@@ -363,6 +369,44 @@ mod tests {
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
 
         cleanup_dir(&output_dir);
+    }
+
+    #[test]
+    fn test_png_scale_changes_output_dimensions() {
+        let _guard = test_guard();
+        let pdfium = pdfium();
+        let small_output_dir = temp_output_dir("png_scale_small");
+        let large_output_dir = temp_output_dir("png_scale_large");
+
+        let small_report = extract_pages(
+            &pdfium,
+            Path::new(PDF),
+            PageSelection::Specific(vec![nz(1)]),
+            OutputFormat::Png { scale: 1.0 },
+            Some(&small_output_dir),
+        )
+        .expect("small-scale extraction should succeed");
+        let large_report = extract_pages(
+            &pdfium,
+            Path::new(PDF),
+            PageSelection::Specific(vec![nz(1)]),
+            OutputFormat::Png { scale: 3.0 },
+            Some(&large_output_dir),
+        )
+        .expect("large-scale extraction should succeed");
+
+        let small_image =
+            image::open(&small_report.pages[0].output_path).expect("small PNG should load");
+        let large_image =
+            image::open(&large_report.pages[0].output_path).expect("large PNG should load");
+
+        assert!(small_report.warnings.is_empty());
+        assert!(large_report.warnings.is_empty());
+        assert_eq!(large_image.width(), small_image.width() * 3);
+        assert_eq!(large_image.height(), small_image.height() * 3);
+
+        cleanup_dir(&small_output_dir);
+        cleanup_dir(&large_output_dir);
     }
 
     #[test]

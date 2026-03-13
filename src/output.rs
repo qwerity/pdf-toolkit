@@ -13,17 +13,25 @@ pub struct PageResult {
     pub size_kb: u64,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum OutputFormat {
     Pdf,
-    Png,
+    Png { scale: f32 },
 }
 
 impl OutputFormat {
     pub(crate) fn extension(self) -> &'static str {
         match self {
             Self::Pdf => "pdf",
-            Self::Png => "png",
+            Self::Png { .. } => "png",
+        }
+    }
+
+    pub(crate) fn validate(self) -> Result<()> {
+        match self {
+            Self::Pdf => Ok(()),
+            Self::Png { scale } if scale.is_finite() && scale > 0.0 => Ok(()),
+            Self::Png { scale } => Err(PdfCutterError::InvalidImageScale { value: scale }),
         }
     }
 }

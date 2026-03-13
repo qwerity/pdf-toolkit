@@ -1,4 +1,4 @@
-use crate::{OutputFormat, PageSelection};
+use crate::PageSelection;
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
@@ -25,6 +25,15 @@ pub struct Args {
     /// Output folder for extracted files. Defaults to the current directory.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
+
+    /// Scale factor used when rendering PNG output.
+    #[arg(
+        short = 's',
+        long,
+        value_parser = parse_scale_arg,
+        required_if_eq("format", "png")
+    )]
+    pub scale: Option<f32>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -33,17 +42,20 @@ pub enum CliOutputFormat {
     Png,
 }
 
-impl From<CliOutputFormat> for OutputFormat {
-    fn from(value: CliOutputFormat) -> Self {
-        match value {
-            CliOutputFormat::Pdf => OutputFormat::Pdf,
-            CliOutputFormat::Png => OutputFormat::Png,
-        }
-    }
-}
-
 fn parse_pages_arg(value: &str) -> std::result::Result<PageSelection, String> {
     PageSelection::parse(value).map_err(|error| error.to_string())
+}
+
+fn parse_scale_arg(value: &str) -> std::result::Result<f32, String> {
+    let scale = value.parse::<f32>().map_err(|error| error.to_string())?;
+
+    if scale.is_finite() && scale > 0.0 {
+        Ok(scale)
+    } else {
+        Err(format!(
+            "image scale must be a finite number greater than zero, got {scale}"
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -72,6 +84,14 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_omits_scale_by_default() {
+        let args = Args::try_parse_from(["pdf_cutter", "--input", "test_assets/input.pdf"])
+            .expect("CLI args should parse");
+
+        assert_eq!(args.scale, None);
+    }
+
+    #[test]
     fn test_cli_accepts_png_format() {
         let args = Args::try_parse_from([
             "pdf_cutter",
@@ -81,10 +101,13 @@ mod tests {
             "1",
             "--format",
             "png",
+            "--scale",
+            "2",
         ])
         .expect("CLI args should parse");
 
         assert_eq!(args.format, CliOutputFormat::Png);
+        assert_eq!(args.scale, Some(2.0));
     }
 
     #[test]
@@ -101,6 +124,20 @@ mod tests {
         .expect_err("CLI args should reject unsupported formats");
 
         assert!(error.to_string().contains("jpeg"));
+    }
+
+    #[test]
+    fn test_cli_accepts_short_scale_flag() {
+        let args = Args::try_parse_from([
+            "pdf_cutter",
+            "--input",
+            "test_assets/input.pdf",
+            "-s",
+            "3.5",
+        ])
+        .expect("CLI args should parse");
+
+        assert_eq!(args.scale, Some(3.5));
     }
 
     #[test]
@@ -129,5 +166,35 @@ mod tests {
         .expect_err("CLI args should be rejected");
 
         assert!(error.to_string().contains("positive integer"));
+    }
+
+    #[test]
+    fn test_cli_requires_scale_for_png() {
+        let error = Args::try_parse_from([
+            "pdf_cutter",
+            "--input",
+            "test_assets/input.pdf",
+            "--format",
+            "png",
+        ])
+        .expect_err("png output without a scale should be rejected");
+
+        assert!(error.to_string().contains("--scale"));
+    }
+
+    #[test]
+    fn test_cli_rejects_non_positive_scale() {
+        let error = Args::try_parse_from([
+            "pdf_cutter",
+            "--input",
+            "test_assets/input.pdf",
+            "--format",
+            "png",
+            "--scale",
+            "0",
+        ])
+        .expect_err("non-positive scale should be rejected");
+
+        assert!(error.to_string().contains("greater than zero"));
     }
 }

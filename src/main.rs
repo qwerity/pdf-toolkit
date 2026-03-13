@@ -1,24 +1,20 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use pdf_cutter::cli::Args;
+use pdf_cutter::cli::{Args, CliOutputFormat};
 use pdf_cutter::error::{PdfCutterError, Result as LibraryResult};
-use pdf_cutter::{ExtractionReport, create_pdfium, extract_pages};
+use pdf_cutter::{ExtractionReport, OutputFormat, create_pdfium, extract_pages};
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 fn main() -> ExitCode {
-    match run() {
+    match run_cli(Args::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("Error: {error:#}");
             ExitCode::FAILURE
         }
     }
-}
-
-fn run() -> Result<()> {
-    run_cli(Args::parse())
 }
 
 fn run_cli(args: Args) -> Result<()> {
@@ -31,15 +27,33 @@ fn run_cli(args: Args) -> Result<()> {
 
 fn extract_requested_pages(args: &Args) -> Result<ExtractionReport> {
     let pdfium = create_pdfium().context("failed to initialize pdfium runtime")?;
+    let output_format = resolve_output_format(args)?;
 
     extract_pages(
         &pdfium,
         &args.input,
         args.pages.clone(),
-        args.format.into(),
+        output_format,
         args.output.as_deref(),
     )
     .with_context(|| format!("failed to extract pages from '{}'", args.input.display()))
+}
+
+fn resolve_output_format(args: &Args) -> Result<OutputFormat> {
+    match args.format {
+        CliOutputFormat::Pdf => {
+            if args.scale.is_some() {
+                bail!("--scale can only be used with --format png");
+            }
+
+            Ok(OutputFormat::Pdf)
+        }
+        CliOutputFormat::Png => Ok(OutputFormat::Png {
+            scale: args
+                .scale
+                .context("--scale is required when --format png")?,
+        }),
+    }
 }
 
 fn print_report(report: &ExtractionReport, elapsed: Duration) -> Result<()> {

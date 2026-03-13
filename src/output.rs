@@ -28,7 +28,7 @@ impl OutputFormat {
         }
     }
 
-    pub(crate) fn validate(self) -> Result<()> {
+    pub fn validate(self) -> Result<()> {
         match self {
             Self::Pdf { .. } => Ok(()),
             Self::Png { scale } if scale.is_finite() && scale > 0.0 => Ok(()),

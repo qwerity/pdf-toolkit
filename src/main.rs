@@ -40,28 +40,31 @@ fn extract_requested_pages(args: &Args) -> Result<ExtractionReport> {
 }
 
 fn resolve_output_format(args: &Args) -> Result<OutputFormat> {
-    match args.format {
+    let output_format = match args.format {
         CliOutputFormat::Pdf => {
             if args.scale.is_some() {
                 bail!("--scale can only be used with --format png");
             }
 
-            Ok(OutputFormat::Pdf {
+            OutputFormat::Pdf {
                 concat: args.concat,
-            })
+            }
         }
         CliOutputFormat::Png => {
             if args.concat {
                 bail!("--concat can only be used with --format pdf");
             }
 
-            Ok(OutputFormat::Png {
+            OutputFormat::Png {
                 scale: args
                     .scale
                     .context("--scale is required when --format png")?,
-            })
+            }
         }
-    }
+    };
+
+    output_format.validate()?;
+    Ok(output_format)
 }
 
 fn print_report(report: &ExtractionReport, elapsed: Duration) -> Result<()> {

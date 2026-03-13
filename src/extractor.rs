@@ -64,8 +64,6 @@ pub fn extract_pages(
     output_format: OutputFormat,
     output_folder: Option<&Path>,
 ) -> Result<ExtractionReport> {
-    output_format.validate()?;
-
     let document = pdfium
         .load_pdf_from_file(pdf_path, None)
         .map_err(|source| PdfCutterError::OpenPdf {

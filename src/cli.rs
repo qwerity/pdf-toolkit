@@ -9,10 +9,11 @@ pub struct Args {
     #[arg(short, long)]
     pub input: PathBuf,
 
-    /// Page numbers to extract, comma-separated (for example "1,2,5") or "all".
+    /// Page numbers to extract, comma-separated (for example "1,2,5-7") or "all".
     #[arg(
         short = 'p',
         long,
+        visible_alias = "page",
         value_parser = parse_pages_arg,
         default_value = "all"
     )]
@@ -152,6 +153,37 @@ mod tests {
         .expect("CLI args should parse");
 
         assert_eq!(args.pages, PageSelection::Specific(vec![nz(1), nz(3)]));
+    }
+
+    #[test]
+    fn test_cli_parses_page_ranges_during_arg_parsing() {
+        let args = Args::try_parse_from([
+            "pdf_cutter",
+            "--input",
+            "test_assets/input.pdf",
+            "--pages",
+            "1-3,5-6,9",
+        ])
+        .expect("CLI args should parse");
+
+        assert_eq!(
+            args.pages,
+            PageSelection::Specific(vec![nz(1), nz(2), nz(3), nz(5), nz(6), nz(9)])
+        );
+    }
+
+    #[test]
+    fn test_cli_accepts_page_alias() {
+        let args = Args::try_parse_from([
+            "pdf_cutter",
+            "--input",
+            "test_assets/input.pdf",
+            "--page",
+            "1-2",
+        ])
+        .expect("CLI args should parse");
+
+        assert_eq!(args.pages, PageSelection::Specific(vec![nz(1), nz(2)]));
     }
 
     #[test]

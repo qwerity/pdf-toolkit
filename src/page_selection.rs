@@ -22,7 +22,7 @@ impl PageSelection {
     /// use pdf_cutter::PageSelection;
     ///
     /// assert!(matches!(PageSelection::parse("all"), Ok(PageSelection::All)));
-    /// assert!(matches!(PageSelection::parse("1,3,5"), Ok(PageSelection::Specific(_))));
+    /// assert!(matches!(PageSelection::parse("1,3,5-7"), Ok(PageSelection::Specific(_))));
     /// ```
     pub fn parse(input: &str) -> Result<Self> {
         if input.trim().eq_ignore_ascii_case("all") {
@@ -32,31 +32,7 @@ impl PageSelection {
         let mut page_numbers = Vec::new();
 
         for (index, token) in input.split(',').enumerate() {
-            let value = token.trim();
-
-            if value.is_empty() {
-                return Err(PdfCutterError::InvalidPageSelectionToken {
-                    position: index + 1,
-                    value: value.to_string(),
-                });
-            }
-
-            let raw_page =
-                value
-                    .parse::<u16>()
-                    .map_err(|_| PdfCutterError::InvalidPageSelectionToken {
-                        position: index + 1,
-                        value: value.to_string(),
-                    })?;
-
-            let Some(page_number) = NonZeroU16::new(raw_page) else {
-                return Err(PdfCutterError::InvalidPageSelectionToken {
-                    position: index + 1,
-                    value: value.to_string(),
-                });
-            };
-
-            page_numbers.push(page_number);
+            extend_page_selection(token.trim(), index + 1, &mut page_numbers)?;
         }
 
         if page_numbers.is_empty() {
@@ -74,6 +50,65 @@ impl PageSelection {
             },
             Self::Specific(page_numbers) => resolve_specific_selection(page_numbers, total_pages),
         }
+    }
+}
+
+fn extend_page_selection(
+    value: &str,
+    position: usize,
+    page_numbers: &mut Vec<NonZeroU16>,
+) -> Result<()> {
+    if value.is_empty() {
+        return Err(invalid_page_token(position, value));
+    }
+
+    if let Some((start, end)) = value.split_once('-') {
+        return extend_page_range(value, start.trim(), end.trim(), position, page_numbers);
+    }
+
+    page_numbers.push(parse_page_number(value, position)?);
+
+    Ok(())
+}
+
+fn extend_page_range(
+    value: &str,
+    start: &str,
+    end: &str,
+    position: usize,
+    page_numbers: &mut Vec<NonZeroU16>,
+) -> Result<()> {
+    let start_page = parse_page_number(start, position)?;
+    let end_page = parse_page_number(end, position)?;
+
+    if start_page > end_page {
+        return Err(PdfCutterError::InvalidPageSelectionRange {
+            position,
+            value: value.to_string(),
+        });
+    }
+
+    page_numbers.reserve(usize::from(end_page.get() - start_page.get()) + 1);
+
+    for raw_page in start_page.get()..=end_page.get() {
+        page_numbers.push(NonZeroU16::new(raw_page).expect("page ranges must stay non-zero"));
+    }
+
+    Ok(())
+}
+
+fn parse_page_number(value: &str, position: usize) -> Result<NonZeroU16> {
+    let raw_page = value
+        .parse::<u16>()
+        .map_err(|_| invalid_page_token(position, value))?;
+
+    NonZeroU16::new(raw_page).ok_or_else(|| invalid_page_token(position, value))
+}
+
+fn invalid_page_token(position: usize, value: &str) -> PdfCutterError {
+    PdfCutterError::InvalidPageSelectionToken {
+        position,
+        value: value.to_string(),
     }
 }
 
@@ -132,10 +167,25 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_page_ranges() {
+        assert_eq!(
+            PageSelection::parse("1-3, 5-6, 9").expect("parse should succeed"),
+            PageSelection::Specific(vec![nz(1), nz(2), nz(3), nz(5), nz(6), nz(9)])
+        );
+    }
+
+    #[test]
     fn test_parse_rejects_zero() {
         let error = PageSelection::parse("0").expect_err("page 0 must be rejected");
 
         assert!(error.to_string().contains("positive integer"));
+    }
+
+    #[test]
+    fn test_parse_rejects_descending_ranges() {
+        let error = PageSelection::parse("3-1").expect_err("descending ranges must be rejected");
+
+        assert!(error.to_string().contains("ascending"));
     }
 
     #[test]

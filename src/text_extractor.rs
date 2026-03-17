@@ -121,11 +121,12 @@ fn save_text_to_single_file(
             }
         };
 
-        if extracted_pages > 0 {
-            write_text(&mut reserved_output, "\n\n")?;
-        }
-
-        write_text(&mut reserved_output, &page_text)?;
+        write_page_block(
+            &mut reserved_output,
+            page_number,
+            &page_text,
+            extracted_pages > 0,
+        )?;
         extracted_pages += 1;
     }
 
@@ -152,7 +153,7 @@ fn save_text_per_page(
 
         let mut reserved_output =
             reserve_output_file_with_extension(output_dir, stem, page_number, TEXT_FILE_EXTENSION)?;
-        write_text(&mut reserved_output, &page_text)?;
+        write_page_block(&mut reserved_output, page_number, &page_text, false)?;
 
         if let Some(result) = finalize_text_output(reserved_output, 1)? {
             results.push(TextFileResult {
@@ -194,6 +195,25 @@ fn read_page_text(
 fn page_text(page: &PdfPage<'_>) -> std::result::Result<String, PdfiumError> {
     page.text()
         .map(|page_text| sanitize_extracted_text(&page_text.all()))
+}
+
+fn write_page_block(
+    reserved_output: &mut OutputReservation,
+    page_number: NonZeroU16,
+    page_text: &str,
+    separated: bool,
+) -> Result<()> {
+    if separated {
+        write_text(reserved_output, "\n\n")?;
+    }
+
+    write_text(reserved_output, &page_marker(page_number))?;
+    write_text(reserved_output, "\n\n")?;
+    write_text(reserved_output, page_text)
+}
+
+fn page_marker(page_number: NonZeroU16) -> String {
+    format!("____Page{}____", page_number.get())
 }
 
 fn sanitize_extracted_text(text: &str) -> String {

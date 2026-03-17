@@ -105,6 +105,7 @@ Print only the total number of pages in the document:
 - `--concat` / `-c`: merges selected pages into one PDF, or one text file when used with `--extract`
 - `--output` / `-o`: output directory
 - `--page-count` / `-n`: prints the total page count and exits as JSON
+- extracted text starts each page with a `____PageN____` marker
 - extraction JSON includes an `errors` object keyed by page number when pages are skipped or fail
 
 Use either `--extract` for text extraction or `--format` for page cutting.

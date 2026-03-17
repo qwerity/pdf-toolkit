@@ -90,17 +90,38 @@ jobs:
       - build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download Bundles
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
+      - name: Load Custom Release Notes
+        id: notes
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          notes_path=".github/release-notes/${RELEASE_TAG}.md"
+
+          if [[ -f "${notes_path}" ]]; then
+            {
+              echo "custom_notes<<EOF"
+              cat "${notes_path}"
+              echo "EOF"
+            } >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Create or Update Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          CUSTOM_NOTES: ${{ steps.notes.outputs.custom_notes }}
           RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           TARGET_SHA: ${{ github.sha }}
@@ -117,10 +138,36 @@ jobs:
 
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             gh release upload "${RELEASE_TAG}" "${files[@]}" --clobber
-            gh release edit "${RELEASE_TAG}" --title "${RELEASE_NAME}"
+
+            if [[ -n "${CUSTOM_NOTES:-}" ]]; then
+              current_body="$(gh release view "${RELEASE_TAG}" --json body --jq .body)"
+
+              if [[ "${current_body}" == "${CUSTOM_NOTES}"* ]]; then
+                release_body="${current_body}"
+              elif [[ -n "${current_body}" ]]; then
+                release_body="${CUSTOM_NOTES}"$'\n\n'"${current_body}"
+              else
+                release_body="${CUSTOM_NOTES}"
+              fi
+
+              gh release edit "${RELEASE_TAG}" \
+                --title "${RELEASE_NAME}" \
+                --notes "${release_body}"
+            else
+              gh release edit "${RELEASE_TAG}" --title "${RELEASE_NAME}"
+            fi
           else
-            gh release create "${RELEASE_TAG}" "${files[@]}" \
-              --title "${RELEASE_NAME}" \
-              --generate-notes \
+            release_args=(
+              "${RELEASE_TAG}"
+              "${files[@]}"
+              --title "${RELEASE_NAME}"
+              --generate-notes
               --target "${TARGET_SHA}"
+            )
+
+            if [[ -n "${CUSTOM_NOTES:-}" ]]; then
+              release_args+=(--notes "${CUSTOM_NOTES}")
+            fi
+
+            gh release create "${release_args[@]}"
           fi

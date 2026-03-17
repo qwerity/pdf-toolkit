@@ -9,6 +9,10 @@ pub struct Args {
     #[arg(short, long)]
     pub input: PathBuf,
 
+    /// Print the total number of pages in the input PDF and exit.
+    #[arg(short = 'n', long = "doc-numbers")]
+    pub doc_numbers: bool,
+
     /// Page numbers to extract, comma-separated (for example "1,2,5-7") or "all".
     #[arg(
         short = 'p',

@@ -32,7 +32,7 @@ Build release archives and checksum files in `./artifacts` too:
 Optional environment variables:
 
 - `RELEASE_TAG`: overrides the archive version label
-- `SKIP_BUILD=1`: skips `cargo build --locked --release`
+- `SKIP_BUILD=1`: skips the Cargo validation/build pipeline
 
 The build script downloads the matching PDFium binary and places it next to the executable in `./dist`.
 
@@ -69,6 +69,13 @@ Concatenate selected pages into one PDF:
 ./dist/pdf_cutter --input input.pdf --pages 2-5,9 --concat
 ```
 
+Print only the total number of pages in the document:
+
+```bash
+./dist/pdf_cutter --input input.pdf --doc-numbers
+./dist/pdf_cutter --input input.pdf -n
+```
+
 ## CLI Notes
 
 - `--input` / `-i`: source PDF file
@@ -78,5 +85,6 @@ Concatenate selected pages into one PDF:
 - `--scale` / `-s`: required for `--format png`
 - `--concat` / `-c`: merges selected pages into one PDF, only valid with PDF output
 - `--output` / `-o`: output directory
+- `--doc-numbers` / `-n`: prints the total page count and exits
 
 Default behavior extracts all pages as separate PDF files in the current directory.

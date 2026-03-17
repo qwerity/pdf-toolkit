@@ -2,7 +2,9 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use pdf_cutter::cli::{Args, CliOutputFormat};
 use pdf_cutter::error::{PdfCutterError, Result as LibraryResult};
-use pdf_cutter::{ExtractionReport, OutputFormat, create_pdfium, extract_pages};
+use pdf_cutter::{
+    ExtractionReport, OutputFormat, create_pdfium, document_page_count, extract_pages,
+};
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -19,10 +21,23 @@ fn main() -> ExitCode {
 
 fn run_cli(args: Args) -> Result<()> {
     ensure_input_file(&args.input)?;
+
+    if args.doc_numbers {
+        return print_document_page_count(&args.input);
+    }
+
     let start = Instant::now();
     let report = extract_requested_pages(&args)?;
 
     print_report(&report, start.elapsed())
+}
+
+fn print_document_page_count(path: &Path) -> Result<()> {
+    let pdfium = create_pdfium().context("failed to initialize pdfium runtime")?;
+    let page_count = document_page_count(&pdfium, path)
+        .with_context(|| format!("failed to read page count from '{}'", path.display()))?;
+    println!("{page_count}");
+    Ok(())
 }
 
 fn extract_requested_pages(args: &Args) -> Result<ExtractionReport> {

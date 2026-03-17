@@ -1,3 +1,4 @@
+use crate::document::open_document;
 use crate::error::{PdfCutterError, Result};
 use crate::output::{
     OutputFormat, PageResult, file_size_kb, output_stem, reserve_named_output_file,
@@ -64,12 +65,7 @@ pub fn extract_pages(
     output_format: OutputFormat,
     output_folder: Option<&Path>,
 ) -> Result<ExtractionReport> {
-    let document = pdfium
-        .load_pdf_from_file(pdf_path, None)
-        .map_err(|source| PdfCutterError::OpenPdf {
-            path: pdf_path.to_path_buf(),
-            source,
-        })?;
+    let document = open_document(pdfium, pdf_path)?;
 
     let pages = document.pages();
     let total_pages = pages.len();

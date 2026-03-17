@@ -36,10 +36,9 @@ fn bind_to_library_path(path: &Path) -> Option<Pdfium> {
         .map(Pdfium::new)
 }
 
-fn fallback_library_paths() -> [PathBuf; 3] {
+fn fallback_library_paths() -> [PathBuf; 2] {
     [
         Pdfium::pdfium_platform_library_name_at_path("./"),
         Pdfium::pdfium_platform_library_name_at_path("./dist/"),
-        Pdfium::pdfium_platform_library_name_at_path("./bin/"),
     ]
 }

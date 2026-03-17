@@ -23,7 +23,7 @@ pub enum PdfCutterError {
     #[error("the document contains no pages")]
     EmptyDocument,
     #[error(
-        "failed to bind to pdfium library; checked the executable directory, system library, ./, ./dist/, and ./bin/"
+        "failed to bind to pdfium library; checked the executable directory, system library, ./, ./dist/"
     )]
     PdfiumBinding,
     #[error("failed to open PDF file '{path}': {source}", path = .path.display())]

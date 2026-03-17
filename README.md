@@ -63,6 +63,24 @@ Render selected pages as PNG files:
 ./dist/pdf_cutter --input input.pdf --pages 1-3 --format png --scale 2 --output out
 ```
 
+Extract text for all pages into one file:
+
+```bash
+./dist/pdf_cutter --input input.pdf --extract --output out
+```
+
+Extract text for specific pages into separate files:
+
+```bash
+./dist/pdf_cutter --input input.pdf --extract --pages 1,3,5 --output out
+```
+
+Extract text for selected pages into one file:
+
+```bash
+./dist/pdf_cutter --input input.pdf --extract --pages 2-5,9 --concat --output out
+```
+
 Concatenate selected pages into one PDF:
 
 ```bash
@@ -81,9 +99,10 @@ Print only the total number of pages in the document:
 - `--input` / `-i`: source PDF file
 - `--pages` / `-p`: page list or inclusive ranges like `1-3,5,9-10`
 - `--page`: alias for `--pages`
+- `--extract` / `-e`: extracts text into `.txt` file(s); `--pages all` and `--concat` produce one file
 - `--format` / `-f`: `pdf` or `png`
-- `--scale` / `-s`: required for `--format png`
-- `--concat` / `-c`: merges selected pages into one PDF, only valid with PDF output
+- `--scale` / `-s`: required for `--format png`; not valid with `--extract`
+- `--concat` / `-c`: merges selected pages into one PDF, or one text file when used with `--extract`
 - `--output` / `-o`: output directory
 - `--doc-numbers` / `-n`: prints the total page count and exits
 

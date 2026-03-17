@@ -76,6 +76,12 @@ pub enum PdfCutterError {
         #[source]
         source: PdfiumError,
     },
+    #[error("failed to write text to '{path}': {source}", path = .path.display())]
+    WriteText {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("failed to render page as an image: {source}")]
     RenderPage {
         #[source]

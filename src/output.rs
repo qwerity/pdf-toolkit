@@ -69,9 +69,7 @@ pub(crate) fn reserve_output_file(
     page_number: NonZeroU16,
     output_format: OutputFormat,
 ) -> Result<OutputReservation> {
-    let base_name = format!("{stem}_page_{}", page_number.get());
-
-    reserve_output_file_for_base_name(output_dir, &base_name, output_format)
+    reserve_output_file_with_extension(output_dir, stem, page_number, output_format.extension())
 }
 
 pub(crate) fn reserve_named_output_file(
@@ -79,18 +77,37 @@ pub(crate) fn reserve_named_output_file(
     base_name: &str,
     output_format: OutputFormat,
 ) -> Result<OutputReservation> {
-    reserve_output_file_for_base_name(output_dir, base_name, output_format)
+    reserve_named_output_file_with_extension(output_dir, base_name, output_format.extension())
+}
+
+pub(crate) fn reserve_output_file_with_extension(
+    output_dir: &Path,
+    stem: &str,
+    page_number: NonZeroU16,
+    extension: &str,
+) -> Result<OutputReservation> {
+    let base_name = format!("{stem}_page_{}", page_number.get());
+
+    reserve_output_file_for_base_name(output_dir, &base_name, extension)
+}
+
+pub(crate) fn reserve_named_output_file_with_extension(
+    output_dir: &Path,
+    base_name: &str,
+    extension: &str,
+) -> Result<OutputReservation> {
+    reserve_output_file_for_base_name(output_dir, base_name, extension)
 }
 
 fn reserve_output_file_for_base_name(
     output_dir: &Path,
     base_name: &str,
-    output_format: OutputFormat,
+    extension: &str,
 ) -> Result<OutputReservation> {
     for attempt in 0..=MAX_OUTPUT_NAME_ATTEMPTS {
         let file_name = match attempt {
-            0 => format!("{base_name}.{}", output_format.extension()),
-            _ => format!("{base_name}_{attempt}.{}", output_format.extension()),
+            0 => format!("{base_name}.{extension}"),
+            _ => format!("{base_name}_{attempt}.{extension}"),
         };
         let path = output_dir.join(file_name);
 

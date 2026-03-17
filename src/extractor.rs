@@ -105,6 +105,7 @@ pub fn extract_pages(
         )?
         .into_iter()
         .map(|saved_page| PageResult {
+            page_number: None,
             output_path: saved_page.output_path,
             page_count: saved_page.page_count,
             width_mm: 0.0,
@@ -147,6 +148,7 @@ pub fn extract_pages(
             },
         ) {
             Ok(saved_page) => results.push(PageResult {
+                page_number: Some(page_number.get()),
                 output_path: saved_page.output_path,
                 page_count: saved_page.page_count,
                 width_mm,

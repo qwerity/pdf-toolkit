@@ -6,6 +6,7 @@ mod output;
 mod page_selection;
 mod pdfium_runtime;
 mod text_extractor;
+mod utils;
 
 pub use document::document_page_count;
 pub use extractor::{ExtractionReport, ExtractionWarning, extract_pages};

@@ -1,14 +1,15 @@
-use anyhow::{Context, Result, bail};
+mod cli_output;
+
+use crate::cli_output::{print_page_count, print_page_output, print_text_output};
+use anyhow::{Context, Result};
 use clap::Parser;
-use pdf_cutter::cli::{Args, CliOutputFormat};
+use pdf_cutter::cli::Args;
 use pdf_cutter::error::{PdfCutterError, Result as LibraryResult};
 use pdf_cutter::{
-    ExtractionReport, OutputFormat, TextExtractionReport, create_pdfium, document_page_count,
-    extract_pages, extract_text,
+    ExtractionReport, OutputFormat, create_pdfium, document_page_count, extract_pages, extract_text,
 };
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
 
 fn main() -> ExitCode {
     match run_cli(Args::parse()) {
@@ -21,195 +22,59 @@ fn main() -> ExitCode {
 }
 
 fn run_cli(args: Args) -> Result<()> {
-    ensure_input_file(&args.input)?;
+    validate_input_file(&args.input)?;
 
-    if args.doc_numbers {
-        return print_document_page_count(&args.input);
+    if args.page_count {
+        return show_page_count(&args.input);
     }
 
     if args.extract {
-        return extract_requested_text(&args);
+        return run_text_extraction(&args);
     }
 
-    let start = Instant::now();
-    let report = extract_requested_pages(&args)?;
+    let output_format = args.output_format()?;
+    let report = run_page_extraction(&args, output_format)?;
 
-    print_report(&report, start.elapsed())
+    print_page_output(&args, output_format, &report)
 }
 
-fn print_document_page_count(path: &Path) -> Result<()> {
+fn show_page_count(path: &Path) -> Result<()> {
     let pdfium = create_pdfium().context("failed to initialize pdfium runtime")?;
     let page_count = document_page_count(&pdfium, path)
         .with_context(|| format!("failed to read page count from '{}'", path.display()))?;
-    println!("{page_count}");
-    Ok(())
+
+    print_page_count(page_count)
 }
 
-fn extract_requested_text(args: &Args) -> Result<()> {
-    validate_text_extraction_args(args)?;
-    let start = Instant::now();
+fn run_text_extraction(args: &Args) -> Result<()> {
+    args.validate_extract_args()?;
     let pdfium = create_pdfium().context("failed to initialize pdfium runtime")?;
     let report = extract_text(
         &pdfium,
         &args.input,
-        args.pages.clone(),
+        args.pages.selection().clone(),
         args.concat,
         args.output.as_deref(),
     )
     .with_context(|| format!("failed to extract text from '{}'", args.input.display()))?;
 
-    print_text_report(&report, start.elapsed())
+    print_text_output(args, &report)
 }
 
-fn extract_requested_pages(args: &Args) -> Result<ExtractionReport> {
+fn run_page_extraction(args: &Args, output_format: OutputFormat) -> Result<ExtractionReport> {
     let pdfium = create_pdfium().context("failed to initialize pdfium runtime")?;
-    let output_format = resolve_output_format(args)?;
 
     extract_pages(
         &pdfium,
         &args.input,
-        args.pages.clone(),
+        args.pages.selection().clone(),
         output_format,
         args.output.as_deref(),
     )
     .with_context(|| format!("failed to extract pages from '{}'", args.input.display()))
 }
 
-fn validate_text_extraction_args(args: &Args) -> Result<()> {
-    if matches!(args.format, CliOutputFormat::Png) {
-        bail!("--extract cannot be used with --format png");
-    }
-
-    if args.scale.is_some() {
-        bail!("--scale cannot be used with --extract");
-    }
-
-    Ok(())
-}
-
-fn resolve_output_format(args: &Args) -> Result<OutputFormat> {
-    let output_format = match args.format {
-        CliOutputFormat::Pdf => {
-            if args.scale.is_some() {
-                bail!("--scale can only be used with --format png");
-            }
-
-            OutputFormat::Pdf {
-                concat: args.concat,
-            }
-        }
-        CliOutputFormat::Png => {
-            if args.concat {
-                bail!("--concat can only be used with --format pdf");
-            }
-
-            OutputFormat::Png {
-                scale: args
-                    .scale
-                    .context("--scale is required when --format png")?,
-            }
-        }
-    };
-
-    output_format.validate()?;
-    Ok(output_format)
-}
-
-fn print_text_report(report: &TextExtractionReport, elapsed: Duration) -> Result<()> {
-    for warning in &report.warnings {
-        eprintln!("Warning: {warning}");
-    }
-
-    if report.files.is_empty() {
-        bail!(
-            "no text was extracted; check that the requested pages are within range and the output directory is writable"
-        );
-    }
-
-    for file in &report.files {
-        println!(
-            "Extracted text -> {} ({} page(s), {} KB)",
-            file.output_path.display(),
-            file.page_count,
-            file.size_kb,
-        );
-    }
-
-    let extracted_page_count = report
-        .files
-        .iter()
-        .map(|file| file.page_count)
-        .sum::<usize>();
-
-    println!(
-        "{}",
-        format_text_summary(report, extracted_page_count, elapsed)
-    );
-
-    Ok(())
-}
-
-fn format_text_summary(
-    report: &TextExtractionReport,
-    extracted_page_count: usize,
-    elapsed: Duration,
-) -> String {
-    format!(
-        "Done - text extracted {} from {} page(s) into {} file(s) in {:.2?}",
-        extracted_page_count,
-        report.selected_page_count,
-        report.files.len(),
-        elapsed,
-    )
-}
-
-fn print_report(report: &ExtractionReport, elapsed: Duration) -> Result<()> {
-    for warning in &report.warnings {
-        eprintln!("Warning: {warning}");
-    }
-
-    if report.pages.is_empty() {
-        bail!(
-            "no pages were extracted; check that the requested pages are within range and the output directory is writable"
-        );
-    }
-
-    for page in &report.pages {
-        if page.page_count == 1 {
-            println!(
-                "Extracted -> {} ({:.1}x{:.1} mm, {} KB)",
-                page.output_path.display(),
-                page.width_mm,
-                page.height_mm,
-                page.size_kb,
-            );
-        } else {
-            println!(
-                "Extracted -> {} ({} pages, {} KB)",
-                page.output_path.display(),
-                page.page_count,
-                page.size_kb,
-            );
-        }
-    }
-
-    let extracted_page_count = report
-        .pages
-        .iter()
-        .map(|page| page.page_count)
-        .sum::<usize>();
-
-    println!(
-        "Done - {} page(s) extracted into {} file(s) in {:.2?}",
-        extracted_page_count,
-        report.pages.len(),
-        elapsed,
-    );
-
-    Ok(())
-}
-
-fn ensure_input_file(path: &Path) -> LibraryResult<()> {
+fn validate_input_file(path: &Path) -> LibraryResult<()> {
     if !path.exists() {
         return Err(PdfCutterError::InputMissing(path.to_path_buf()));
     }
@@ -219,79 +84,4 @@ fn ensure_input_file(path: &Path) -> LibraryResult<()> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{format_text_summary, validate_text_extraction_args};
-    use clap::Parser;
-    use clap::error::ErrorKind;
-    use pdf_cutter::cli::{Args, CliOutputFormat};
-    use pdf_cutter::{PageSelection, TextExtractionReport, TextFileResult};
-    use std::path::PathBuf;
-    use std::time::Duration;
-
-    #[test]
-    fn parses_doc_numbers_short_flag() {
-        let args = Args::try_parse_from(["pdf_cutter", "--input", "input.pdf", "-n"])
-            .expect("short -n flag should parse");
-
-        assert!(args.doc_numbers);
-    }
-
-    #[test]
-    fn parses_extract_short_flag() {
-        let args = Args::try_parse_from(["pdf_cutter", "--input", "input.pdf", "-e"])
-            .expect("short -e flag should parse");
-
-        assert!(args.extract);
-    }
-
-    #[test]
-    fn rejects_extract_with_doc_numbers() {
-        let error = Args::try_parse_from(["pdf_cutter", "--input", "input.pdf", "-e", "-n"])
-            .expect_err("extract should conflict with doc numbers");
-
-        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
-    }
-
-    #[test]
-    fn rejects_png_output_for_text_extraction() {
-        let args = Args {
-            input: "input.pdf".into(),
-            doc_numbers: false,
-            extract: true,
-            pages: PageSelection::All,
-            format: CliOutputFormat::Png,
-            concat: false,
-            output: None,
-            scale: None,
-        };
-
-        let error = validate_text_extraction_args(&args)
-            .expect_err("png output should be rejected for text extraction");
-
-        assert_eq!(
-            error.to_string(),
-            "--extract cannot be used with --format png"
-        );
-    }
-
-    #[test]
-    fn formats_text_summary_with_selected_page_count() {
-        let report = TextExtractionReport {
-            files: vec![TextFileResult {
-                output_path: PathBuf::from("out/result.txt"),
-                page_count: 1023,
-                size_kb: 10,
-            }],
-            selected_page_count: 1025,
-            warnings: Vec::new(),
-        };
-
-        assert_eq!(
-            format_text_summary(&report, 1023, Duration::from_millis(1110)),
-            "Done - text extracted 1023 from 1025 page(s) into 1 file(s) in 1.11s"
-        );
-    }
 }

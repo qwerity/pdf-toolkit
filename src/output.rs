@@ -1,5 +1,5 @@
 use crate::error::{PdfCutterError, Result};
-use std::ffi::OsStr;
+use crate::utils::sanitize_filename_component;
 use std::fs::{File, OpenOptions};
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 const MAX_OUTPUT_NAME_ATTEMPTS: u16 = 1024;
 
 pub struct PageResult {
+    pub page_number: Option<u16>,
     pub output_path: PathBuf,
     pub page_count: usize,
     pub width_mm: f32,
@@ -135,36 +136,4 @@ pub(crate) fn file_size_kb(file: &File, path: &Path) -> Result<u64> {
         })?;
 
     Ok(metadata.len().div_ceil(1024))
-}
-
-fn sanitize_filename_component(stem: Option<&OsStr>) -> String {
-    let raw_stem = stem.and_then(OsStr::to_str).unwrap_or_default();
-    let mut sanitized = String::with_capacity(raw_stem.len());
-    let mut last_was_replacement = false;
-
-    for ch in raw_stem.chars() {
-        match ch {
-            'A'..='Z' | 'a'..='z' | '0'..='9' => {
-                sanitized.push(ch);
-                last_was_replacement = false;
-            }
-            '.' | '_' | '-' if !sanitized.is_empty() => {
-                sanitized.push(ch);
-                last_was_replacement = false;
-            }
-            _ if !last_was_replacement => {
-                sanitized.push('_');
-                last_was_replacement = true;
-            }
-            _ => {}
-        }
-    }
-
-    let trimmed = sanitized.trim_matches(|ch| matches!(ch, '.' | '_' | '-'));
-
-    if trimmed.is_empty() {
-        "document".to_string()
-    } else {
-        trimmed.to_string()
-    }
 }

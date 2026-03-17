@@ -19,6 +19,7 @@ pub struct ExtractionReport {
 pub enum ExtractionWarning {
     PageOutOfBounds { page_number: u16, total_pages: u16 },
     LoadPage { page_number: u16, reason: String },
+    UnreadableText { page_number: u16 },
     SavePage { page_number: u16, reason: String },
 }
 
@@ -36,6 +37,12 @@ impl fmt::Display for ExtractionWarning {
                 page_number,
                 reason,
             } => write!(f, "could not get page {page_number}: {reason}. Skipping."),
+            Self::UnreadableText { page_number } => {
+                write!(
+                    f,
+                    "extracted text for page {page_number} appears corrupted and was skipped."
+                )
+            }
             Self::SavePage {
                 page_number,
                 reason,

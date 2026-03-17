@@ -16,6 +16,7 @@ const TEXT_FILE_EXTENSION: &str = "txt";
 /// The result of extracting text into one or more `.txt` files.
 pub struct TextExtractionReport {
     pub files: Vec<TextFileResult>,
+    pub selected_page_count: usize,
     pub warnings: Vec<ExtractionWarning>,
 }
 
@@ -89,6 +90,7 @@ pub fn extract_text(
         })
         .collect::<Vec<_>>();
     let page_numbers = resolved_selection.page_numbers;
+    let selected_page_count = page_numbers.len();
 
     let files = match output_mode {
         TextOutputMode::SingleFile => {
@@ -107,7 +109,11 @@ pub fn extract_text(
         }
     };
 
-    Ok(TextExtractionReport { files, warnings })
+    Ok(TextExtractionReport {
+        files,
+        selected_page_count,
+        warnings,
+    })
 }
 
 fn text_output_mode(selection: &PageSelection, concat: bool) -> TextOutputMode {
@@ -195,14 +201,127 @@ fn load_page_text(
             reason: error.to_string(),
         })?;
 
-    extract_page_text(&page).map_err(|error| ExtractionWarning::LoadPage {
+    let text = extract_page_text(&page).map_err(|error| ExtractionWarning::LoadPage {
         page_number: page_number.get(),
         reason: error.to_string(),
-    })
+    })?;
+
+    if is_probably_unreadable_text(&text) {
+        Err(ExtractionWarning::UnreadableText {
+            page_number: page_number.get(),
+        })
+    } else {
+        Ok(text)
+    }
 }
 
 fn extract_page_text(page: &PdfPage<'_>) -> std::result::Result<String, PdfiumError> {
-    page.text().map(|page_text| page_text.all())
+    page.text()
+        .map(|page_text| sanitize_extracted_text(&page_text.all()))
+}
+
+fn sanitize_extracted_text(text: &str) -> String {
+    let filtered = text
+        .chars()
+        .filter(|ch| is_allowed_text_char(*ch))
+        .collect::<String>();
+
+    filtered.trim_end().to_string()
+}
+
+fn is_allowed_text_char(ch: char) -> bool {
+    !ch.is_control() || matches!(ch, '\n' | '\r' | '\t')
+}
+
+fn is_probably_unreadable_text(text: &str) -> bool {
+    let metrics = analyze_text_quality(text);
+
+    if metrics.visible_char_count() < 80 || metrics.alpha_word_count < 20 {
+        return false;
+    }
+
+    metrics.noise_ratio() > 0.35
+        && metrics.lowercase_ratio() < 0.30
+        && metrics.vowel_word_ratio() < 0.45
+}
+
+fn analyze_text_quality(text: &str) -> TextQualityMetrics {
+    let mut metrics = TextQualityMetrics::default();
+
+    for ch in text.chars() {
+        if ch.is_alphabetic() {
+            metrics.letter_count += 1;
+
+            if ch.is_lowercase() {
+                metrics.lowercase_count += 1;
+            }
+        } else if ch.is_numeric() {
+            metrics.digit_count += 1;
+        } else if ch.is_ascii_punctuation() {
+            metrics.punctuation_count += 1;
+        }
+    }
+
+    metrics.alpha_word_count = text
+        .split_whitespace()
+        .filter(|word| word.chars().any(char::is_alphabetic))
+        .count();
+    metrics.vowel_word_count = text
+        .split_whitespace()
+        .filter(|word| word.chars().any(char::is_alphabetic))
+        .filter(|word| word.chars().any(is_latin_vowel))
+        .count();
+
+    metrics
+}
+
+fn is_latin_vowel(ch: char) -> bool {
+    matches!(
+        ch,
+        'a' | 'e' | 'i' | 'o' | 'u' | 'A' | 'E' | 'I' | 'O' | 'U'
+    )
+}
+
+#[derive(Default)]
+struct TextQualityMetrics {
+    letter_count: usize,
+    lowercase_count: usize,
+    digit_count: usize,
+    punctuation_count: usize,
+    alpha_word_count: usize,
+    vowel_word_count: usize,
+}
+
+impl TextQualityMetrics {
+    fn visible_char_count(&self) -> usize {
+        self.letter_count + self.digit_count + self.punctuation_count
+    }
+
+    fn noise_ratio(&self) -> f32 {
+        let visible_char_count = self.visible_char_count();
+
+        if visible_char_count == 0 {
+            0.0
+        } else {
+            (self.digit_count + self.punctuation_count) as f32 / visible_char_count as f32
+        }
+    }
+
+    fn lowercase_ratio(&self) -> f32 {
+        if self.letter_count == 0 {
+            0.0
+        } else {
+            self.lowercase_count as f32 / self.letter_count as f32
+        }
+    }
+
+    fn vowel_word_ratio(&self) -> f32 {
+        if self.alpha_word_count == 0 {
+            0.0
+        } else {
+            self.vowel_word_count as f32 / self.alpha_word_count as f32
+        }
+    }
 }
 
 fn write_text(reserved_output: &mut OutputReservation, text: &str) -> Result<()> {
@@ -238,7 +357,9 @@ fn finalize_text_output(
 
 #[cfg(test)]
 mod tests {
-    use super::{TextOutputMode, text_output_mode};
+    use super::{
+        TextOutputMode, is_probably_unreadable_text, sanitize_extracted_text, text_output_mode,
+    };
     use crate::PageSelection;
     use std::num::NonZeroU16;
 
@@ -273,5 +394,35 @@ mod tests {
             ),
             TextOutputMode::PerPage
         );
+    }
+
+    #[test]
+    fn removes_control_garbage_and_trailing_whitespace() {
+        assert_eq!(
+            sanitize_extracted_text("Hello\x00 world\x02\n\n \t"),
+            "Hello world"
+        );
+    }
+
+    #[test]
+    fn keeps_expected_text_whitespace_and_unicode() {
+        assert_eq!(
+            sanitize_extracted_text("Line 1\nLine\t2\nПривет"),
+            "Line 1\nLine\t2\nПривет"
+        );
+    }
+
+    #[test]
+    fn flags_corrupted_page_wide_garbage_as_unreadable() {
+        let text = "J5;K5L5@1MD4:0:ENOP%Q*R S$   (' STU\" Q TNU\" Q R VTW XWTNXW Q*RTY TNZQ*RT* T N* Q*RT[\" TN[\" Q*RT\\W T N\\W Q*RT ]Z \"TN] Q*RT";
+
+        assert!(is_probably_unreadable_text(text));
+    }
+
+    #[test]
+    fn keeps_normal_english_text_readable() {
+        let text = "Dear Council Members,\nDoes the proposed ADU ordinance entirely prohibit ADU additions on top of detached garages? If so, I urge you to consider exceptions and not institute a blanket ban.";
+
+        assert!(!is_probably_unreadable_text(text));
     }
 }

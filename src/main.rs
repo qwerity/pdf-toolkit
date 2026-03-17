@@ -142,13 +142,25 @@ fn print_text_report(report: &TextExtractionReport, elapsed: Duration) -> Result
         .sum::<usize>();
 
     println!(
-        "Done - text extracted from {} page(s) into {} file(s) in {:.2?}",
-        extracted_page_count,
-        report.files.len(),
-        elapsed,
+        "{}",
+        format_text_summary(report, extracted_page_count, elapsed)
     );
 
     Ok(())
+}
+
+fn format_text_summary(
+    report: &TextExtractionReport,
+    extracted_page_count: usize,
+    elapsed: Duration,
+) -> String {
+    format!(
+        "Done - text extracted {} from {} page(s) into {} file(s) in {:.2?}",
+        extracted_page_count,
+        report.selected_page_count,
+        report.files.len(),
+        elapsed,
+    )
 }
 
 fn print_report(report: &ExtractionReport, elapsed: Duration) -> Result<()> {
@@ -211,11 +223,13 @@ fn ensure_input_file(path: &Path) -> LibraryResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_text_extraction_args;
+    use super::{format_text_summary, validate_text_extraction_args};
     use clap::Parser;
     use clap::error::ErrorKind;
-    use pdf_cutter::PageSelection;
     use pdf_cutter::cli::{Args, CliOutputFormat};
+    use pdf_cutter::{PageSelection, TextExtractionReport, TextFileResult};
+    use std::path::PathBuf;
+    use std::time::Duration;
 
     #[test]
     fn parses_doc_numbers_short_flag() {
@@ -260,6 +274,24 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "--extract cannot be used with --format png"
+        );
+    }
+
+    #[test]
+    fn formats_text_summary_with_selected_page_count() {
+        let report = TextExtractionReport {
+            files: vec![TextFileResult {
+                output_path: PathBuf::from("out/result.txt"),
+                page_count: 1023,
+                size_kb: 10,
+            }],
+            selected_page_count: 1025,
+            warnings: Vec::new(),
+        };
+
+        assert_eq!(
+            format_text_summary(&report, 1023, Duration::from_millis(1110)),
+            "Done - text extracted 1023 from 1025 page(s) into 1 file(s) in 1.11s"
         );
     }
 }

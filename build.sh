@@ -13,7 +13,7 @@ Pass --with-artifacts to also write release archives and SHA-256 checksum files 
 
 Environment variables:
 - RELEASE_TAG   Optional label used in archive names. Defaults to v<Cargo.toml version>.
-- SKIP_BUILD    Set to 1 to skip `cargo build --locked --release`.
+- SKIP_BUILD    Set to 1 to skip the Cargo validation/build pipeline.
 EOF
 }
 
@@ -232,7 +232,15 @@ ensure_temp_dir() {
     fi
 
     TEMP_DIR="$(mktemp -d)"
-    trap "rm -rf '${TEMP_DIR}'" EXIT
+    trap 'rm -rf "$TEMP_DIR"' EXIT
+}
+
+run_cargo_pipeline() {
+    cargo fmt -- --check \
+        && cargo check --workspace --all-targets --all-features \
+        && cargo clippy --workspace --all-targets --all-features -- -D warnings \
+        && cargo test --workspace --all-features \
+        && cargo build --locked --release
 }
 
 main() {
@@ -277,8 +285,8 @@ main() {
     echo "=== Packaging ${crate_name} ${release_tag} for ${PLATFORM}/${arch} ==="
 
     if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-        echo "1. Building Rust CLI..."
-        cargo build --locked --release
+        echo "1. Running Cargo checks and building Rust CLI..."
+        run_cargo_pipeline
     else
         echo "1. Skipping build because SKIP_BUILD=1"
     fi

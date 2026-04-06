@@ -9,8 +9,9 @@ mod text_extractor;
 mod utils;
 
 pub use document::document_page_count;
+pub use document::{DocumentInfo, inspect_document};
 pub use extractor::{ExtractionReport, ExtractionWarning, extract_pages};
-pub use output::{OutputFormat, PageResult};
+pub use output::{OutputFormat, PageInfo, PageResult, PngSize};
 pub use page_selection::PageSelection;
 pub use pdfium_runtime::create_pdfium;
 pub use text_extractor::{TextExtractionReport, TextFileResult, extract_text};

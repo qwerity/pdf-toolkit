@@ -1,4 +1,4 @@
-use crate::{OutputFormat, PageSelection};
+use crate::{OutputFormat, PageSelection, PngSize};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ pub struct Args {
     #[arg(short, long)]
     pub input: PathBuf,
 
-    /// Print the page count and exit.
+    /// Print page count and per-page metadata, then exit.
     #[arg(short = 'n', long = "page-count")]
     pub page_count: bool,
 
@@ -47,9 +47,13 @@ pub struct Args {
         short = 's',
         long,
         value_parser = parse_scale,
-        default_value_if("format", "png", Some("2.0"))
+        conflicts_with = "scale_width_px"
     )]
     pub scale: Option<f32>,
+
+    /// Target PNG width in pixels. Preserves aspect ratio.
+    #[arg(long = "scale-width-px", value_parser = parse_scale_width_px, conflicts_with = "scale")]
+    pub scale_width_px: Option<u32>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -91,6 +95,10 @@ impl Args {
             bail!("--scale cannot be used with --extract");
         }
 
+        if self.scale_width_px.is_some() {
+            bail!("--scale-width-px cannot be used with --extract");
+        }
+
         Ok(())
     }
 
@@ -99,12 +107,20 @@ impl Args {
             bail!("--scale can only be used with --format png");
         }
 
+        if self.scale_width_px.is_some() && self.format.is_none() {
+            bail!("--scale-width-px can only be used with --format png");
+        }
+
         let format = self.format.context(MODE_ERROR)?;
 
         let output_format = match format {
             CliFormat::Pdf => {
                 if self.scale.is_some() {
                     bail!("--scale can only be used with --format png");
+                }
+
+                if self.scale_width_px.is_some() {
+                    bail!("--scale-width-px can only be used with --format png");
                 }
 
                 OutputFormat::Pdf {
@@ -116,10 +132,19 @@ impl Args {
                     bail!("--concat can only be used with --format pdf");
                 }
 
-                OutputFormat::Png {
-                    scale: self
-                        .scale
-                        .context("--scale is required when --format png")?,
+                match (self.scale, self.scale_width_px) {
+                    (Some(scale), None) => OutputFormat::Png {
+                        size: PngSize::Scale(scale),
+                    },
+                    (None, Some(width_px)) => OutputFormat::Png {
+                        size: PngSize::WidthPx(width_px),
+                    },
+                    (None, None) => OutputFormat::Png {
+                        size: PngSize::Scale(2.0),
+                    },
+                    (Some(_), Some(_)) => {
+                        bail!("choose either --scale or --scale-width-px with --format png")
+                    }
                 }
             }
         };
@@ -142,5 +167,15 @@ fn parse_scale(value: &str) -> std::result::Result<f32, String> {
         Err(format!(
             "image scale must be a finite number greater than zero, got {scale}"
         ))
+    }
+}
+
+fn parse_scale_width_px(value: &str) -> std::result::Result<u32, String> {
+    let width_px = value.parse::<u32>().map_err(|error| error.to_string())?;
+
+    if width_px > 0 {
+        Ok(width_px)
+    } else {
+        Err("image width must be an integer greater than zero".to_string())
     }
 }

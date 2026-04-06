@@ -5,20 +5,38 @@ use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
 
 const MAX_OUTPUT_NAME_ATTEMPTS: u16 = 1024;
+const MAX_IMAGE_WIDTH_PX: u32 = i32::MAX as u32;
 
+/// Metadata about a source PDF page.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageInfo {
+    pub page_number: u16,
+    pub width_px: u32,
+    pub height_px: u32,
+    pub contains_images: bool,
+}
+
+/// Metadata about a generated page file.
 pub struct PageResult {
     pub page_number: Option<u16>,
     pub output_path: PathBuf,
     pub page_count: usize,
-    pub width_mm: f32,
-    pub height_mm: f32,
+    pub width_px: u32,
+    pub height_px: u32,
+    pub contains_images: bool,
     pub size_kb: u64,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum PngSize {
+    Scale(f32),
+    WidthPx(u32),
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum OutputFormat {
     Pdf { concat: bool },
-    Png { scale: f32 },
+    Png { size: PngSize },
 }
 
 impl OutputFormat {
@@ -32,8 +50,21 @@ impl OutputFormat {
     pub fn validate(self) -> Result<()> {
         match self {
             Self::Pdf { .. } => Ok(()),
-            Self::Png { scale } if scale.is_finite() && scale > 0.0 => Ok(()),
-            Self::Png { scale } => Err(PdfCutterError::InvalidImageScale { value: scale }),
+            Self::Png {
+                size: PngSize::Scale(scale),
+            } if scale.is_finite() && scale > 0.0 => Ok(()),
+            Self::Png {
+                size: PngSize::Scale(scale),
+            } => Err(PdfCutterError::InvalidImageScale { value: scale }),
+            Self::Png {
+                size: PngSize::WidthPx(width_px),
+            } if (1..=MAX_IMAGE_WIDTH_PX).contains(&width_px) => Ok(()),
+            Self::Png {
+                size: PngSize::WidthPx(width_px),
+            } => Err(PdfCutterError::InvalidImageWidth {
+                value: width_px,
+                max: MAX_IMAGE_WIDTH_PX,
+            }),
         }
     }
 }

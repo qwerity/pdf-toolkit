@@ -20,6 +20,8 @@ pub enum PdfCutterError {
     InvalidPageSelectionRange { position: usize, value: String },
     #[error("image scale must be a finite number greater than zero, got {value}")]
     InvalidImageScale { value: f32 },
+    #[error("image width must be an integer in 1..={max}, got {value}")]
+    InvalidImageWidth { value: u32, max: u32 },
     #[error("the document contains no pages")]
     EmptyDocument,
     #[error(
@@ -29,6 +31,13 @@ pub enum PdfCutterError {
     #[error("failed to open PDF file '{path}': {source}", path = .path.display())]
     OpenPdf {
         path: PathBuf,
+        #[source]
+        source: PdfiumError,
+    },
+    #[error("failed to load page {page_number} from '{path}': {source}", path = .path.display())]
+    LoadPage {
+        path: PathBuf,
+        page_number: u16,
         #[source]
         source: PdfiumError,
     },

@@ -1,12 +1,13 @@
 use anyhow::{Context, Result, bail};
 use pdf_cutter::cli::Args;
-use pdf_cutter::{ExtractionReport, ExtractionWarning, OutputFormat, TextExtractionReport};
+use pdf_cutter::{
+    DocumentInfo, ExtractionReport, ExtractionWarning, OutputFormat, PageInfo, PngSize,
+    TextExtractionReport,
+};
 use serde_json::{Map, Value, json};
 
-pub fn print_page_count(page_count: u16) -> Result<()> {
-    print_json(json!({
-        "page_count": page_count
-    }))
+pub fn print_document_info(document_info: &DocumentInfo) -> Result<()> {
+    print_json(document_info_json(document_info))
 }
 
 pub fn print_text_output(args: &Args, report: &TextExtractionReport) -> Result<()> {
@@ -46,7 +47,7 @@ fn page_output_json(
     report: &ExtractionReport,
 ) -> Result<Value> {
     let mut output = Map::new();
-    add_png_scale(&mut output, output_format);
+    add_png_settings(&mut output, output_format);
 
     if args.concat {
         let file = report
@@ -62,6 +63,7 @@ fn page_output_json(
                 "size_kb": file.size_kb,
             }),
         );
+        add_page_info(&mut output, "page_info", &report.source_pages);
 
         return Ok(Value::Object(output));
     }
@@ -79,6 +81,9 @@ fn page_output_json(
                 json!({
                     "path": page.output_path.display().to_string(),
                     "size_kb": page.size_kb,
+                    "width_px": page.width_px,
+                    "height_px": page.height_px,
+                    "contains_images": page.contains_images,
                 }),
             ))
         })
@@ -138,6 +143,15 @@ fn text_output_json(args: &Args, report: &TextExtractionReport) -> Result<Value>
     Ok(Value::Object(output))
 }
 
+fn document_info_json(document_info: &DocumentInfo) -> Value {
+    let mut output = Map::new();
+
+    output.insert("page_count".to_string(), json!(document_info.page_count));
+    add_page_info(&mut output, "pages", &document_info.pages);
+
+    Value::Object(output)
+}
+
 fn is_aggregate_text_output(report: &TextExtractionReport) -> bool {
     report
         .files
@@ -145,10 +159,42 @@ fn is_aggregate_text_output(report: &TextExtractionReport) -> bool {
         .is_some_and(|file| file.page_number.is_none())
 }
 
-fn add_png_scale(output: &mut Map<String, Value>, output_format: OutputFormat) {
-    if let OutputFormat::Png { scale } = output_format {
-        output.insert("scale".to_string(), json!(scale));
+fn add_png_settings(output: &mut Map<String, Value>, output_format: OutputFormat) {
+    if let OutputFormat::Png { size } = output_format {
+        match size {
+            PngSize::Scale(scale) => {
+                output.insert("scale".to_string(), json!(scale));
+            }
+            PngSize::WidthPx(width_px) => {
+                output.insert("scale_width_px".to_string(), json!(width_px));
+            }
+        }
     }
+}
+
+fn add_page_info(output: &mut Map<String, Value>, key: &str, page_info: &[PageInfo]) {
+    if page_info.is_empty() {
+        return;
+    }
+
+    output.insert(key.to_string(), page_info_map(page_info));
+}
+
+fn page_info_map(page_info: &[PageInfo]) -> Value {
+    Value::Object(
+        page_info
+            .iter()
+            .map(|page| (page.page_number.to_string(), single_page_info_json(page)))
+            .collect(),
+    )
+}
+
+fn single_page_info_json(page_info: &PageInfo) -> Value {
+    json!({
+        "width_px": page_info.width_px,
+        "height_px": page_info.height_px,
+        "contains_images": page_info.contains_images,
+    })
 }
 
 fn add_errors(output: &mut Map<String, Value>, warnings: &[ExtractionWarning]) {

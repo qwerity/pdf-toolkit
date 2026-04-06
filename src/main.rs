@@ -1,12 +1,12 @@
 mod cli_output;
 
-use crate::cli_output::{print_page_count, print_page_output, print_text_output};
+use crate::cli_output::{print_document_info, print_page_output, print_text_output};
 use anyhow::{Context, Result};
 use clap::Parser;
 use pdf_cutter::cli::Args;
 use pdf_cutter::error::{PdfCutterError, Result as LibraryResult};
 use pdf_cutter::{
-    ExtractionReport, OutputFormat, create_pdfium, document_page_count, extract_pages, extract_text,
+    ExtractionReport, OutputFormat, create_pdfium, extract_pages, extract_text, inspect_document,
 };
 use std::path::Path;
 use std::process::ExitCode;
@@ -40,10 +40,10 @@ fn run_cli(args: Args) -> Result<()> {
 
 fn show_page_count(path: &Path) -> Result<()> {
     let pdfium = create_pdfium().context("failed to initialize pdfium runtime")?;
-    let page_count = document_page_count(&pdfium, path)
-        .with_context(|| format!("failed to read page count from '{}'", path.display()))?;
+    let document_info = inspect_document(&pdfium, path)
+        .with_context(|| format!("failed to inspect '{}'", path.display()))?;
 
-    print_page_count(page_count)
+    print_document_info(&document_info)
 }
 
 fn run_text_extraction(args: &Args) -> Result<()> {

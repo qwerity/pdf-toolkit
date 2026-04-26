@@ -1,12 +1,15 @@
 mod cli_output;
 
-use crate::cli_output::{print_document_info, print_page_output, print_text_output};
+use crate::cli_output::{
+    print_document_info, print_page_output, print_structured_output, print_text_output,
+};
 use anyhow::{Context, Result};
 use clap::Parser;
 use pdf_cutter::cli::Args;
 use pdf_cutter::error::{PdfCutterError, Result as LibraryResult};
 use pdf_cutter::{
-    ExtractionReport, OutputFormat, create_pdfium, extract_pages, extract_text, inspect_document,
+    ExtractionReport, OutputFormat, create_pdfium, extract_pages, extract_structured_text,
+    extract_text, inspect_document,
 };
 use std::path::Path;
 use std::process::ExitCode;
@@ -30,6 +33,10 @@ fn run_cli(args: Args) -> Result<()> {
 
     if args.extract {
         return run_text_extraction(&args);
+    }
+
+    if args.extract_structured {
+        return run_structured_extraction(&args);
     }
 
     let output_format = args.output_format()?;
@@ -59,6 +66,26 @@ fn run_text_extraction(args: &Args) -> Result<()> {
     .with_context(|| format!("failed to extract text from '{}'", args.input.display()))?;
 
     print_text_output(args, &report)
+}
+
+fn run_structured_extraction(args: &Args) -> Result<()> {
+    args.validate_extract_structured_args()?;
+    let pdfium = create_pdfium().context("failed to initialize pdfium runtime")?;
+    let output_format = args.structured_format.to_output_format();
+    let report = extract_structured_text(
+        &pdfium,
+        &args.input,
+        args.pages.selection().clone(),
+        output_format,
+    )
+    .with_context(|| {
+        format!(
+            "failed to extract structured text from '{}'",
+            args.input.display()
+        )
+    })?;
+
+    print_structured_output(&report)
 }
 
 fn run_page_extraction(args: &Args, output_format: OutputFormat) -> Result<ExtractionReport> {

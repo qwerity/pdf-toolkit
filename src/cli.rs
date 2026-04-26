@@ -1,3 +1,4 @@
+use crate::structured_text_extractor::StructuredOutputFormat;
 use crate::{OutputFormat, PageSelection, PngSize};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
@@ -19,6 +20,18 @@ pub struct Args {
     /// Extract text into `.txt` file(s).
     #[arg(short = 'e', long, conflicts_with = "page_count")]
     pub extract: bool,
+
+    /// Extract structured text as JSON with spans (font, position) and markdown.
+    #[arg(long = "extract-structured", conflicts_with_all = ["page_count", "extract"])]
+    pub extract_structured: bool,
+
+    /// Structured extraction format: "full" (spans + markdown) or "markdown" (markdown only).
+    #[arg(
+        long = "structured-format",
+        default_value = "full",
+        requires = "extract_structured"
+    )]
+    pub structured_format: StructuredFormatArg,
 
     /// Pages to extract, like `1,2,5-7` or `all`.
     #[arg(
@@ -62,6 +75,21 @@ pub enum CliFormat {
     Png,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum StructuredFormatArg {
+    Full,
+    Markdown,
+}
+
+impl StructuredFormatArg {
+    pub fn to_output_format(self) -> StructuredOutputFormat {
+        match self {
+            Self::Full => StructuredOutputFormat::Full,
+            Self::Markdown => StructuredOutputFormat::MarkdownOnly,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PagesArg {
     raw: String,
@@ -97,6 +125,26 @@ impl Args {
 
         if self.scale_width_px.is_some() {
             bail!("--scale-width-px cannot be used with --extract");
+        }
+
+        Ok(())
+    }
+
+    pub fn validate_extract_structured_args(&self) -> Result<()> {
+        if self.format.is_some() {
+            bail!(MODE_ERROR);
+        }
+
+        if self.scale.is_some() {
+            bail!("--scale cannot be used with --extract-structured");
+        }
+
+        if self.scale_width_px.is_some() {
+            bail!("--scale-width-px cannot be used with --extract-structured");
+        }
+
+        if self.concat {
+            bail!("--concat cannot be used with --extract-structured");
         }
 
         Ok(())

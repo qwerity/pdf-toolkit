@@ -2,6 +2,10 @@
 
 CLI tool for inspecting PDFs, extracting pages as single-page PDFs or PNGs, and extracting text.
 
+Built as a quicker alternative to [Docling](https://github.com/docling-project/docling)
+for turning PDFs into text and structured markdown: a single native binary over
+PDFium, with no Python runtime to install.
+
 ## Build
 
 `build.sh` creates a runtime bundle in `./dist` with:
@@ -69,6 +73,24 @@ Render PNG files with a required output width:
 ./dist/pdf_cutter --input input.pdf --pages 1-3 --format png --scale-width-px 1400 --output out
 ```
 
+Extract structured text (spans + markdown) for all pages:
+
+```bash
+./dist/pdf_cutter --input input.pdf --extract-structured
+```
+
+Extract structured text in markdown-only mode:
+
+```bash
+./dist/pdf_cutter --input input.pdf --extract-structured --structured-format markdown
+```
+
+Extract structured text for specific pages:
+
+```bash
+./dist/pdf_cutter --input input.pdf --extract-structured --pages 1-3
+```
+
 Extract text for all pages into one file:
 
 ```bash
@@ -108,6 +130,8 @@ The CLI writes structured JSON to stdout. Human-readable warnings are written to
 - `--pages` / `-p`: page list or inclusive ranges like `1-3,5,9-10`
 - `--page`: alias for `--pages`
 - `--extract` / `-e`: extracts text into `.txt` file(s); `--pages all` and `--concat` produce one file
+- `--extract-structured`: extracts per-page text spans (font size, position, bold/italic) and a markdown reconstruction as JSON to stdout; mutually exclusive with `--extract` and `--format`
+- `--structured-format`: controls structured extraction output; `full` (default) includes spans + markdown, `markdown` emits markdown only; requires `--extract-structured`
 - `--format` / `-f`: required for page cutting; `pdf` or `png`; not valid with `--extract`
 - `--scale` / `-s`: optional for `--format png`; if neither sizing option is provided it defaults to `2.0`; not valid with `--extract`
 - `--scale-width-px`: optional for `--format png`; sets the output PNG width in pixels and preserves aspect ratio; cannot be used together with `--scale`
@@ -228,6 +252,47 @@ Text extraction:
       "size_kb": 4
     }
   }
+}
+```
+
+Structured text extraction (`--extract-structured`, default `full` format):
+
+```json
+{
+  "pages": [
+    {
+      "page": 1,
+      "markdown": "# Title\n\nSome paragraph text.",
+      "spans": [
+        {
+          "text": "Title",
+          "font_size": 18.0,
+          "font_name": "Helvetica-Bold",
+          "bold": true,
+          "italic": false,
+          "x": 72.0,
+          "y": 720.0,
+          "width": 45.2,
+          "height": 20.0
+        }
+      ]
+    }
+  ],
+  "selected_page_count": 1
+}
+```
+
+Structured text extraction with `--structured-format markdown` (no spans):
+
+```json
+{
+  "pages": [
+    {
+      "page": 1,
+      "markdown": "# Title\n\nSome paragraph text."
+    }
+  ],
+  "selected_page_count": 1
 }
 ```
 

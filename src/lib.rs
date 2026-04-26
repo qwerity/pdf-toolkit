@@ -5,6 +5,7 @@ mod extractor;
 mod output;
 mod page_selection;
 mod pdfium_runtime;
+pub mod structured_text_extractor;
 mod text_extractor;
 mod utils;
 
@@ -14,4 +15,8 @@ pub use extractor::{ExtractionReport, ExtractionWarning, extract_pages};
 pub use output::{OutputFormat, PageInfo, PageResult, PngSize};
 pub use page_selection::PageSelection;
 pub use pdfium_runtime::create_pdfium;
+pub use structured_text_extractor::{
+    StructuredExtractionReport, StructuredOutputFormat, StructuredPage, TextSpan,
+    extract_structured_text,
+};
 pub use text_extractor::{TextExtractionReport, TextFileResult, extract_text};

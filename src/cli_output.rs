@@ -2,12 +2,19 @@ use anyhow::{Context, Result, bail};
 use pdf_cutter::cli::Args;
 use pdf_cutter::{
     DocumentInfo, ExtractionReport, ExtractionWarning, OutputFormat, PageInfo, PngSize,
-    TextExtractionReport,
+    StructuredExtractionReport, TextExtractionReport,
 };
 use serde_json::{Map, Value, json};
 
 pub fn print_document_info(document_info: &DocumentInfo) -> Result<()> {
     print_json(document_info_json(document_info))
+}
+
+pub fn print_structured_output(report: &StructuredExtractionReport) -> Result<()> {
+    print_warnings(&report.warnings);
+
+    let output = structured_output_json(report);
+    print_json(output)
 }
 
 pub fn print_text_output(args: &Args, report: &TextExtractionReport) -> Result<()> {
@@ -141,6 +148,52 @@ fn text_output_json(args: &Args, report: &TextExtractionReport) -> Result<Value>
     }
 
     Ok(Value::Object(output))
+}
+
+fn structured_output_json(report: &StructuredExtractionReport) -> Value {
+    let mut output = Map::new();
+    add_errors(&mut output, &report.warnings);
+
+    let pages: Vec<Value> = report
+        .pages
+        .iter()
+        .map(|page| {
+            let mut page_obj = Map::new();
+            page_obj.insert("page".to_string(), json!(page.page));
+            page_obj.insert("markdown".to_string(), json!(page.markdown));
+
+            if !page.spans.is_empty() {
+                let spans: Vec<Value> = page
+                    .spans
+                    .iter()
+                    .map(|span| {
+                        json!({
+                            "text": span.text,
+                            "font_size": (span.font_size * 100.0).round() / 100.0,
+                            "font_name": span.font_name,
+                            "bold": span.bold,
+                            "italic": span.italic,
+                            "x": (span.x * 10.0).round() / 10.0,
+                            "y": (span.y * 10.0).round() / 10.0,
+                            "width": (span.width * 10.0).round() / 10.0,
+                            "height": (span.height * 10.0).round() / 10.0,
+                        })
+                    })
+                    .collect();
+                page_obj.insert("spans".to_string(), Value::Array(spans));
+            }
+
+            Value::Object(page_obj)
+        })
+        .collect();
+
+    output.insert("pages".to_string(), Value::Array(pages));
+    output.insert(
+        "selected_page_count".to_string(),
+        json!(report.selected_page_count),
+    );
+
+    Value::Object(output)
 }
 
 fn document_info_json(document_info: &DocumentInfo) -> Value {

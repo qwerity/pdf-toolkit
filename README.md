@@ -137,7 +137,7 @@ The CLI writes structured JSON to stdout. Human-readable warnings are written to
 - `--scale-width-px`: optional for `--format png`; sets the output PNG width in pixels and preserves aspect ratio; cannot be used together with `--scale`
 - `--concat` / `-c`: merges selected pages into one PDF, or one text file when used with `--extract`
 - `--output` / `-o`: output directory
-- `--page-count` / `-n`: prints the total page count plus per-page `width_px`, `height_px`, and `contains_images` metadata as JSON
+- `--page-count` / `-n`: prints the total page count plus per-page `width_px`, `height_px`, `contains_images`, `image_count`, and `image_coverage` metadata as JSON
 - extracted text starts each page with a `____PageN____` marker
 - page extraction JSON includes per-page `width_px`, `height_px`, and `contains_images`
 - inspection and PDF extraction report page dimensions in pixels at render scale `1.0`
@@ -157,16 +157,22 @@ Page inspection with `--page-count`:
     "1": {
       "width_px": 595,
       "height_px": 842,
-      "contains_images": false
+      "contains_images": false,
+      "image_count": 0,
+      "image_coverage": 0.0
     },
     "2": {
       "width_px": 842,
       "height_px": 595,
-      "contains_images": true
+      "contains_images": true,
+      "image_count": 2,
+      "image_coverage": 0.43
     }
   }
 }
 ```
+
+`image_count` is the total number of image objects on the page, including images nested inside Form XObjects (reusable page fragments). `image_coverage` is the estimated fraction of the page area (0.0–1.0) covered by top-level image bounding boxes; images inside Form XObjects are excluded from coverage because their bounds are in the form's local coordinate space, not the page's.
 
 Per-page PDF or PNG extraction:
 

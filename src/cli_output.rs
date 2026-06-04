@@ -247,6 +247,8 @@ fn single_page_info_json(page_info: &PageInfo) -> Value {
         "width_px": page_info.width_px,
         "height_px": page_info.height_px,
         "contains_images": page_info.contains_images,
+        "image_count": page_info.image_count,
+        "image_coverage": page_info.image_coverage,
     })
 }
 

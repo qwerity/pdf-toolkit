@@ -1,6 +1,8 @@
 use crate::error::{PdfCutterError, Result};
 use crate::output::PageInfo;
-use pdfium_render::prelude::{PdfDocument, PdfPage, PdfPageObject, PdfPageObjectsCommon, Pdfium};
+use pdfium_render::prelude::{
+    PdfDocument, PdfPage, PdfPageObject, PdfPageObjectCommon, PdfPageObjectsCommon, Pdfium,
+};
 use std::path::Path;
 
 /// Detailed metadata for a PDF document.
@@ -54,12 +56,22 @@ pub(crate) fn open_document<'pdfium>(
 
 pub(crate) fn page_info_for_page(page_number: u16, page: &PdfPage<'_>) -> PageInfo {
     let (width_px, height_px) = page_dimensions_px(page, 1.0);
+    let page_area = page.width().value * page.height().value;
+    let (image_count, image_area) = collect_image_stats(page.objects().iter(), true, page_area);
+
+    let image_coverage = if page_area > 0.0 {
+        (image_area / page_area as f64).min(1.0) as f32
+    } else {
+        0.0
+    };
 
     PageInfo {
         page_number,
         width_px,
         height_px,
-        contains_images: page_contains_images(page),
+        contains_images: image_count > 0,
+        image_count,
+        image_coverage,
     }
 }
 
@@ -74,43 +86,38 @@ fn scale_points_to_pixels(points: f32, scale: f32) -> u32 {
     (points * scale).round() as u32
 }
 
-fn page_contains_images(page: &PdfPage<'_>) -> bool {
-    page_object_summaries_contain_images(page.objects().iter().map(summarize_page_object))
-}
+/// Recursively count image objects and accumulate their bounding-box area.
+///
+/// `include_bounds` is true for top-level page objects (where bounds are in
+/// page-space) and false for objects inside Form XObjects (whose bounds are in
+/// the form's local coordinate space, making page-space coverage unreliable).
+fn collect_image_stats<'a>(
+    objects: impl IntoIterator<Item = PdfPageObject<'a>>,
+    include_bounds: bool,
+    page_area: f32,
+) -> (u32, f64) {
+    let mut count: u32 = 0;
+    let mut area: f64 = 0.0;
 
-fn page_object_summaries_contain_images(
-    objects: impl IntoIterator<Item = PageObjectSummary>,
-) -> bool {
-    objects
-        .into_iter()
-        .any(|object| page_object_summary_contains_images(&object))
-}
-
-fn page_object_summary_contains_images(object: &PageObjectSummary) -> bool {
-    match object {
-        PageObjectSummary::Image => true,
-        PageObjectSummary::Other => false,
-        PageObjectSummary::Form(children) => {
-            page_object_summaries_contain_images(children.iter().cloned())
+    for object in objects {
+        if object.as_image_object().is_some() {
+            count += 1;
+            if include_bounds && let Ok(bounds) = object.bounds() {
+                let w = (bounds.right().value - bounds.left().value).abs() as f64;
+                let h = (bounds.top().value - bounds.bottom().value).abs() as f64;
+                // Guard against degenerate/huge values (e.g. malformed XObjects).
+                let max_dim = page_area.sqrt() as f64 * 4.0;
+                if w < max_dim && h < max_dim {
+                    area += w * h;
+                }
+            }
+        } else if let Some(form) = object.as_x_object_form_object() {
+            // Recurse into Form XObjects for the count, but skip bounds
+            // (they are in the form's local coordinate space).
+            let (nested_count, _) = collect_image_stats(form.iter(), false, page_area);
+            count += nested_count;
         }
     }
-}
 
-fn summarize_page_object(object: PdfPageObject<'_>) -> PageObjectSummary {
-    if object.as_image_object().is_some() {
-        return PageObjectSummary::Image;
-    }
-
-    if let Some(form) = object.as_x_object_form_object() {
-        return PageObjectSummary::Form(form.iter().map(summarize_page_object).collect());
-    }
-
-    PageObjectSummary::Other
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum PageObjectSummary {
-    Other,
-    Image,
-    Form(Vec<PageObjectSummary>),
+    (count, area)
 }

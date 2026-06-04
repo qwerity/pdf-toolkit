@@ -14,6 +14,10 @@ pub struct PageInfo {
     pub width_px: u32,
     pub height_px: u32,
     pub contains_images: bool,
+    /// Total number of image objects on the page (including inside Form XObjects).
+    pub image_count: u32,
+    /// Estimated fraction of page area covered by top-level image objects (0.0–1.0).
+    pub image_coverage: f32,
 }
 
 /// Metadata about a generated page file.

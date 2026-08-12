@@ -132,3 +132,146 @@ fn resolve_specific_selection(
         out_of_bounds,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page(n: u16) -> NonZeroU16 {
+        NonZeroU16::new(n).expect("test page numbers must be non-zero")
+    }
+
+    fn pages(numbers: &[u16]) -> Vec<NonZeroU16> {
+        numbers.iter().copied().map(page).collect()
+    }
+
+    #[test]
+    fn parse_all_is_case_insensitive_and_trimmed() {
+        assert_eq!(PageSelection::parse("all").unwrap(), PageSelection::All);
+        assert_eq!(PageSelection::parse("ALL").unwrap(), PageSelection::All);
+        assert_eq!(PageSelection::parse(" All ").unwrap(), PageSelection::All);
+    }
+
+    #[test]
+    fn parse_single_page() {
+        assert_eq!(
+            PageSelection::parse("5").unwrap(),
+            PageSelection::Specific(pages(&[5]))
+        );
+    }
+
+    #[test]
+    fn parse_list_and_ranges_with_whitespace() {
+        assert_eq!(
+            PageSelection::parse("1, 3 ,5-7").unwrap(),
+            PageSelection::Specific(pages(&[1, 3, 5, 6, 7]))
+        );
+    }
+
+    #[test]
+    fn parse_single_element_range() {
+        assert_eq!(
+            PageSelection::parse("4-4").unwrap(),
+            PageSelection::Specific(pages(&[4]))
+        );
+    }
+
+    #[test]
+    fn parse_preserves_duplicates_and_order() {
+        assert_eq!(
+            PageSelection::parse("3,1,3").unwrap(),
+            PageSelection::Specific(pages(&[3, 1, 3]))
+        );
+    }
+
+    #[test]
+    fn parse_rejects_empty_and_blank_tokens() {
+        assert!(matches!(
+            PageSelection::parse(""),
+            Err(PdfCutterError::InvalidPageSelectionToken { position: 1, .. })
+        ));
+        assert!(matches!(
+            PageSelection::parse("1,,2"),
+            Err(PdfCutterError::InvalidPageSelectionToken { position: 2, .. })
+        ));
+    }
+
+    #[test]
+    fn parse_rejects_zero_and_non_numeric_tokens() {
+        for input in ["0", "abc", "1.5", "1,x"] {
+            assert!(
+                matches!(
+                    PageSelection::parse(input),
+                    Err(PdfCutterError::InvalidPageSelectionToken { .. })
+                ),
+                "input {input:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rejects_pages_beyond_u16() {
+        assert!(matches!(
+            PageSelection::parse("70000"),
+            Err(PdfCutterError::InvalidPageSelectionToken { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_rejects_descending_range() {
+        assert!(matches!(
+            PageSelection::parse("5-3"),
+            Err(PdfCutterError::InvalidPageSelectionRange { position: 1, .. })
+        ));
+    }
+
+    #[test]
+    fn parse_rejects_open_ended_ranges() {
+        for input in ["1-", "-3", "-"] {
+            assert!(
+                matches!(
+                    PageSelection::parse(input),
+                    Err(PdfCutterError::InvalidPageSelectionToken { .. })
+                ),
+                "input {input:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_all_lists_every_page() {
+        let resolved = PageSelection::All.resolve(3);
+        assert_eq!(resolved.page_numbers, pages(&[1, 2, 3]));
+        assert!(resolved.out_of_bounds.is_empty());
+    }
+
+    #[test]
+    fn resolve_all_on_zero_pages_is_empty() {
+        let resolved = PageSelection::All.resolve(0);
+        assert!(resolved.page_numbers.is_empty());
+        assert!(resolved.out_of_bounds.is_empty());
+    }
+
+    #[test]
+    fn resolve_specific_dedups_and_flags_out_of_bounds() {
+        let selection = PageSelection::Specific(pages(&[2, 2, 9, 1]));
+        let resolved = selection.resolve(3);
+        assert_eq!(resolved.page_numbers, pages(&[2, 1]));
+        assert_eq!(resolved.out_of_bounds, pages(&[9]));
+    }
+
+    #[test]
+    fn resolve_specific_keeps_duplicate_out_of_bounds() {
+        let selection = PageSelection::Specific(pages(&[9, 9]));
+        let resolved = selection.resolve(3);
+        assert!(resolved.page_numbers.is_empty());
+        assert_eq!(resolved.out_of_bounds, pages(&[9, 9]));
+    }
+
+    #[test]
+    fn resolve_specific_accepts_boundary_page() {
+        let resolved = PageSelection::Specific(pages(&[3])).resolve(3);
+        assert_eq!(resolved.page_numbers, pages(&[3]));
+        assert!(resolved.out_of_bounds.is_empty());
+    }
+}

@@ -31,3 +31,48 @@ pub(crate) fn sanitize_filename_component(stem: Option<&OsStr>) -> String {
         trimmed.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sanitize(input: &str) -> String {
+        sanitize_filename_component(Some(OsStr::new(input)))
+    }
+
+    #[test]
+    fn keeps_alphanumeric_names() {
+        assert_eq!(sanitize("Report2024"), "Report2024");
+    }
+
+    #[test]
+    fn keeps_inner_dots_dashes_underscores() {
+        assert_eq!(sanitize("a.b-c_d"), "a.b-c_d");
+    }
+
+    #[test]
+    fn collapses_runs_of_special_characters() {
+        assert_eq!(sanitize("my doc (1)"), "my_doc_1");
+        assert_eq!(sanitize("a   b"), "a_b");
+    }
+
+    #[test]
+    fn trims_leading_and_trailing_punctuation() {
+        assert_eq!(sanitize("..name.."), "name");
+        assert_eq!(sanitize("_x_"), "x");
+        assert_eq!(sanitize(".hidden"), "hidden");
+    }
+
+    #[test]
+    fn replaces_non_ascii_characters() {
+        assert_eq!(sanitize("résumé"), "r_sum");
+    }
+
+    #[test]
+    fn falls_back_to_document_when_nothing_remains() {
+        assert_eq!(sanitize(""), "document");
+        assert_eq!(sanitize("???"), "document");
+        assert_eq!(sanitize("..."), "document");
+        assert_eq!(sanitize_filename_component(None), "document");
+    }
+}

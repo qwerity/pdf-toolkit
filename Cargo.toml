@@ -11,3 +11,8 @@ pdfium-render = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
+
+[dev-dependencies]
+# `sync` makes Pdfium Send + Sync so tests can share one runtime instance.
+pdfium-render = { version = "0.8", features = ["sync"] }
+tempfile = "3"

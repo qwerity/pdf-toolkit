@@ -227,3 +227,192 @@ fn parse_scale_width_px(value: &str) -> std::result::Result<u32, String> {
         Err("image width must be an integer greater than zero".to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_args(extra: &[&str]) -> Result<Args, clap::Error> {
+        let mut argv = vec!["pdf_cutter", "--input", "input.pdf"];
+        argv.extend_from_slice(extra);
+        Args::try_parse_from(argv)
+    }
+
+    fn args(extra: &[&str]) -> Args {
+        parse_args(extra).expect("arguments must parse")
+    }
+
+    #[test]
+    fn defaults_select_all_pages_without_mode() {
+        let args = args(&[]);
+        assert_eq!(args.pages.raw(), "all");
+        assert_eq!(args.pages.selection(), &PageSelection::All);
+        assert!(args.format.is_none());
+        assert!(!args.concat);
+        assert!(!args.extract);
+        assert!(!args.extract_structured);
+    }
+
+    #[test]
+    fn pages_argument_parses_selection_and_keeps_raw() {
+        let args = args(&["-p", "2-3"]);
+        assert_eq!(args.pages.raw(), "2-3");
+        assert!(
+            matches!(args.pages.selection(), PageSelection::Specific(pages) if pages.len() == 2)
+        );
+    }
+
+    #[test]
+    fn invalid_pages_argument_is_rejected() {
+        assert!(parse_args(&["-p", "0"]).is_err());
+        assert!(parse_args(&["-p", "5-3"]).is_err());
+        assert!(parse_args(&["-p", ""]).is_err());
+    }
+
+    #[test]
+    fn extraction_modes_conflict_with_each_other() {
+        assert!(parse_args(&["--extract", "--page-count"]).is_err());
+        assert!(parse_args(&["--extract-structured", "--extract"]).is_err());
+        assert!(parse_args(&["--extract-structured", "--page-count"]).is_err());
+    }
+
+    #[test]
+    fn structured_format_requires_structured_mode() {
+        assert!(parse_args(&["--structured-format", "markdown"]).is_err());
+        let args = args(&["--extract-structured", "--structured-format", "markdown"]);
+        assert_eq!(args.structured_format, StructuredFormatArg::Markdown);
+    }
+
+    #[test]
+    fn structured_format_maps_to_output_format() {
+        assert_eq!(
+            StructuredFormatArg::Full.to_output_format(),
+            StructuredOutputFormat::Full
+        );
+        assert_eq!(
+            StructuredFormatArg::Markdown.to_output_format(),
+            StructuredOutputFormat::MarkdownOnly
+        );
+    }
+
+    #[test]
+    fn scale_flags_conflict() {
+        assert!(parse_args(&["-f", "png", "-s", "2", "--scale-width-px", "100"]).is_err());
+    }
+
+    #[test]
+    fn scale_must_be_positive_and_finite() {
+        assert!(parse_args(&["-s", "0"]).is_err());
+        assert!(parse_args(&["-s", "-1"]).is_err());
+        assert!(parse_args(&["-s", "nan"]).is_err());
+        assert!(parse_args(&["-s", "inf"]).is_err());
+        assert!(parse_args(&["-s", "abc"]).is_err());
+    }
+
+    #[test]
+    fn scale_width_must_be_positive_integer() {
+        assert!(parse_args(&["--scale-width-px", "0"]).is_err());
+        assert!(parse_args(&["--scale-width-px", "1.5"]).is_err());
+    }
+
+    #[test]
+    fn validate_extract_args_rejects_cutting_flags() {
+        assert!(args(&["-e", "-f", "pdf"]).validate_extract_args().is_err());
+        assert!(args(&["-e", "-s", "2"]).validate_extract_args().is_err());
+        assert!(
+            args(&["-e", "--scale-width-px", "100"])
+                .validate_extract_args()
+                .is_err()
+        );
+        assert!(args(&["-e"]).validate_extract_args().is_ok());
+        assert!(args(&["-e", "-c"]).validate_extract_args().is_ok());
+    }
+
+    #[test]
+    fn validate_extract_structured_args_rejects_cutting_and_concat() {
+        let base = "--extract-structured";
+        assert!(
+            args(&[base, "-f", "pdf"])
+                .validate_extract_structured_args()
+                .is_err()
+        );
+        assert!(
+            args(&[base, "-s", "2"])
+                .validate_extract_structured_args()
+                .is_err()
+        );
+        assert!(
+            args(&[base, "--scale-width-px", "10"])
+                .validate_extract_structured_args()
+                .is_err()
+        );
+        assert!(
+            args(&[base, "-c"])
+                .validate_extract_structured_args()
+                .is_err()
+        );
+        assert!(args(&[base]).validate_extract_structured_args().is_ok());
+    }
+
+    #[test]
+    fn output_format_requires_format_flag() {
+        assert!(args(&[]).output_format().is_err());
+        assert!(args(&["-s", "2"]).output_format().is_err());
+        assert!(args(&["--scale-width-px", "10"]).output_format().is_err());
+    }
+
+    #[test]
+    fn output_format_pdf_rejects_png_flags() {
+        assert!(args(&["-f", "pdf", "-s", "2"]).output_format().is_err());
+        assert!(
+            args(&["-f", "pdf", "--scale-width-px", "10"])
+                .output_format()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn output_format_pdf_carries_concat() {
+        assert_eq!(
+            args(&["-f", "pdf", "-c"]).output_format().unwrap(),
+            OutputFormat::Pdf { concat: true }
+        );
+        assert_eq!(
+            args(&["-f", "pdf"]).output_format().unwrap(),
+            OutputFormat::Pdf { concat: false }
+        );
+    }
+
+    #[test]
+    fn output_format_png_defaults_to_scale_two() {
+        assert_eq!(
+            args(&["-f", "png"]).output_format().unwrap(),
+            OutputFormat::Png {
+                size: PngSize::Scale(2.0)
+            }
+        );
+    }
+
+    #[test]
+    fn output_format_png_uses_explicit_sizes() {
+        assert_eq!(
+            args(&["-f", "png", "-s", "1.5"]).output_format().unwrap(),
+            OutputFormat::Png {
+                size: PngSize::Scale(1.5)
+            }
+        );
+        assert_eq!(
+            args(&["-f", "png", "--scale-width-px", "640"])
+                .output_format()
+                .unwrap(),
+            OutputFormat::Png {
+                size: PngSize::WidthPx(640)
+            }
+        );
+    }
+
+    #[test]
+    fn output_format_png_rejects_concat() {
+        assert!(args(&["-f", "png", "-c"]).output_format().is_err());
+    }
+}

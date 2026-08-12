@@ -290,3 +290,265 @@ fn print_json(value: Value) -> Result<()> {
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use pdf_cutter::{PageResult, StructuredPage, TextFileResult, TextSpan};
+    use std::path::PathBuf;
+
+    fn args(extra: &[&str]) -> Args {
+        let mut argv = vec!["pdf_cutter", "--input", "input.pdf"];
+        argv.extend_from_slice(extra);
+        Args::try_parse_from(argv).expect("arguments must parse")
+    }
+
+    fn page_result(page_number: Option<u16>) -> PageResult {
+        PageResult {
+            page_number,
+            output_path: PathBuf::from("/out/file.pdf"),
+            page_count: 1,
+            width_px: 595,
+            height_px: 842,
+            contains_images: false,
+            size_kb: 12,
+        }
+    }
+
+    fn page_info(page_number: u16) -> PageInfo {
+        PageInfo {
+            page_number,
+            width_px: 595,
+            height_px: 842,
+            contains_images: true,
+            image_count: 2,
+            image_coverage: 0.5,
+        }
+    }
+
+    fn text_file_result(page_number: Option<u16>) -> TextFileResult {
+        TextFileResult {
+            page_number,
+            output_path: PathBuf::from("/out/file.txt"),
+            page_count: 1,
+            size_kb: 3,
+        }
+    }
+
+    #[test]
+    fn page_output_json_lists_pages_by_number() {
+        let report = ExtractionReport {
+            pages: vec![page_result(Some(1)), page_result(Some(3))],
+            source_pages: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let value = page_output_json(
+            &args(&["-f", "pdf"]),
+            OutputFormat::Pdf { concat: false },
+            &report,
+        )
+        .expect("json output");
+
+        assert!(value.get("concat").is_none());
+        assert_eq!(value["pages"]["1"]["size_kb"], 12);
+        assert_eq!(value["pages"]["3"]["width_px"], 595);
+    }
+
+    #[test]
+    fn page_output_json_includes_png_settings() {
+        let report = ExtractionReport {
+            pages: vec![page_result(Some(1))],
+            source_pages: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let scale = page_output_json(
+            &args(&["-f", "png"]),
+            OutputFormat::Png {
+                size: PngSize::Scale(1.5),
+            },
+            &report,
+        )
+        .expect("json output");
+        assert_eq!(scale["scale"], 1.5);
+
+        let width = page_output_json(
+            &args(&["-f", "png"]),
+            OutputFormat::Png {
+                size: PngSize::WidthPx(640),
+            },
+            &report,
+        )
+        .expect("json output");
+        assert_eq!(width["scale_width_px"], 640);
+    }
+
+    #[test]
+    fn page_output_json_concat_reports_source_pages() {
+        let report = ExtractionReport {
+            pages: vec![page_result(None)],
+            source_pages: vec![page_info(1), page_info(2)],
+            warnings: Vec::new(),
+        };
+        let value = page_output_json(
+            &args(&["-f", "pdf", "-c", "-p", "1-2"]),
+            OutputFormat::Pdf { concat: true },
+            &report,
+        )
+        .expect("json output");
+
+        assert_eq!(value["concat"]["pages"], "1-2");
+        assert_eq!(value["concat"]["size_kb"], 12);
+        assert_eq!(value["page_info"]["2"]["image_count"], 2);
+        assert!(value.get("pages").is_none());
+    }
+
+    #[test]
+    fn page_output_json_concat_without_files_is_an_error() {
+        let report = ExtractionReport {
+            pages: Vec::new(),
+            source_pages: Vec::new(),
+            warnings: Vec::new(),
+        };
+        assert!(
+            page_output_json(
+                &args(&["-f", "pdf", "-c"]),
+                OutputFormat::Pdf { concat: true },
+                &report
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn page_output_json_requires_page_numbers_per_page() {
+        let report = ExtractionReport {
+            pages: vec![page_result(None)],
+            source_pages: Vec::new(),
+            warnings: Vec::new(),
+        };
+        assert!(
+            page_output_json(
+                &args(&["-f", "pdf"]),
+                OutputFormat::Pdf { concat: false },
+                &report
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn text_output_json_aggregate_uses_concat_key() {
+        let report = TextExtractionReport {
+            files: vec![text_file_result(None)],
+            selected_page_count: 2,
+            warnings: Vec::new(),
+        };
+        let value = text_output_json(&args(&["-e", "-p", "1-2"]), &report).expect("json output");
+        assert_eq!(value["concat"]["pages"], "1-2");
+        assert!(value.get("pages").is_none());
+    }
+
+    #[test]
+    fn text_output_json_per_page_lists_files() {
+        let report = TextExtractionReport {
+            files: vec![text_file_result(Some(2))],
+            selected_page_count: 1,
+            warnings: Vec::new(),
+        };
+        let value = text_output_json(&args(&["-e", "-p", "2"]), &report).expect("json output");
+        assert_eq!(value["pages"]["2"]["size_kb"], 3);
+    }
+
+    #[test]
+    fn text_output_json_includes_warnings_as_errors() {
+        let report = TextExtractionReport {
+            files: Vec::new(),
+            selected_page_count: 0,
+            warnings: vec![ExtractionWarning::PageOutOfBounds {
+                page_number: 99,
+                total_pages: 3,
+            }],
+        };
+        let value = text_output_json(&args(&["-e", "-p", "99"]), &report).expect("json output");
+        let message = value["errors"]["99"].as_str().expect("error message");
+        assert!(message.contains("out of bounds"));
+    }
+
+    #[test]
+    fn structured_output_json_rounds_and_skips_empty_spans() {
+        let report = StructuredExtractionReport {
+            pages: vec![
+                StructuredPage {
+                    page: 1,
+                    spans: vec![TextSpan {
+                        text: "Hello".to_string(),
+                        font_size: 12.3456,
+                        font_name: "Helvetica".to_string(),
+                        bold: true,
+                        italic: false,
+                        x: 10.44,
+                        y: 700.06,
+                        width: 33.33,
+                        height: 12.01,
+                    }],
+                    markdown: "Hello".to_string(),
+                },
+                StructuredPage {
+                    page: 2,
+                    spans: Vec::new(),
+                    markdown: "World".to_string(),
+                },
+            ],
+            selected_page_count: 2,
+            warnings: Vec::new(),
+        };
+
+        let value = structured_output_json(&report);
+        assert_eq!(value["selected_page_count"], 2);
+        let font_size = value["pages"][0]["spans"][0]["font_size"]
+            .as_f64()
+            .expect("font_size must be a number");
+        assert!((font_size - 12.35).abs() < 0.001, "got {font_size}");
+        let x = value["pages"][0]["spans"][0]["x"]
+            .as_f64()
+            .expect("x must be a number");
+        assert!((x - 10.4).abs() < 0.001, "got {x}");
+        assert_eq!(value["pages"][0]["spans"][0]["bold"], true);
+        assert!(value["pages"][1].get("spans").is_none());
+        assert_eq!(value["pages"][1]["markdown"], "World");
+    }
+
+    #[test]
+    fn document_info_json_lists_page_metadata() {
+        let info = DocumentInfo {
+            page_count: 2,
+            pages: vec![page_info(1), page_info(2)],
+        };
+        let value = document_info_json(&info);
+        assert_eq!(value["page_count"], 2);
+        assert_eq!(value["pages"]["1"]["image_count"], 2);
+        assert_eq!(value["pages"]["2"]["contains_images"], true);
+    }
+
+    #[test]
+    fn warning_page_extracts_page_number_from_all_variants() {
+        let warnings = [
+            ExtractionWarning::PageOutOfBounds {
+                page_number: 1,
+                total_pages: 1,
+            },
+            ExtractionWarning::LoadPage {
+                page_number: 2,
+                reason: "x".to_string(),
+            },
+            ExtractionWarning::UnreadableText { page_number: 3 },
+            ExtractionWarning::SavePage {
+                page_number: 4,
+                reason: "y".to_string(),
+            },
+        ];
+        let numbers: Vec<u16> = warnings.iter().map(warning_page).collect();
+        assert_eq!(numbers, vec![1, 2, 3, 4]);
+    }
+}

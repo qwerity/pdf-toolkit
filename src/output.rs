@@ -172,3 +172,148 @@ pub(crate) fn file_size_kb(file: &File, path: &Path) -> Result<u64> {
 
     Ok(metadata.len().div_ceil(1024))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn extension_matches_format() {
+        assert_eq!(OutputFormat::Pdf { concat: false }.extension(), "pdf");
+        assert_eq!(OutputFormat::Pdf { concat: true }.extension(), "pdf");
+        assert_eq!(
+            OutputFormat::Png {
+                size: PngSize::Scale(1.0)
+            }
+            .extension(),
+            "png"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_pdf_and_valid_png_sizes() {
+        assert!(OutputFormat::Pdf { concat: true }.validate().is_ok());
+        for size in [
+            PngSize::Scale(0.5),
+            PngSize::Scale(2.0),
+            PngSize::WidthPx(1),
+        ] {
+            assert!(OutputFormat::Png { size }.validate().is_ok());
+        }
+        assert!(
+            OutputFormat::Png {
+                size: PngSize::WidthPx(MAX_IMAGE_WIDTH_PX)
+            }
+            .validate()
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_rejects_bad_png_scales() {
+        for scale in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(
+                matches!(
+                    OutputFormat::Png {
+                        size: PngSize::Scale(scale)
+                    }
+                    .validate(),
+                    Err(PdfCutterError::InvalidImageScale { .. })
+                ),
+                "scale {scale} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_rejects_bad_png_widths() {
+        for width_px in [0, MAX_IMAGE_WIDTH_PX + 1] {
+            assert!(
+                matches!(
+                    OutputFormat::Png {
+                        size: PngSize::WidthPx(width_px)
+                    }
+                    .validate(),
+                    Err(PdfCutterError::InvalidImageWidth { .. })
+                ),
+                "width {width_px} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn output_stem_sanitizes_file_name() {
+        assert_eq!(output_stem(Path::new("/tmp/My Doc (1).pdf")), "My_Doc_1");
+        assert_eq!(output_stem(Path::new("/")), "document");
+    }
+
+    #[test]
+    fn reserve_uses_page_number_in_file_name() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let reservation = reserve_output_file_with_extension(
+            dir.path(),
+            "doc",
+            NonZeroU16::new(3).unwrap(),
+            "txt",
+        )
+        .expect("reserve output file");
+        assert_eq!(reservation.path, dir.path().join("doc_page_3.txt"));
+        assert!(reservation.path.exists());
+    }
+
+    #[test]
+    fn reserve_appends_counter_on_collision() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let first = reserve_named_output_file_with_extension(dir.path(), "base", "pdf")
+            .expect("first reservation");
+        let second = reserve_named_output_file_with_extension(dir.path(), "base", "pdf")
+            .expect("second reservation");
+        assert_eq!(first.path, dir.path().join("base.pdf"));
+        assert_eq!(second.path, dir.path().join("base_1.pdf"));
+    }
+
+    #[test]
+    fn reserve_fails_when_names_are_exhausted() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        File::create(dir.path().join("base.pdf")).expect("create base file");
+        for attempt in 1..=MAX_OUTPUT_NAME_ATTEMPTS {
+            File::create(dir.path().join(format!("base_{attempt}.pdf")))
+                .expect("create collision file");
+        }
+
+        let result = reserve_named_output_file_with_extension(dir.path(), "base", "pdf");
+        assert!(matches!(
+            result,
+            Err(PdfCutterError::ExhaustedOutputNames { .. })
+        ));
+    }
+
+    #[test]
+    fn resolve_output_dir_creates_nested_directories() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let nested = dir.path().join("a").join("b");
+        let resolved = resolve_output_dir(Some(&nested)).expect("resolve output dir");
+        assert_eq!(resolved, nested);
+        assert!(nested.is_dir());
+    }
+
+    #[test]
+    fn resolve_output_dir_defaults_to_current_dir() {
+        let resolved = resolve_output_dir(None).expect("resolve output dir");
+        assert_eq!(resolved, std::env::current_dir().expect("current dir"));
+    }
+
+    #[test]
+    fn file_size_kb_rounds_up() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let cases: [(usize, u64); 4] = [(0, 0), (1, 1), (1024, 1), (1025, 2)];
+
+        for (bytes, expected_kb) in cases {
+            let path = dir.path().join(format!("file_{bytes}.bin"));
+            let mut file = File::create(&path).expect("create file");
+            file.write_all(&vec![0u8; bytes]).expect("write bytes");
+            assert_eq!(file_size_kb(&file, &path).expect("file size"), expected_kb);
+        }
+    }
+}

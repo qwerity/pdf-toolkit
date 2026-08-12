@@ -871,3 +871,454 @@ fn nearest_column(x: f32, columns: &[f32]) -> usize {
         .map(|(i, _)| i)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw_char(ch: char, x: f32, y: f32, width: f32, font_size: f32) -> RawChar {
+        RawChar {
+            ch,
+            x,
+            y,
+            width,
+            height: font_size,
+            font_size,
+            font_name: "Helvetica".to_string(),
+            bold: false,
+            italic: false,
+            space_before: false,
+        }
+    }
+
+    fn span(text: &str, x: f32, y: f32, width: f32, font_size: f32) -> TextSpan {
+        TextSpan {
+            text: text.to_string(),
+            font_size,
+            font_name: "Helvetica".to_string(),
+            bold: false,
+            italic: false,
+            x,
+            y,
+            width,
+            height: font_size,
+        }
+    }
+
+    fn styled_span(text: &str, x: f32, y: f32, font_size: f32, bold: bool) -> TextSpan {
+        TextSpan {
+            bold,
+            ..span(text, x, y, text.len() as f32 * font_size * 0.5, font_size)
+        }
+    }
+
+    fn text_line(y: f32, spans: Vec<TextSpan>) -> TextLine {
+        TextLine { y, spans }
+    }
+
+    // ── font weights ───────────────────────────────────────────────
+
+    #[test]
+    fn font_weight_numeric_covers_all_variants() {
+        let cases = [
+            (PdfFontWeight::Weight100, 100),
+            (PdfFontWeight::Weight200, 200),
+            (PdfFontWeight::Weight300, 300),
+            (PdfFontWeight::Weight400Normal, 400),
+            (PdfFontWeight::Weight500, 500),
+            (PdfFontWeight::Weight600, 600),
+            (PdfFontWeight::Weight700Bold, 700),
+            (PdfFontWeight::Weight800, 800),
+            (PdfFontWeight::Weight900, 900),
+            (PdfFontWeight::Custom(650), 650),
+        ];
+        for (weight, expected) in cases {
+            assert_eq!(font_weight_numeric(&weight), expected);
+        }
+    }
+
+    // ── span grouping ──────────────────────────────────────────────
+
+    #[test]
+    fn spans_merge_adjacent_chars_with_same_style() {
+        let chars = [
+            raw_char('H', 10.0, 700.0, 6.0, 12.0),
+            raw_char('i', 16.0, 700.0, 3.0, 12.0),
+        ];
+        let spans = group_chars_into_spans(&chars);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "Hi");
+        assert!((spans[0].width - 9.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn spans_insert_space_when_space_was_seen() {
+        let mut second = raw_char('b', 20.0, 700.0, 6.0, 12.0);
+        second.space_before = true;
+        let chars = [raw_char('a', 10.0, 700.0, 6.0, 12.0), second];
+        let spans = group_chars_into_spans(&chars);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "a b");
+    }
+
+    #[test]
+    fn spans_split_on_bold_change() {
+        let mut second = raw_char('b', 16.0, 700.0, 6.0, 12.0);
+        second.bold = true;
+        let chars = [raw_char('a', 10.0, 700.0, 6.0, 12.0), second];
+        let spans = group_chars_into_spans(&chars);
+        assert_eq!(spans.len(), 2);
+        assert!(!spans[0].bold);
+        assert!(spans[1].bold);
+    }
+
+    #[test]
+    fn spans_split_on_font_size_change() {
+        let chars = [
+            raw_char('a', 10.0, 700.0, 6.0, 12.0),
+            raw_char('b', 16.0, 700.0, 6.0, 14.0),
+        ];
+        assert_eq!(group_chars_into_spans(&chars).len(), 2);
+    }
+
+    #[test]
+    fn spans_split_on_wide_horizontal_gap() {
+        let chars = [
+            raw_char('a', 10.0, 700.0, 6.0, 12.0),
+            raw_char('b', 60.0, 700.0, 6.0, 12.0),
+        ];
+        assert_eq!(group_chars_into_spans(&chars).len(), 2);
+    }
+
+    #[test]
+    fn spans_split_on_backward_jump() {
+        let chars = [
+            raw_char('a', 100.0, 700.0, 6.0, 12.0),
+            raw_char('b', 10.0, 700.0, 6.0, 12.0),
+        ];
+        assert_eq!(group_chars_into_spans(&chars).len(), 2);
+    }
+
+    #[test]
+    fn spans_split_on_line_change() {
+        let chars = [
+            raw_char('a', 10.0, 700.0, 6.0, 12.0),
+            raw_char('b', 16.0, 680.0, 6.0, 12.0),
+        ];
+        assert_eq!(group_chars_into_spans(&chars).len(), 2);
+    }
+
+    #[test]
+    fn spans_empty_input_yields_no_spans() {
+        assert!(group_chars_into_spans(&[]).is_empty());
+    }
+
+    // ── line grouping ──────────────────────────────────────────────
+
+    #[test]
+    fn lines_group_same_y_and_sort_spans_by_x() {
+        let spans = [
+            span("right", 300.0, 700.0, 30.0, 12.0),
+            span("left", 50.0, 700.5, 20.0, 12.0),
+            span("below", 50.0, 650.0, 25.0, 12.0),
+        ];
+        let lines = group_spans_into_lines(&spans);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].spans[0].text, "left");
+        assert_eq!(lines[0].spans[1].text, "right");
+        assert_eq!(lines[1].spans[0].text, "below");
+    }
+
+    #[test]
+    fn lines_split_beyond_y_tolerance() {
+        let spans = [
+            span("a", 50.0, 700.0, 6.0, 12.0),
+            span("b", 60.0, 697.0, 6.0, 12.0),
+        ];
+        assert_eq!(group_spans_into_lines(&spans).len(), 2);
+    }
+
+    // ── table detection ────────────────────────────────────────────
+
+    fn table_lines() -> Vec<TextLine> {
+        vec![
+            text_line(
+                700.0,
+                vec![
+                    span("Name", 50.0, 700.0, 30.0, 12.0),
+                    span("Value", 300.0, 700.0, 30.0, 12.0),
+                ],
+            ),
+            text_line(
+                680.0,
+                vec![
+                    span("Alpha", 50.0, 680.0, 30.0, 12.0),
+                    span("1", 300.0, 680.0, 8.0, 12.0),
+                ],
+            ),
+            text_line(
+                660.0,
+                vec![
+                    span("Beta", 50.0, 660.0, 28.0, 12.0),
+                    span("2", 300.0, 660.0, 8.0, 12.0),
+                ],
+            ),
+        ]
+    }
+
+    #[test]
+    fn detect_tables_finds_aligned_columns() {
+        let tables = detect_tables(&table_lines());
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].start_line, 0);
+        assert_eq!(tables[0].end_line, 3);
+        assert_eq!(tables[0].columns.len(), 2);
+    }
+
+    #[test]
+    fn detect_tables_ignores_single_span_lines() {
+        let lines = vec![
+            text_line(700.0, vec![span("prose one", 50.0, 700.0, 60.0, 12.0)]),
+            text_line(680.0, vec![span("prose two", 50.0, 680.0, 60.0, 12.0)]),
+        ];
+        assert!(detect_tables(&lines).is_empty());
+    }
+
+    #[test]
+    fn detect_tables_ignores_misaligned_columns() {
+        let lines = vec![
+            text_line(
+                700.0,
+                vec![
+                    span("a", 50.0, 700.0, 6.0, 12.0),
+                    span("b", 200.0, 700.0, 6.0, 12.0),
+                ],
+            ),
+            text_line(
+                680.0,
+                vec![
+                    span("c", 100.0, 680.0, 6.0, 12.0),
+                    span("d", 260.0, 680.0, 6.0, 12.0),
+                ],
+            ),
+        ];
+        assert!(detect_tables(&lines).is_empty());
+    }
+
+    // ── line classification ────────────────────────────────────────
+
+    #[test]
+    fn classify_line_by_font_size_ratio() {
+        let body = 12.0;
+        let heading1 = text_line(700.0, vec![span("Title", 50.0, 700.0, 40.0, 24.0)]);
+        let heading2 = text_line(700.0, vec![span("Section", 50.0, 700.0, 40.0, 16.0)]);
+        let paragraph = text_line(700.0, vec![span("Body", 50.0, 700.0, 30.0, 12.0)]);
+        assert_eq!(classify_line(&heading1, body), LineKind::Heading(1));
+        assert_eq!(classify_line(&heading2, body), LineKind::Heading(2));
+        assert_eq!(classify_line(&paragraph, body), LineKind::Paragraph);
+    }
+
+    #[test]
+    fn classify_line_detects_list_items() {
+        for marker in ["• item", "● item", "◦ item", "- item", "– item", "· item"] {
+            let line = text_line(700.0, vec![span(marker, 50.0, 700.0, 40.0, 12.0)]);
+            assert_eq!(classify_line(&line, 12.0), LineKind::ListItem, "{marker:?}");
+        }
+    }
+
+    #[test]
+    fn classify_line_dash_without_space_is_paragraph() {
+        let line = text_line(700.0, vec![span("-item", 50.0, 700.0, 40.0, 12.0)]);
+        assert_eq!(classify_line(&line, 12.0), LineKind::Paragraph);
+    }
+
+    #[test]
+    fn classify_line_empty_variants() {
+        let no_spans = text_line(700.0, Vec::new());
+        let blank = text_line(700.0, vec![span("   ", 50.0, 700.0, 10.0, 12.0)]);
+        assert_eq!(classify_line(&no_spans, 12.0), LineKind::Empty);
+        assert_eq!(classify_line(&blank, 12.0), LineKind::Empty);
+    }
+
+    // ── list markers ───────────────────────────────────────────────
+
+    #[test]
+    fn strip_list_marker_variants() {
+        assert_eq!(strip_list_marker("• alpha"), "alpha");
+        assert_eq!(strip_list_marker("– beta"), "beta");
+        assert_eq!(strip_list_marker("- gamma"), "gamma");
+        assert_eq!(strip_list_marker("-nodash"), "-nodash");
+        assert_eq!(strip_list_marker("plain"), "plain");
+    }
+
+    // ── body font size estimation ──────────────────────────────────
+
+    #[test]
+    fn estimate_body_font_size_picks_dominant_size() {
+        let lines = vec![
+            text_line(700.0, vec![span("Big", 50.0, 700.0, 30.0, 24.0)]),
+            text_line(
+                680.0,
+                vec![span(
+                    "much longer body text dominates by character count",
+                    50.0,
+                    680.0,
+                    300.0,
+                    12.0,
+                )],
+            ),
+        ];
+        assert_eq!(estimate_body_font_size(&lines), 12.0);
+    }
+
+    #[test]
+    fn estimate_body_font_size_defaults_when_empty() {
+        assert_eq!(estimate_body_font_size(&[]), 12.0);
+    }
+
+    // ── vertical proximity and style ───────────────────────────────
+
+    #[test]
+    fn vertically_close_uses_line_height_factor() {
+        let a = text_line(700.0, vec![span("a", 50.0, 700.0, 6.0, 12.0)]);
+        let near = text_line(686.0, vec![span("b", 50.0, 686.0, 6.0, 12.0)]);
+        let far = text_line(660.0, vec![span("c", 50.0, 660.0, 6.0, 12.0)]);
+        assert!(is_vertically_close(&a, &near));
+        assert!(!is_vertically_close(&a, &far));
+    }
+
+    #[test]
+    fn vertically_close_falls_back_for_zero_height() {
+        let mut a = text_line(700.0, vec![span("a", 50.0, 700.0, 6.0, 12.0)]);
+        let mut b = text_line(690.0, vec![span("b", 50.0, 690.0, 6.0, 12.0)]);
+        a.spans[0].height = 0.0;
+        b.spans[0].height = 0.0;
+        assert!(is_vertically_close(&a, &b));
+    }
+
+    #[test]
+    fn dominant_style_prefers_longest_span() {
+        let line = text_line(
+            700.0,
+            vec![
+                styled_span("hi", 50.0, 700.0, 12.0, true),
+                styled_span("a much longer regular span", 80.0, 700.0, 12.0, false),
+            ],
+        );
+        assert_eq!(dominant_style(&line), (12.0, false, false));
+    }
+
+    // ── inline formatting ──────────────────────────────────────────
+
+    #[test]
+    fn inline_formatting_merges_adjacent_bold_spans() {
+        let a = styled_span("A", 50.0, 700.0, 12.0, true);
+        let b = styled_span("B", 60.0, 700.0, 12.0, true);
+        let c = styled_span("c", 70.0, 700.0, 12.0, false);
+        let mut md = String::new();
+        render_spans_with_inline_formatting(&mut md, &[(&a, false), (&b, true), (&c, true)]);
+        assert_eq!(md, "**A B** c");
+    }
+
+    #[test]
+    fn inline_formatting_bold_italic_combined() {
+        let mut styled = styled_span("x", 50.0, 700.0, 12.0, true);
+        styled.italic = true;
+        let mut md = String::new();
+        render_spans_with_inline_formatting(&mut md, &[(&styled, false)]);
+        assert_eq!(md, "***x***");
+    }
+
+    #[test]
+    fn inline_formatting_italic_only() {
+        let mut styled = styled_span("x", 50.0, 700.0, 12.0, false);
+        styled.italic = true;
+        let mut md = String::new();
+        render_spans_with_inline_formatting(&mut md, &[(&styled, false)]);
+        assert_eq!(md, "*x*");
+    }
+
+    // ── markdown rendering ─────────────────────────────────────────
+
+    #[test]
+    fn markdown_renders_heading_paragraph_and_list() {
+        let lines = vec![
+            text_line(800.0, vec![span("Title", 50.0, 800.0, 60.0, 24.0)]),
+            text_line(
+                760.0,
+                vec![span(
+                    "First body line with plenty of characters here",
+                    50.0,
+                    760.0,
+                    280.0,
+                    12.0,
+                )],
+            ),
+            text_line(
+                745.0,
+                vec![span(
+                    "second body line continues the same paragraph",
+                    50.0,
+                    745.0,
+                    280.0,
+                    12.0,
+                )],
+            ),
+            text_line(700.0, vec![span("• One", 50.0, 700.0, 40.0, 12.0)]),
+            text_line(685.0, vec![span("• Two", 50.0, 685.0, 40.0, 12.0)]),
+        ];
+
+        let md = lines_to_markdown(&lines);
+        assert!(md.contains("# Title"), "missing heading in: {md}");
+        assert!(
+            md.contains("First body line with plenty of characters here second body line"),
+            "paragraph lines must join: {md}"
+        );
+        assert!(md.contains("- One\n- Two"), "missing list in: {md}");
+    }
+
+    #[test]
+    fn markdown_renders_table_with_separator() {
+        let md = lines_to_markdown(&table_lines());
+        assert!(md.contains("| Name | Value |"), "missing header row: {md}");
+        assert!(md.contains("| --- | --- |"), "missing separator: {md}");
+        assert!(md.contains("| Alpha | 1 |"), "missing data row: {md}");
+        assert!(md.contains("| Beta | 2 |"), "missing data row: {md}");
+    }
+
+    #[test]
+    fn markdown_of_empty_lines_is_empty() {
+        assert_eq!(lines_to_markdown(&[]), "");
+    }
+
+    #[test]
+    fn markdown_has_no_triple_newlines_or_outer_whitespace() {
+        let lines = vec![
+            text_line(800.0, vec![span("Title", 50.0, 800.0, 60.0, 24.0)]),
+            text_line(
+                600.0,
+                vec![span(
+                    "body text that is long enough to dominate size counting",
+                    50.0,
+                    600.0,
+                    300.0,
+                    12.0,
+                )],
+            ),
+        ];
+        let md = lines_to_markdown(&lines);
+        assert!(!md.contains("\n\n\n"));
+        assert_eq!(md, md.trim());
+    }
+
+    // ── column mapping ─────────────────────────────────────────────
+
+    #[test]
+    fn nearest_column_picks_closest_anchor() {
+        let columns = [50.0, 300.0, 500.0];
+        assert_eq!(nearest_column(60.0, &columns), 0);
+        assert_eq!(nearest_column(290.0, &columns), 1);
+        assert_eq!(nearest_column(1000.0, &columns), 2);
+        assert_eq!(nearest_column(10.0, &[]), 0);
+    }
+}

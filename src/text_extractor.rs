@@ -351,3 +351,90 @@ fn finalize_text_output(
         size_kb,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_removes_disallowed_control_characters() {
+        assert_eq!(sanitize_extracted_text("a\u{0}b\u{7}c"), "abc");
+    }
+
+    #[test]
+    fn sanitize_keeps_newlines_tabs_and_carriage_returns() {
+        assert_eq!(sanitize_extracted_text("a\tb\nc\rd"), "a\tb\nc\rd");
+    }
+
+    #[test]
+    fn sanitize_trims_trailing_whitespace_only() {
+        assert_eq!(sanitize_extracted_text("  a b \n\t "), "  a b");
+    }
+
+    #[test]
+    fn page_marker_format_is_stable() {
+        assert_eq!(page_marker(NonZeroU16::new(7).unwrap()), "____Page7____");
+    }
+
+    #[test]
+    fn output_mode_matrix() {
+        let specific = PageSelection::Specific(vec![NonZeroU16::new(1).unwrap()]);
+        assert_eq!(
+            output_mode(&PageSelection::All, false),
+            TextOutputMode::SingleFile
+        );
+        assert_eq!(
+            output_mode(&PageSelection::All, true),
+            TextOutputMode::SingleFile
+        );
+        assert_eq!(output_mode(&specific, false), TextOutputMode::PerPage);
+        assert_eq!(output_mode(&specific, true), TextOutputMode::SingleFile);
+    }
+
+    #[test]
+    fn normal_prose_is_not_flagged_unreadable() {
+        let text =
+            "The quick brown fox jumps over the lazy dog near the quiet river bank. ".repeat(3);
+        assert!(!is_probably_unreadable_text(&text));
+    }
+
+    #[test]
+    fn numeric_heavy_but_readable_text_is_not_flagged() {
+        let text = "Total revenue for quarter one was 1234 and quarter two reached 5678, \
+                    while expenses stayed near 910 leaving margin around 34 percent overall \
+                    according to the annual report published today by the finance team.";
+        assert!(!is_probably_unreadable_text(text));
+    }
+
+    #[test]
+    fn garbled_vowelless_noise_is_flagged_unreadable() {
+        let text = "X9#Z 7Q$W 3K%T ".repeat(10);
+        assert!(is_probably_unreadable_text(&text));
+    }
+
+    #[test]
+    fn short_text_is_never_flagged() {
+        assert!(!is_probably_unreadable_text("9#@!X"));
+        assert!(!is_probably_unreadable_text(""));
+    }
+
+    #[test]
+    fn quality_metrics_ratios_handle_empty_input() {
+        let metrics = analyze_text_quality("");
+        assert_eq!(metrics.visible_char_count(), 0);
+        assert_eq!(metrics.noise_ratio(), 0.0);
+        assert_eq!(metrics.lowercase_ratio(), 0.0);
+        assert_eq!(metrics.vowel_word_ratio(), 0.0);
+    }
+
+    #[test]
+    fn quality_metrics_count_categories() {
+        let metrics = analyze_text_quality("Ab1! cd");
+        assert_eq!(metrics.letter_count, 4);
+        assert_eq!(metrics.lowercase_count, 3);
+        assert_eq!(metrics.digit_count, 1);
+        assert_eq!(metrics.punctuation_count, 1);
+        assert_eq!(metrics.alpha_word_count, 2);
+        assert_eq!(metrics.vowel_word_count, 1);
+    }
+}

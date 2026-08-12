@@ -2,15 +2,25 @@ use crate::document::{open_document, page_count_u16, page_index};
 use crate::error::{PdfCutterError, Result};
 use crate::extractor::ExtractionWarning;
 use crate::page_selection::PageSelection;
+use crate::text_quality::is_probably_unreadable_text;
 use pdfium_render::prelude::{PdfFontWeight, PdfPage, PdfPages, Pdfium, PdfiumError};
 use serde::Serialize;
 use std::num::NonZeroU16;
 use std::path::Path;
+use std::rc::Rc;
 
 // ── Tolerance constants ────────────────────────────────────────────
 
-/// Characters within this vertical distance (in points) are on the same line.
+/// Minimum vertical distance (in points) within which characters are on the
+/// same line; scaled up proportionally for larger fonts (see [`same_line_y`]).
 const LINE_Y_TOLERANCE: f32 = 2.0;
+
+/// Fraction of the font size used as the vertical same-line tolerance.
+const LINE_Y_TOLERANCE_FACTOR: f32 = 0.25;
+
+/// Fraction of the font size a horizontal gap must exceed to count as a word
+/// space between adjacent spans (typical space glyphs are ~0.25em wide).
+const SPAN_SPACE_GAP_FACTOR: f32 = 0.15;
 
 /// Characters with font properties within these tolerances are merged into one span.
 const FONT_SIZE_TOLERANCE: f32 = 0.3;
@@ -78,7 +88,7 @@ struct RawChar {
     width: f32,
     height: f32,
     font_size: f32,
-    font_name: String,
+    font_name: Rc<str>,
     bold: bool,
     italic: bool,
     space_before: bool,
@@ -182,6 +192,12 @@ fn extract_page_structured(
         reason: error.to_string(),
     })?;
 
+    if is_probably_unreadable_text(&raw_chars_to_text(&raw_chars)) {
+        return Err(ExtractionWarning::UnreadableText {
+            page_number: page_number.get(),
+        });
+    }
+
     let spans = group_chars_into_spans(&raw_chars);
     let lines = group_spans_into_lines(&spans);
     let markdown = lines_to_markdown(&lines);
@@ -204,6 +220,7 @@ fn extract_raw_chars(page: &PdfPage<'_>) -> std::result::Result<Vec<RawChar>, Pd
     let text = page.text()?;
     let mut chars = Vec::new();
     let mut pending_space = false;
+    let mut last_font: Option<(Rc<str>, bool, bool)> = None;
 
     for char_ref in text.chars().iter() {
         let ch = match char_ref.unicode_char() {
@@ -230,12 +247,27 @@ fn extract_raw_chars(page: &PdfPage<'_>) -> std::result::Result<Vec<RawChar>, Pd
             continue;
         }
 
-        let font_name = char_ref.font_name();
-        let bold = char_ref.font_is_bold_reenforced()
+        // Consecutive characters usually share a font; reuse the interned
+        // name and its derived style flags instead of re-deriving per char.
+        let raw_font_name = char_ref.font_name();
+        let (font_name, name_bold, name_italic) = match &last_font {
+            Some((name, name_bold, name_italic)) if **name == raw_font_name => {
+                (Rc::clone(name), *name_bold, *name_italic)
+            }
+            _ => {
+                let name: Rc<str> = raw_font_name.into();
+                let (name_bold, name_italic) = font_name_style(&name);
+                last_font = Some((Rc::clone(&name), name_bold, name_italic));
+                (name, name_bold, name_italic)
+            }
+        };
+
+        let bold = name_bold
+            || char_ref.font_is_bold_reenforced()
             || char_ref
                 .font_weight()
                 .is_some_and(|w| font_weight_numeric(&w) >= 600);
-        let italic = char_ref.font_is_italic();
+        let italic = name_italic || char_ref.font_is_italic();
 
         let left = bounds.left().value;
         let right = bounds.right().value;
@@ -257,6 +289,30 @@ fn extract_raw_chars(page: &PdfPage<'_>) -> std::result::Result<Vec<RawChar>, Pd
     }
 
     Ok(chars)
+}
+
+/// Rebuilds plain text (with word spaces) from raw characters so the shared
+/// garbled-text heuristic can judge the page.
+fn raw_chars_to_text(chars: &[RawChar]) -> String {
+    let mut text = String::with_capacity(chars.len() * 2);
+    for raw in chars {
+        if raw.space_before && !text.is_empty() {
+            text.push(' ');
+        }
+        text.push(raw.ch);
+    }
+    text
+}
+
+/// Fallback style detection from the font name, for fonts that carry no
+/// usable weight metadata (e.g. pdfium reports weight 0 for the standard
+/// Helvetica-Bold). Returns `(bold, italic)`.
+fn font_name_style(name: &str) -> (bool, bool) {
+    let name = name.to_ascii_lowercase();
+    (
+        name.contains("bold") || name.contains("black") || name.contains("heavy"),
+        name.contains("italic") || name.contains("oblique"),
+    )
 }
 
 fn font_weight_numeric(weight: &PdfFontWeight) -> u32 {
@@ -285,7 +341,9 @@ fn group_chars_into_spans(chars: &[RawChar]) -> Vec<TextSpan> {
 
     for raw in chars {
         let should_merge = spans.last().is_some_and(|prev| {
-            same_y(prev.y, raw.y) && same_font(prev, raw) && horizontal_gap_ok(prev, raw)
+            same_line_y(prev.y, raw.y, prev.font_size)
+                && same_font(prev, raw)
+                && horizontal_gap_ok(prev, raw)
         });
 
         if should_merge {
@@ -303,7 +361,7 @@ fn group_chars_into_spans(chars: &[RawChar]) -> Vec<TextSpan> {
             spans.push(TextSpan {
                 text: raw.ch.to_string(),
                 font_size: raw.font_size,
-                font_name: raw.font_name.clone(),
+                font_name: raw.font_name.to_string(),
                 bold: raw.bold,
                 italic: raw.italic,
                 x: raw.x,
@@ -317,8 +375,12 @@ fn group_chars_into_spans(chars: &[RawChar]) -> Vec<TextSpan> {
     spans
 }
 
-fn same_y(y1: f32, y2: f32) -> bool {
-    (y1 - y2).abs() < LINE_Y_TOLERANCE
+/// Same-line check with a tolerance proportional to the font size, so large
+/// headings with baseline jitter stay on one line while small text does not
+/// absorb its neighbors.
+fn same_line_y(y1: f32, y2: f32, font_size: f32) -> bool {
+    let tolerance = (font_size * LINE_Y_TOLERANCE_FACTOR).max(LINE_Y_TOLERANCE);
+    (y1 - y2).abs() < tolerance
 }
 
 fn same_font(span: &TextSpan, raw: &RawChar) -> bool {
@@ -334,23 +396,33 @@ fn horizontal_gap_ok(span: &TextSpan, raw: &RawChar) -> bool {
 
 // ── Step 3: Group spans into lines ─────────────────────────────────
 
+/// Clusters spans into lines by vertical position and orders the result
+/// visually: lines top-to-bottom, spans within a line left-to-right.
+///
+/// Spans are matched against every existing line (not only the previous one)
+/// because PDF content streams frequently emit text out of visual order
+/// (e.g. footers first, or two-column layouts interleaved).
 fn group_spans_into_lines(spans: &[TextSpan]) -> Vec<TextLine> {
     if spans.is_empty() {
         return Vec::new();
     }
 
+    // PDF y grows upward, so descending y is top-to-bottom reading order.
+    // Sorting first lets adjacent spans cluster into lines in a single pass.
+    let mut ordered: Vec<&TextSpan> = spans.iter().collect();
+    ordered.sort_by(|a, b| b.y.partial_cmp(&a.y).unwrap_or(std::cmp::Ordering::Equal));
+
     let mut lines: Vec<TextLine> = Vec::new();
 
-    for span in spans {
-        let belongs_to_last = lines.last().is_some_and(|line| same_y(line.y, span.y));
-
-        if belongs_to_last {
-            lines.last_mut().unwrap().spans.push(span.clone());
-        } else {
-            lines.push(TextLine {
+    for span in ordered {
+        match lines.last_mut() {
+            Some(line) if same_line_y(line.y, span.y, span.font_size) => {
+                line.spans.push(span.clone());
+            }
+            _ => lines.push(TextLine {
                 y: span.y,
                 spans: vec![span.clone()],
-            });
+            }),
         }
     }
 
@@ -360,6 +432,13 @@ fn group_spans_into_lines(spans: &[TextSpan]) -> Vec<TextLine> {
     }
 
     lines
+}
+
+/// True when the horizontal gap between two adjacent spans on one line is
+/// wide enough to represent a word space (kerning gaps are far narrower).
+fn needs_space_between(previous: &TextSpan, next: &TextSpan) -> bool {
+    let gap = next.x - (previous.x + previous.width);
+    gap > previous.font_size * SPAN_SPACE_GAP_FACTOR
 }
 
 // ── Step 4: Detect tables ──────────────────────────────────────────
@@ -672,19 +751,12 @@ fn render_block(md: &mut String, block: &Block, lines: &[TextLine], tables: &[De
                 if i > 0 {
                     md.push(' ');
                 }
-                md.push_str(line_to_text(&lines[idx]).trim());
+                escape_markdown_into(md, line_to_text(&lines[idx]).trim());
             }
             md.push_str("\n\n");
         }
         Block::Paragraph { line_indices } => {
-            let mut spans = Vec::new();
-            for (line_pos, &idx) in line_indices.iter().enumerate() {
-                for (span_pos, span) in lines[idx].spans.iter().enumerate() {
-                    let leading_space = !(line_pos == 0 && span_pos == 0);
-                    spans.push((span, leading_space));
-                }
-            }
-            render_spans_with_inline_formatting(md, &spans);
+            render_spans_with_inline_formatting(md, &paragraph_spans(lines, line_indices));
             md.push_str("\n\n");
         }
         Block::List { items } => {
@@ -698,7 +770,7 @@ fn render_block(md: &mut String, block: &Block, lines: &[TextLine], tables: &[De
                 }
                 let cleaned = strip_list_marker(text.trim());
                 md.push_str("- ");
-                md.push_str(&cleaned);
+                escape_markdown_into(md, &cleaned);
                 md.push('\n');
             }
             md.push('\n');
@@ -754,7 +826,7 @@ fn estimate_body_font_size(lines: &[TextLine]) -> f32 {
 fn line_to_text(line: &TextLine) -> String {
     let mut text = String::new();
     for (i, span) in line.spans.iter().enumerate() {
-        if i > 0 {
+        if i > 0 && needs_space_between(&line.spans[i - 1], span) {
             text.push(' ');
         }
         text.push_str(&span.text);
@@ -762,14 +834,69 @@ fn line_to_text(line: &TextLine) -> String {
     text
 }
 
+/// A span prepared for inline rendering:
+/// `(span, needs_leading_space, strip_trailing_hyphen)`.
+type InlineSpan<'a> = (&'a TextSpan, bool, bool);
+
+/// Flattens paragraph lines into render-ready spans: word spaces are decided
+/// from horizontal gaps, line breaks become spaces, and a hyphen at a line
+/// break followed by a lowercase continuation is joined into one word.
+fn paragraph_spans<'a>(lines: &'a [TextLine], line_indices: &[usize]) -> Vec<InlineSpan<'a>> {
+    let mut spans: Vec<InlineSpan<'a>> = Vec::new();
+
+    for (line_pos, &idx) in line_indices.iter().enumerate() {
+        let line = &lines[idx];
+        for (span_pos, span) in line.spans.iter().enumerate() {
+            let mut leading_space = if span_pos > 0 {
+                needs_space_between(&line.spans[span_pos - 1], span)
+            } else {
+                line_pos > 0
+            };
+
+            if span_pos == 0
+                && let Some((previous, _, strip_trailing_hyphen)) = spans.last_mut()
+                && ends_with_soft_hyphen(&previous.text)
+                && starts_lowercase(&span.text)
+            {
+                *strip_trailing_hyphen = true;
+                leading_space = false;
+            }
+
+            spans.push((span, leading_space, false));
+        }
+    }
+
+    spans
+}
+
+/// A trailing hyphen on a multi-character span is treated as line-break
+/// hyphenation (a lone "-" is more likely a bullet or minus sign).
+fn ends_with_soft_hyphen(text: &str) -> bool {
+    text.len() >= 2 && text.ends_with('-')
+}
+
+fn starts_lowercase(text: &str) -> bool {
+    text.chars().next().is_some_and(char::is_lowercase)
+}
+
+/// Appends `text` to `md`, escaping characters that would otherwise be
+/// interpreted as markdown syntax (`|` included, so table rows stay intact).
+fn escape_markdown_into(md: &mut String, text: &str) {
+    for ch in text.chars() {
+        if matches!(ch, '\\' | '`' | '*' | '_' | '[' | ']' | '|') {
+            md.push('\\');
+        }
+        md.push(ch);
+    }
+}
+
 /// Renders a sequence of spans with inline markdown emphasis.
 /// Adjacent spans with the same emphasis state share the same opening/closing
 /// markers — so `bold A` followed by `bold B` produces `**A B**`, not `**A** **B**`.
-fn render_spans_with_inline_formatting(md: &mut String, spans: &[(&TextSpan, bool)]) {
-    // (span, needs_leading_space)
+fn render_spans_with_inline_formatting(md: &mut String, spans: &[InlineSpan<'_>]) {
     let mut current_state: Option<(bool, bool)> = None;
 
-    for (span, leading_space) in spans {
+    for (span, leading_space, strip_trailing_hyphen) in spans {
         let next_state = (span.bold, span.italic);
 
         if Some(next_state) != current_state {
@@ -788,7 +915,13 @@ fn render_spans_with_inline_formatting(md: &mut String, spans: &[(&TextSpan, boo
             md.push(' ');
         }
 
-        md.push_str(&span.text);
+        let text = if *strip_trailing_hyphen {
+            // Only set for spans ending in an ASCII '-', so the slice is safe.
+            &span.text[..span.text.len() - 1]
+        } else {
+            span.text.as_str()
+        };
+        escape_markdown_into(md, text);
     }
 
     if let Some(state) = current_state {
@@ -829,12 +962,17 @@ fn render_table_markdown(md: &mut String, lines: &[TextLine], table: &DetectedTa
         .skip(table.start_line)
     {
         let mut cells: Vec<String> = vec![String::new(); num_cols];
+        let mut previous_span_in_cell: Vec<Option<&TextSpan>> = vec![None; num_cols];
         for span in &line.spans {
             let col_idx = nearest_column(span.x, columns);
-            if !cells[col_idx].is_empty() {
+            if previous_span_in_cell[col_idx]
+                .is_none_or(|previous| needs_space_between(previous, span))
+                && !cells[col_idx].is_empty()
+            {
                 cells[col_idx].push(' ');
             }
-            cells[col_idx].push_str(&span.text);
+            escape_markdown_into(&mut cells[col_idx], &span.text);
+            previous_span_in_cell[col_idx] = Some(span);
         }
 
         md.push('|');
@@ -883,7 +1021,7 @@ mod tests {
             width,
             height: font_size,
             font_size,
-            font_name: "Helvetica".to_string(),
+            font_name: "Helvetica".into(),
             bold: false,
             italic: false,
             space_before: false,
@@ -1032,9 +1170,55 @@ mod tests {
     fn lines_split_beyond_y_tolerance() {
         let spans = [
             span("a", 50.0, 700.0, 6.0, 12.0),
-            span("b", 60.0, 697.0, 6.0, 12.0),
+            span("b", 60.0, 695.0, 6.0, 12.0),
         ];
         assert_eq!(group_spans_into_lines(&spans).len(), 2);
+    }
+
+    #[test]
+    fn large_fonts_tolerate_proportional_baseline_jitter() {
+        // 3pt of jitter splits 12pt text but stays on one line at 24pt.
+        let small = [
+            span("a", 50.0, 700.0, 6.0, 12.0),
+            span("b", 60.0, 696.5, 6.0, 12.0),
+        ];
+        let large = [
+            span("a", 50.0, 700.0, 12.0, 24.0),
+            span("b", 70.0, 697.0, 12.0, 24.0),
+        ];
+        assert_eq!(group_spans_into_lines(&small).len(), 2);
+        assert_eq!(group_spans_into_lines(&large).len(), 1);
+    }
+
+    #[test]
+    fn lines_are_ordered_top_to_bottom_regardless_of_input_order() {
+        // Content-stream order: footer first, heading last.
+        let spans = [
+            span("footer", 50.0, 40.0, 40.0, 12.0),
+            span("body", 50.0, 400.0, 30.0, 12.0),
+            span("heading", 50.0, 780.0, 50.0, 12.0),
+        ];
+        let lines = group_spans_into_lines(&spans);
+        let order: Vec<&str> = lines
+            .iter()
+            .map(|line| line.spans[0].text.as_str())
+            .collect();
+        assert_eq!(order, vec!["heading", "body", "footer"]);
+    }
+
+    #[test]
+    fn spans_rejoin_their_line_even_when_emitted_later() {
+        // A span for an already-seen y arrives after other lines.
+        let spans = [
+            span("left", 50.0, 700.0, 20.0, 12.0),
+            span("below", 50.0, 650.0, 25.0, 12.0),
+            span("right", 300.0, 700.0, 30.0, 12.0),
+        ];
+        let lines = group_spans_into_lines(&spans);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].spans.len(), 2);
+        assert_eq!(lines[0].spans[0].text, "left");
+        assert_eq!(lines[0].spans[1].text, "right");
     }
 
     // ── table detection ────────────────────────────────────────────
@@ -1215,7 +1399,10 @@ mod tests {
         let b = styled_span("B", 60.0, 700.0, 12.0, true);
         let c = styled_span("c", 70.0, 700.0, 12.0, false);
         let mut md = String::new();
-        render_spans_with_inline_formatting(&mut md, &[(&a, false), (&b, true), (&c, true)]);
+        render_spans_with_inline_formatting(
+            &mut md,
+            &[(&a, false, false), (&b, true, false), (&c, true, false)],
+        );
         assert_eq!(md, "**A B** c");
     }
 
@@ -1224,7 +1411,7 @@ mod tests {
         let mut styled = styled_span("x", 50.0, 700.0, 12.0, true);
         styled.italic = true;
         let mut md = String::new();
-        render_spans_with_inline_formatting(&mut md, &[(&styled, false)]);
+        render_spans_with_inline_formatting(&mut md, &[(&styled, false, false)]);
         assert_eq!(md, "***x***");
     }
 
@@ -1233,8 +1420,104 @@ mod tests {
         let mut styled = styled_span("x", 50.0, 700.0, 12.0, false);
         styled.italic = true;
         let mut md = String::new();
-        render_spans_with_inline_formatting(&mut md, &[(&styled, false)]);
+        render_spans_with_inline_formatting(&mut md, &[(&styled, false, false)]);
         assert_eq!(md, "*x*");
+    }
+
+    #[test]
+    fn inline_formatting_escapes_markdown_characters() {
+        let literal = styled_span("2 * 3 = [6]_note", 50.0, 700.0, 12.0, false);
+        let mut md = String::new();
+        render_spans_with_inline_formatting(&mut md, &[(&literal, false, false)]);
+        assert_eq!(md, "2 \\* 3 = \\[6\\]\\_note");
+    }
+
+    // ── escaping ───────────────────────────────────────────────────
+
+    #[test]
+    fn escape_markdown_covers_syntax_characters() {
+        assert_eq!(escaped(r"\ ` * _ [ ] |"), r"\\ \` \* \_ \[ \] \|");
+        assert_eq!(escaped("plain text 1-2"), "plain text 1-2");
+    }
+
+    fn escaped(text: &str) -> String {
+        let mut md = String::new();
+        escape_markdown_into(&mut md, text);
+        md
+    }
+
+    // ── span spacing and hyphenation ───────────────────────────────
+
+    #[test]
+    fn tight_span_gaps_do_not_insert_spaces() {
+        // A style change mid-word must not become "Re quired".
+        let re = styled_span("Re", 50.0, 700.0, 12.0, true);
+        let mut quired = styled_span("quired", 62.5, 700.0, 12.0, false);
+        quired.width = 36.0;
+        let line = text_line(700.0, vec![re, quired]);
+        assert_eq!(line_to_text(&line), "Required");
+    }
+
+    #[test]
+    fn wide_span_gaps_insert_spaces() {
+        let left = span("left", 50.0, 700.0, 24.0, 12.0);
+        let right = span("right", 90.0, 700.0, 30.0, 12.0);
+        let line = text_line(700.0, vec![left, right]);
+        assert_eq!(line_to_text(&line), "left right");
+    }
+
+    #[test]
+    fn paragraph_spans_repair_line_break_hyphenation() {
+        let lines = vec![
+            text_line(700.0, vec![span("exam-", 50.0, 700.0, 30.0, 12.0)]),
+            text_line(685.0, vec![span("ple continues", 50.0, 685.0, 80.0, 12.0)]),
+        ];
+        let spans = paragraph_spans(&lines, &[0, 1]);
+        assert!(spans[0].2, "trailing hyphen must be marked for stripping");
+        assert!(!spans[1].1, "no space after repaired hyphen");
+
+        let mut md = String::new();
+        render_spans_with_inline_formatting(&mut md, &spans);
+        assert_eq!(md, "example continues");
+    }
+
+    #[test]
+    fn paragraph_spans_keep_hyphen_before_capitalized_words() {
+        let lines = vec![
+            text_line(700.0, vec![span("Jean-", 50.0, 700.0, 30.0, 12.0)]),
+            text_line(685.0, vec![span("Paul spoke", 50.0, 685.0, 60.0, 12.0)]),
+        ];
+        let spans = paragraph_spans(&lines, &[0, 1]);
+        assert!(!spans[0].2, "compound-word hyphen must be kept");
+        assert!(spans[1].1, "line break still becomes a space");
+
+        let mut md = String::new();
+        render_spans_with_inline_formatting(&mut md, &spans);
+        assert_eq!(md, "Jean- Paul spoke");
+    }
+
+    // ── font-name style fallback ───────────────────────────────────
+
+    #[test]
+    fn bold_and_italic_detected_from_font_names() {
+        assert_eq!(font_name_style("Helvetica-Bold"), (true, false));
+        assert_eq!(font_name_style("Arial Black"), (true, false));
+        assert_eq!(font_name_style("SourceSans-Heavy"), (true, false));
+        assert_eq!(font_name_style("Times-Italic"), (false, true));
+        assert_eq!(font_name_style("Helvetica-Oblique"), (false, true));
+        assert_eq!(font_name_style("Georgia-BoldItalic"), (true, true));
+        assert_eq!(font_name_style("Times-Roman"), (false, false));
+    }
+
+    #[test]
+    fn raw_chars_to_text_restores_word_spaces() {
+        let mut chars = vec![
+            raw_char('H', 10.0, 700.0, 6.0, 12.0),
+            raw_char('i', 16.0, 700.0, 3.0, 12.0),
+            raw_char('y', 25.0, 700.0, 6.0, 12.0),
+        ];
+        chars[2].space_before = true;
+        assert_eq!(raw_chars_to_text(&chars), "Hi y");
     }
 
     // ── markdown rendering ─────────────────────────────────────────

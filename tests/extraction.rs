@@ -605,7 +605,7 @@ fn structured_detects_heading_list_and_bold() {
         "missing heading in: {markdown}"
     );
     assert!(
-        markdown.contains("Bolded"),
+        markdown.contains("**Bolded**"),
         "missing bold text in: {markdown}"
     );
     assert!(
@@ -614,15 +614,17 @@ fn structured_detects_heading_list_and_bold() {
     );
 
     // Pdfium reports the standard Helvetica-Bold font with weight 0 and no
-    // bold reenforcement, so the extractor cannot flag the span as bold yet;
-    // it also merges it into the preceding regular-font span because span
-    // merging ignores font names.
+    // bold reenforcement; boldness is detected from the font name instead.
     let bold_span = report.pages[0]
         .spans
         .iter()
         .find(|span| span.text.contains("Bolded"))
         .expect("bold span must exist");
-    assert!(!bold_span.bold);
+    assert!(bold_span.bold);
+    assert!(
+        !bold_span.text.contains("Normal"),
+        "bold span must not merge into regular text"
+    );
 }
 
 #[test]
@@ -659,6 +661,67 @@ fn structured_detects_table_columns() {
     assert!(
         markdown.contains("Alpha") && markdown.contains("Beta"),
         "missing table rows: {markdown}"
+    );
+}
+
+#[test]
+fn structured_skips_garbled_pages_with_warning() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = fixture_path(dir.path(), "garbled.pdf");
+    let garbled_line = "X9#Z 7Q$W 3K%T ".repeat(4);
+    let garbled_lines: Vec<Text> = (0..4)
+        .map(|row| Text::plain(72.0, 720.0 - row as f32 * 20.0, 12.0, &garbled_line))
+        .collect();
+    write_pdf(&pdfium, &input, &[garbled_lines]);
+
+    let report = extract_structured_text(
+        &pdfium,
+        &input,
+        PageSelection::All,
+        StructuredOutputFormat::Full,
+    )
+    .expect("extract structured text");
+
+    assert!(report.pages.is_empty());
+    assert_eq!(
+        report.warnings,
+        vec![ExtractionWarning::UnreadableText { page_number: 1 }]
+    );
+}
+
+#[test]
+fn structured_orders_lines_visually_not_by_content_stream() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = fixture_path(dir.path(), "reversed.pdf");
+    // Written bottom-up: the content stream order is the reverse of the
+    // visual order.
+    write_pdf(
+        &pdfium,
+        &input,
+        &[vec![
+            Text::plain(72.0, 640.0, 12.0, "gamma bottom line text"),
+            Text::plain(72.0, 680.0, 12.0, "beta middle line text"),
+            Text::plain(72.0, 720.0, 12.0, "alpha top line text"),
+        ]],
+    );
+
+    let report = extract_structured_text(
+        &pdfium,
+        &input,
+        PageSelection::All,
+        StructuredOutputFormat::MarkdownOnly,
+    )
+    .expect("extract structured text");
+
+    let markdown = &report.pages[0].markdown;
+    let alpha = markdown.find("alpha").expect("alpha present");
+    let beta = markdown.find("beta").expect("beta present");
+    let gamma = markdown.find("gamma").expect("gamma present");
+    assert!(
+        alpha < beta && beta < gamma,
+        "lines must appear in visual order: {markdown}"
     );
 }
 

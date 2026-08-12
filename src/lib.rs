@@ -7,6 +7,7 @@ mod page_selection;
 mod pdfium_runtime;
 pub mod structured_text_extractor;
 mod text_extractor;
+mod text_quality;
 mod utils;
 
 pub use document::document_page_count;

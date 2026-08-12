@@ -1,6 +1,9 @@
 mod common;
 
-use common::{Text, minimal_empty_pdf, pdfium, write_pdf, write_pdf_with_image, write_simple_pdf};
+use common::{
+    Text, minimal_empty_pdf, pdfium, write_pdf, write_pdf_with_image, write_rotated_pdf,
+    write_simple_pdf,
+};
 use pdf_cutter::error::PdfCutterError;
 use pdf_cutter::{
     ExtractionWarning, OutputFormat, PageSelection, PngSize, StructuredOutputFormat,
@@ -722,6 +725,85 @@ fn structured_orders_lines_visually_not_by_content_stream() {
     assert!(
         alpha < beta && beta < gamma,
         "lines must appear in visual order: {markdown}"
+    );
+}
+
+#[test]
+fn structured_reads_two_column_pages_column_by_column() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = fixture_path(dir.path(), "columns.pdf");
+
+    let mut items = Vec::new();
+    for row in 0..5 {
+        items.push(Text::plain(
+            60.0,
+            700.0 - row as f32 * 16.0,
+            12.0,
+            &format!("alpha line {row} text"),
+        ));
+        items.push(Text::plain(
+            340.0,
+            692.0 - row as f32 * 16.0,
+            12.0,
+            &format!("beta line {row} text"),
+        ));
+    }
+    write_pdf(&pdfium, &input, &[items]);
+
+    let report = extract_structured_text(
+        &pdfium,
+        &input,
+        PageSelection::All,
+        StructuredOutputFormat::MarkdownOnly,
+    )
+    .expect("extract structured text");
+
+    let markdown = &report.pages[0].markdown;
+    let last_alpha = markdown
+        .rfind("alpha line 4")
+        .expect("alpha line 4 present");
+    let first_beta = markdown.find("beta line 0").expect("beta line 0 present");
+    assert!(
+        last_alpha < first_beta,
+        "left column must fully precede right column: {markdown}"
+    );
+}
+
+#[test]
+fn structured_reads_rotated_pages_in_visual_order() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = fixture_path(dir.path(), "rotated.pdf");
+    // On a 90°-rotated page, smaller page-space x means higher on the
+    // displayed page.
+    write_rotated_pdf(
+        &pdfium,
+        &input,
+        &[
+            Text::plain(200.0, 100.0, 12.0, "beta rotated lower line"),
+            Text::plain(100.0, 100.0, 12.0, "alpha rotated upper line"),
+        ],
+    );
+
+    let report = extract_structured_text(
+        &pdfium,
+        &input,
+        PageSelection::All,
+        StructuredOutputFormat::MarkdownOnly,
+    )
+    .expect("extract structured text");
+
+    let markdown = &report.pages[0].markdown;
+    let alpha = markdown
+        .find("alpha rotated")
+        .unwrap_or_else(|| panic!("alpha missing in: {markdown:?}"));
+    let beta = markdown
+        .find("beta rotated")
+        .unwrap_or_else(|| panic!("beta missing in: {markdown:?}"));
+    assert!(
+        alpha < beta,
+        "rotated page must read top-to-bottom visually: {markdown}"
     );
 }
 

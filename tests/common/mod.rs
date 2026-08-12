@@ -114,6 +114,41 @@ pub fn write_simple_pdf(pdfium: &Pdfium, path: &Path, page_count: usize) {
     write_pdf(pdfium, path, &pages);
 }
 
+/// Writes a one-page fixture that mimics a rotated scan: every text object
+/// is pre-rotated 90° counter-clockwise in page space and the page carries a
+/// 90° clockwise `/Rotate` entry, so the text reads normally when displayed.
+/// `Text.x`/`Text.y` are the unrotated page-space anchor of each run.
+pub fn write_rotated_pdf(pdfium: &Pdfium, path: &Path, texts: &[Text]) {
+    let mut document = pdfium.create_new_pdf().expect("create document");
+    let font = document.fonts_mut().helvetica();
+    let mut page = document
+        .pages_mut()
+        .create_page_at_end(PdfPagePaperSize::a4())
+        .expect("create page");
+
+    for item in texts {
+        let mut object = page
+            .objects_mut()
+            .create_text_object(
+                PdfPoints::new(0.0),
+                PdfPoints::new(0.0),
+                &item.text,
+                font,
+                PdfPoints::new(item.size),
+            )
+            .expect("add text object");
+        object
+            .rotate_counter_clockwise_degrees(90.0)
+            .expect("rotate text object");
+        object
+            .translate(PdfPoints::new(item.x), PdfPoints::new(item.y))
+            .expect("position text object");
+    }
+
+    page.set_rotation(PdfPageRenderRotation::Degrees90);
+    document.save_to_file(path).expect("save fixture PDF");
+}
+
 /// Writes a one-page fixture PDF containing a single 200x200pt image.
 pub fn write_pdf_with_image(pdfium: &Pdfium, path: &Path) {
     let mut document = pdfium.create_new_pdf().expect("create document");

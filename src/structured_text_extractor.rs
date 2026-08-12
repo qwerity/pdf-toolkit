@@ -3,7 +3,9 @@ use crate::error::{PdfCutterError, Result};
 use crate::extractor::ExtractionWarning;
 use crate::page_selection::PageSelection;
 use crate::text_quality::is_probably_unreadable_text;
-use pdfium_render::prelude::{PdfFontWeight, PdfPage, PdfPages, Pdfium, PdfiumError};
+use pdfium_render::prelude::{
+    PdfFontWeight, PdfPage, PdfPageRenderRotation, PdfPages, Pdfium, PdfiumError,
+};
 use serde::Serialize;
 use std::num::NonZeroU16;
 use std::path::Path;
@@ -44,6 +46,28 @@ const H2_SIZE_RATIO: f32 = 1.25;
 
 /// Vertical-gap multiplier (× line height) above which a paragraph break starts.
 const PARAGRAPH_GAP_FACTOR: f32 = 1.6;
+
+/// Minimum width (in points) of a vertical whitespace run to qualify as a
+/// column gutter.
+const COLUMN_GUTTER_MIN_WIDTH: f32 = 18.0;
+
+/// Minimum number of lines each side of a gutter needs to count as a column.
+const MIN_COLUMN_LINES: usize = 4;
+
+/// Fraction of lines allowed to cross a candidate gutter (e.g. a title that
+/// spans both columns) before the gap is rejected.
+const MAX_GUTTER_CROSSING_FRACTION: f32 = 0.15;
+
+/// Width of the histogram bins used to find low-coverage vertical gaps.
+const GUTTER_BIN_WIDTH: f32 = 4.0;
+
+/// Vertical-gap multiplier (× average line height) above which lines are
+/// split into separate bands before column detection, and its floor.
+const BAND_SPLIT_GAP_FACTOR: f32 = 2.5;
+const BAND_SPLIT_MIN_GAP: f32 = 24.0;
+
+/// Maximum recursion depth for column splitting (2 → up to 4 columns).
+const MAX_COLUMN_SPLIT_DEPTH: usize = 2;
 
 // ── Public types ───────────────────────────────────────────────────
 
@@ -199,8 +223,7 @@ fn extract_page_structured(
     }
 
     let spans = group_chars_into_spans(&raw_chars);
-    let lines = group_spans_into_lines(&spans);
-    let markdown = lines_to_markdown(&lines);
+    let markdown = spans_to_markdown(&spans);
 
     let output_spans = match format {
         StructuredOutputFormat::Full => spans,
@@ -218,6 +241,9 @@ fn extract_page_structured(
 
 fn extract_raw_chars(page: &PdfPage<'_>) -> std::result::Result<Vec<RawChar>, PdfiumError> {
     let text = page.text()?;
+    let rotation = page.rotation().unwrap_or(PdfPageRenderRotation::None);
+    let page_width = page.width().value;
+    let page_height = page.height().value;
     let mut chars = Vec::new();
     let mut pending_space = false;
     let mut last_font: Option<(Rc<str>, bool, bool)> = None;
@@ -242,53 +268,98 @@ fn extract_raw_chars(page: &PdfPage<'_>) -> std::result::Result<Vec<RawChar>, Pd
             Err(_) => continue,
         };
 
-        let font_size = char_ref.scaled_font_size().value;
+        // Rotated text matrices can make the scaled size zero or negative;
+        // fall back to the unscaled /Tf size before giving up on the char.
+        let mut font_size = char_ref.scaled_font_size().value;
+        if font_size <= 0.0 {
+            font_size = char_ref.unscaled_font_size().value;
+        }
         if font_size <= 0.0 {
             continue;
         }
 
-        // Consecutive characters usually share a font; reuse the interned
-        // name and its derived style flags instead of re-deriving per char.
+        // Consecutive characters usually share a font; weight, flags, and the
+        // name-derived style are font properties, so they are computed once
+        // per font run and reused. Only the bold-reenforced check remains per
+        // character (it reflects the text render mode, not the font).
         let raw_font_name = char_ref.font_name();
-        let (font_name, name_bold, name_italic) = match &last_font {
-            Some((name, name_bold, name_italic)) if **name == raw_font_name => {
-                (Rc::clone(name), *name_bold, *name_italic)
+        let (font_name, font_bold, font_italic) = match &last_font {
+            Some((name, font_bold, font_italic)) if **name == raw_font_name => {
+                (Rc::clone(name), *font_bold, *font_italic)
             }
             _ => {
                 let name: Rc<str> = raw_font_name.into();
                 let (name_bold, name_italic) = font_name_style(&name);
-                last_font = Some((Rc::clone(&name), name_bold, name_italic));
-                (name, name_bold, name_italic)
+                let font_bold = name_bold
+                    || char_ref
+                        .font_weight()
+                        .is_some_and(|w| font_weight_numeric(&w) >= 600);
+                let font_italic = name_italic || char_ref.font_is_italic();
+                last_font = Some((Rc::clone(&name), font_bold, font_italic));
+                (name, font_bold, font_italic)
             }
         };
 
-        let bold = name_bold
-            || char_ref.font_is_bold_reenforced()
-            || char_ref
-                .font_weight()
-                .is_some_and(|w| font_weight_numeric(&w) >= 600);
-        let italic = name_italic || char_ref.font_is_italic();
+        let bold = font_bold || char_ref.font_is_bold_reenforced();
 
         let left = bounds.left().value;
         let right = bounds.right().value;
         let top = bounds.top().value;
         let bottom = bounds.bottom().value;
+        let (x, y, width, height) = rotate_to_visual(
+            left,
+            top,
+            (right - left).abs(),
+            (top - bottom).abs(),
+            rotation,
+            page_width,
+            page_height,
+        );
         chars.push(RawChar {
             ch,
-            x: left,
-            y: top,
-            width: (right - left).abs(),
-            height: (top - bottom).abs(),
+            x,
+            y,
+            width,
+            height,
             font_size,
             font_name,
             bold,
-            italic,
+            italic: font_italic,
             space_before: pending_space,
         });
         pending_space = false;
     }
 
     Ok(chars)
+}
+
+/// Maps a glyph box from unrotated page space into visual (display) space
+/// for pages carrying a `/Rotate` entry, so line and column detection see
+/// the text the way the reader does. Input and output are `(left, top,
+/// width, height)` in y-up coordinates.
+fn rotate_to_visual(
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+    rotation: PdfPageRenderRotation,
+    page_width: f32,
+    page_height: f32,
+) -> (f32, f32, f32, f32) {
+    match rotation {
+        PdfPageRenderRotation::None => (left, top, width, height),
+        // 90° clockwise: visual point = (y, page_width - x).
+        PdfPageRenderRotation::Degrees90 => (top - height, page_width - left, height, width),
+        // 180°: visual point = (page_width - x, page_height - y).
+        PdfPageRenderRotation::Degrees180 => (
+            page_width - left - width,
+            page_height - top + height,
+            width,
+            height,
+        ),
+        // 270° clockwise: visual point = (page_height - y, x).
+        PdfPageRenderRotation::Degrees270 => (page_height - top, left + width, height, width),
+    }
 }
 
 /// Rebuilds plain text (with word spaces) from raw characters so the shared
@@ -403,25 +474,28 @@ fn horizontal_gap_ok(span: &TextSpan, raw: &RawChar) -> bool {
 /// because PDF content streams frequently emit text out of visual order
 /// (e.g. footers first, or two-column layouts interleaved).
 fn group_spans_into_lines(spans: &[TextSpan]) -> Vec<TextLine> {
+    group_spans_into_lines_owned(spans.to_vec())
+}
+
+fn group_spans_into_lines_owned(mut spans: Vec<TextSpan>) -> Vec<TextLine> {
     if spans.is_empty() {
         return Vec::new();
     }
 
     // PDF y grows upward, so descending y is top-to-bottom reading order.
     // Sorting first lets adjacent spans cluster into lines in a single pass.
-    let mut ordered: Vec<&TextSpan> = spans.iter().collect();
-    ordered.sort_by(|a, b| b.y.partial_cmp(&a.y).unwrap_or(std::cmp::Ordering::Equal));
+    spans.sort_by(|a, b| b.y.partial_cmp(&a.y).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut lines: Vec<TextLine> = Vec::new();
 
-    for span in ordered {
+    for span in spans {
         match lines.last_mut() {
             Some(line) if same_line_y(line.y, span.y, span.font_size) => {
-                line.spans.push(span.clone());
+                line.spans.push(span);
             }
             _ => lines.push(TextLine {
                 y: span.y,
-                spans: vec![span.clone()],
+                spans: vec![span],
             }),
         }
     }
@@ -439,6 +513,219 @@ fn group_spans_into_lines(spans: &[TextSpan]) -> Vec<TextLine> {
 fn needs_space_between(previous: &TextSpan, next: &TextSpan) -> bool {
     let gap = next.x - (previous.x + previous.width);
     gap > previous.font_size * SPAN_SPACE_GAP_FACTOR
+}
+
+/// Column-assignment rule shared by the column split and its plausibility
+/// check: a span belongs to the left of a gutter when its center is left
+/// of it.
+fn span_is_left_of(span: &TextSpan, gutter_x: f32) -> bool {
+    span.x + span.width * 0.5 < gutter_x
+}
+
+// ── Step 3b: Bands and columns ─────────────────────────────────────
+
+/// Renders spans to markdown in visual reading order: the page is split into
+/// vertical bands at large line gaps, each band is split into columns where
+/// a whitespace gutter separates independent line flows, and blocks are then
+/// rendered band by band, column by column.
+fn spans_to_markdown(spans: &[TextSpan]) -> String {
+    let lines = group_spans_into_lines(spans);
+    // Body size must be judged page-wide: a heading isolated in its own band
+    // or column has no body text to compare against.
+    let body_size = estimate_body_font_size(&lines);
+    let mut md = String::new();
+
+    for band in split_into_bands(lines) {
+        for column in split_band_into_columns(band, 0) {
+            let rendered = lines_to_markdown(&column, body_size);
+            if !rendered.is_empty() {
+                md.push_str(&rendered);
+                md.push_str("\n\n");
+            }
+        }
+    }
+
+    md.trim_end().to_string()
+}
+
+/// Splits top-to-bottom ordered lines into bands at unusually large vertical
+/// gaps, so a full-width title does not mask the column gutter beneath it.
+fn split_into_bands(lines: Vec<TextLine>) -> Vec<Vec<TextLine>> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+
+    let mean_line_height = {
+        let heights: f32 = lines.iter().map(average_line_height).sum();
+        heights / lines.len() as f32
+    };
+    let gap_threshold = (mean_line_height * BAND_SPLIT_GAP_FACTOR).max(BAND_SPLIT_MIN_GAP);
+
+    let mut bands: Vec<Vec<TextLine>> = Vec::new();
+    let mut current: Vec<TextLine> = Vec::new();
+
+    for line in lines {
+        if let Some(previous) = current.last()
+            && (previous.y - line.y) > gap_threshold
+        {
+            bands.push(std::mem::take(&mut current));
+        }
+        current.push(line);
+    }
+    bands.push(current);
+
+    bands
+}
+
+/// Recursively splits a band into columns along detected gutters. Lines are
+/// re-clustered per column so text on the same height in different columns
+/// no longer shares a line.
+fn split_band_into_columns(lines: Vec<TextLine>, depth: usize) -> Vec<Vec<TextLine>> {
+    if depth >= MAX_COLUMN_SPLIT_DEPTH {
+        return vec![lines];
+    }
+
+    let Some(gutter_x) = find_column_gutter(&lines) else {
+        return vec![lines];
+    };
+
+    let spans: Vec<TextSpan> = lines.into_iter().flat_map(|line| line.spans).collect();
+    let (left, right): (Vec<TextSpan>, Vec<TextSpan>) = spans
+        .into_iter()
+        .partition(|span| span_is_left_of(span, gutter_x));
+
+    let mut columns = split_band_into_columns(group_spans_into_lines_owned(left), depth + 1);
+    columns.extend(split_band_into_columns(
+        group_spans_into_lines_owned(right),
+        depth + 1,
+    ));
+    columns
+}
+
+/// Looks for a vertical whitespace gutter separating two independent column
+/// flows. Returns the gutter's center x, or `None` when no plausible gutter
+/// exists (including when the gap is a table column divider, recognizable by
+/// rows aligned across it).
+fn find_column_gutter(lines: &[TextLine]) -> Option<f32> {
+    if lines.len() < MIN_COLUMN_LINES {
+        return None;
+    }
+
+    let (min_x, max_x) = lines
+        .iter()
+        .flat_map(|line| &line.spans)
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), span| {
+            (low.min(span.x), high.max(span.x + span.width))
+        });
+    let extent = max_x - min_x;
+    if !extent.is_finite() || extent <= COLUMN_GUTTER_MIN_WIDTH * 4.0 {
+        return None;
+    }
+
+    // Coverage histogram over x: how many spans touch each bin.
+    let bin_count = ((extent / GUTTER_BIN_WIDTH).ceil() as usize).clamp(1, 2048);
+    let bin_width = extent / bin_count as f32;
+    let mut coverage = vec![0u32; bin_count];
+    for line in lines {
+        for span in &line.spans {
+            let first = (((span.x - min_x) / bin_width) as usize).min(bin_count - 1);
+            let last = (((span.x + span.width - min_x) / bin_width) as usize).min(bin_count - 1);
+            for bin in &mut coverage[first..=last] {
+                *bin += 1;
+            }
+        }
+    }
+
+    let allowed_crossings = (lines.len() as f32 * MAX_GUTTER_CROSSING_FRACTION) as u32;
+    let min_gutter_bins = (COLUMN_GUTTER_MIN_WIDTH / bin_width).ceil() as usize;
+
+    let candidates: Vec<(usize, f32)> = low_coverage_runs(&coverage, allowed_crossings)
+        .into_iter()
+        .filter(|&(start, end)| end - start >= min_gutter_bins)
+        .map(|(start, end)| (end - start, min_x + (start + end) as f32 / 2.0 * bin_width))
+        .filter(|&(_, center)| {
+            let offset = center - min_x;
+            offset > extent * 0.2 && offset < extent * 0.8
+        })
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // Table detection is the expensive pass; run it only for the rare bands
+    // that actually have a plausible-looking gap.
+    let tables = detect_tables(lines);
+
+    candidates
+        .into_iter()
+        .filter(|&(_, center)| !gutter_is_inside_table(&tables, center))
+        .filter(|&(_, center)| column_split_is_plausible(lines, center))
+        .max_by_key(|&(run_len, _)| run_len)
+        .map(|(_, center)| center)
+}
+
+/// Maximal runs of bins whose coverage does not exceed `allowed_crossings`,
+/// as half-open `(start, end)` bin ranges.
+fn low_coverage_runs(coverage: &[u32], allowed_crossings: u32) -> Vec<(usize, usize)> {
+    let mut runs = Vec::new();
+    let mut run_start: Option<usize> = None;
+
+    for (bin, &count) in coverage.iter().enumerate() {
+        if count <= allowed_crossings {
+            run_start.get_or_insert(bin);
+        } else if let Some(start) = run_start.take() {
+            runs.push((start, bin));
+        }
+    }
+    if let Some(start) = run_start {
+        runs.push((start, coverage.len()));
+    }
+
+    runs
+}
+
+/// A whitespace run between the column anchors of a detected table is the
+/// table's own column divider, not a page-column gutter.
+fn gutter_is_inside_table(tables: &[DetectedTable], x: f32) -> bool {
+    tables.iter().any(|table| {
+        table
+            .columns
+            .first()
+            .zip(table.columns.last())
+            .is_some_and(|(&first, &last)| x > first && x < last)
+    })
+}
+
+/// A gutter divides true columns only when each side is an independent flow:
+/// both sides need several lines of their own, and lines spanning both sides
+/// (table rows, or wrapped cells sharing a row start) must stay a minority
+/// relative to either side.
+fn column_split_is_plausible(lines: &[TextLine], gutter_x: f32) -> bool {
+    let mut left_only = 0usize;
+    let mut right_only = 0usize;
+    let mut both = 0usize;
+
+    for line in lines {
+        let mut has_left = false;
+        let mut has_right = false;
+        for span in &line.spans {
+            if span_is_left_of(span, gutter_x) {
+                has_left = true;
+            } else {
+                has_right = true;
+            }
+        }
+        match (has_left, has_right) {
+            (true, true) => both += 1,
+            (true, false) => left_only += 1,
+            (false, true) => right_only += 1,
+            (false, false) => {}
+        }
+    }
+
+    left_only >= MIN_COLUMN_LINES
+        && right_only >= MIN_COLUMN_LINES
+        && both <= left_only.min(right_only)
 }
 
 // ── Step 4: Detect tables ──────────────────────────────────────────
@@ -719,13 +1006,12 @@ fn dominant_style(line: &TextLine) -> (f32, bool, bool) {
 
 // ── Step 7: Render markdown from blocks ────────────────────────────
 
-fn lines_to_markdown(lines: &[TextLine]) -> String {
+fn lines_to_markdown(lines: &[TextLine], body_size: f32) -> String {
     if lines.is_empty() {
         return String::new();
     }
 
     let tables = detect_tables(lines);
-    let body_size = estimate_body_font_size(lines);
     let blocks = group_into_blocks(lines, &tables, body_size);
 
     let mut md = String::new();
@@ -895,8 +1181,9 @@ fn escape_markdown_into(md: &mut String, text: &str) {
 /// markers — so `bold A` followed by `bold B` produces `**A B**`, not `**A** **B**`.
 fn render_spans_with_inline_formatting(md: &mut String, spans: &[InlineSpan<'_>]) {
     let mut current_state: Option<(bool, bool)> = None;
+    let at_line_start = md.is_empty() || md.ends_with('\n');
 
-    for (span, leading_space, strip_trailing_hyphen) in spans {
+    for (index, (span, leading_space, strip_trailing_hyphen)) in spans.iter().enumerate() {
         let next_state = (span.bold, span.italic);
 
         if Some(next_state) != current_state {
@@ -921,11 +1208,48 @@ fn render_spans_with_inline_formatting(md: &mut String, spans: &[InlineSpan<'_>]
         } else {
             span.text.as_str()
         };
-        escape_markdown_into(md, text);
+
+        // An unstyled paragraph starting with '#', '>', "- ", or "1. " would
+        // otherwise render as a heading, quote, or list.
+        if index == 0
+            && next_state == (false, false)
+            && at_line_start
+            && let Some(marker_offset) = block_marker_offset(text)
+        {
+            escape_markdown_into(md, &text[..marker_offset]);
+            md.push('\\');
+            escape_markdown_into(md, &text[marker_offset..]);
+        } else {
+            escape_markdown_into(md, text);
+        }
     }
 
     if let Some(state) = current_state {
         push_emphasis_close(md, state);
+    }
+}
+
+/// Detects a leading markdown block marker that would restructure the line
+/// ('#'/'>' anywhere, '-'/'+' or "1."/"1)" followed by a space or the end).
+/// Returns the byte offset of the character that needs escaping.
+fn block_marker_offset(text: &str) -> Option<usize> {
+    let mut chars = text.chars();
+    match chars.next()? {
+        '#' | '>' => Some(0),
+        '-' | '+' if matches!(chars.next(), None | Some(' ')) => Some(0),
+        first if first.is_ascii_digit() => {
+            // Byte offset: safe because ASCII digits are single-byte.
+            let digits = text
+                .bytes()
+                .take_while(|byte| byte.is_ascii_digit())
+                .count();
+            let mut rest = text[digits..].chars();
+            match rest.next() {
+                Some('.' | ')') if matches!(rest.next(), None | Some(' ')) => Some(digits),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -1509,6 +1833,155 @@ mod tests {
         assert_eq!(font_name_style("Times-Roman"), (false, false));
     }
 
+    // ── rotation mapping ───────────────────────────────────────────
+
+    #[test]
+    fn rotate_to_visual_maps_all_rotations() {
+        let (left, top, width, height) = (100.0, 400.0, 50.0, 12.0);
+        let (page_width, page_height) = (595.0, 842.0);
+        let rotate = |rotation| {
+            rotate_to_visual(left, top, width, height, rotation, page_width, page_height)
+        };
+
+        assert_eq!(
+            rotate(PdfPageRenderRotation::None),
+            (100.0, 400.0, 50.0, 12.0)
+        );
+        assert_eq!(
+            rotate(PdfPageRenderRotation::Degrees90),
+            (388.0, 495.0, 12.0, 50.0)
+        );
+        assert_eq!(
+            rotate(PdfPageRenderRotation::Degrees180),
+            (445.0, 454.0, 50.0, 12.0)
+        );
+        assert_eq!(
+            rotate(PdfPageRenderRotation::Degrees270),
+            (442.0, 150.0, 12.0, 50.0)
+        );
+    }
+
+    // ── line-start block markers ───────────────────────────────────
+
+    #[test]
+    fn block_marker_offset_detects_line_start_hazards() {
+        assert_eq!(block_marker_offset("# heading"), Some(0));
+        assert_eq!(block_marker_offset("> quote"), Some(0));
+        assert_eq!(block_marker_offset("- item"), Some(0));
+        assert_eq!(block_marker_offset("+ item"), Some(0));
+        assert_eq!(block_marker_offset("12. entry"), Some(2));
+        assert_eq!(block_marker_offset("12) entry"), Some(2));
+        assert_eq!(block_marker_offset("1."), Some(1));
+        assert_eq!(block_marker_offset("-item"), None);
+        assert_eq!(block_marker_offset("12.5 units"), None);
+        assert_eq!(block_marker_offset("word"), None);
+        assert_eq!(block_marker_offset(""), None);
+    }
+
+    #[test]
+    fn paragraph_starting_with_marker_is_escaped() {
+        let plain = span("# not a heading", 50.0, 700.0, 80.0, 12.0);
+        let mut md = String::new();
+        render_spans_with_inline_formatting(&mut md, &[(&plain, false, false)]);
+        assert_eq!(md, "\\# not a heading");
+
+        let numbered = span("1. not a list", 50.0, 700.0, 70.0, 12.0);
+        let mut md = String::new();
+        render_spans_with_inline_formatting(&mut md, &[(&numbered, false, false)]);
+        assert_eq!(md, "1\\. not a list");
+    }
+
+    #[test]
+    fn styled_paragraph_start_needs_no_marker_escape() {
+        let bold = styled_span("#tag", 50.0, 700.0, 12.0, true);
+        let mut md = String::new();
+        render_spans_with_inline_formatting(&mut md, &[(&bold, false, false)]);
+        assert_eq!(md, "**#tag**");
+    }
+
+    // ── bands and columns ──────────────────────────────────────────
+
+    fn column_fixture(aligned_rows: bool) -> Vec<TextSpan> {
+        let mut spans = Vec::new();
+        for row in 0..5 {
+            let left_y = 700.0 - row as f32 * 15.0;
+            let right_y = if aligned_rows { left_y } else { left_y - 8.0 };
+            spans.push(span(&format!("alpha {row}"), 60.0, left_y, 60.0, 12.0));
+            spans.push(span(&format!("beta {row}"), 320.0, right_y, 60.0, 12.0));
+        }
+        spans
+    }
+
+    #[test]
+    fn bands_split_at_large_vertical_gaps() {
+        let lines = group_spans_into_lines(&[
+            span("top", 50.0, 800.0, 20.0, 12.0),
+            span("middle", 50.0, 760.0, 30.0, 12.0),
+            span("bottom", 50.0, 745.0, 30.0, 12.0),
+        ]);
+        let bands = split_into_bands(lines);
+        assert_eq!(bands.len(), 2);
+        assert_eq!(bands[0].len(), 1);
+        assert_eq!(bands[1].len(), 2);
+    }
+
+    #[test]
+    fn two_column_layout_reads_left_column_first() {
+        let md = spans_to_markdown(&column_fixture(false));
+        let last_alpha = md.rfind("alpha 4").expect("alpha 4 present");
+        let first_beta = md.find("beta 0").expect("beta 0 present");
+        assert!(
+            last_alpha < first_beta,
+            "columns must render sequentially: {md}"
+        );
+    }
+
+    #[test]
+    fn aligned_rows_are_a_table_not_columns() {
+        let spans = column_fixture(true);
+        let lines = group_spans_into_lines(&spans);
+        assert!(find_column_gutter(&lines).is_none());
+
+        let md = spans_to_markdown(&spans);
+        assert!(
+            md.contains("| --- |"),
+            "aligned rows must render as a table: {md}"
+        );
+    }
+
+    #[test]
+    fn full_width_title_band_precedes_columns() {
+        let mut spans = vec![span("Grand Title Line", 60.0, 800.0, 320.0, 12.0)];
+        spans.extend(column_fixture(false));
+
+        let md = spans_to_markdown(&spans);
+        let title = md.find("Grand Title Line").expect("title present");
+        let first_alpha = md.find("alpha 0").expect("alpha 0 present");
+        let last_alpha = md.rfind("alpha 4").expect("alpha 4 present");
+        let first_beta = md.find("beta 0").expect("beta 0 present");
+        assert!(
+            title < first_alpha && last_alpha < first_beta,
+            "expected title, then left column, then right column: {md}"
+        );
+    }
+
+    #[test]
+    fn single_column_text_is_not_split() {
+        let spans: Vec<TextSpan> = (0..6)
+            .map(|row| {
+                span(
+                    &format!("full width paragraph line {row}"),
+                    60.0,
+                    700.0 - row as f32 * 15.0,
+                    380.0,
+                    12.0,
+                )
+            })
+            .collect();
+        let lines = group_spans_into_lines(&spans);
+        assert!(find_column_gutter(&lines).is_none());
+    }
+
     #[test]
     fn raw_chars_to_text_restores_word_spaces() {
         let mut chars = vec![
@@ -1550,7 +2023,7 @@ mod tests {
             text_line(685.0, vec![span("• Two", 50.0, 685.0, 40.0, 12.0)]),
         ];
 
-        let md = lines_to_markdown(&lines);
+        let md = lines_to_markdown(&lines, estimate_body_font_size(&lines));
         assert!(md.contains("# Title"), "missing heading in: {md}");
         assert!(
             md.contains("First body line with plenty of characters here second body line"),
@@ -1561,7 +2034,8 @@ mod tests {
 
     #[test]
     fn markdown_renders_table_with_separator() {
-        let md = lines_to_markdown(&table_lines());
+        let lines = table_lines();
+        let md = lines_to_markdown(&lines, estimate_body_font_size(&lines));
         assert!(md.contains("| Name | Value |"), "missing header row: {md}");
         assert!(md.contains("| --- | --- |"), "missing separator: {md}");
         assert!(md.contains("| Alpha | 1 |"), "missing data row: {md}");
@@ -1570,7 +2044,7 @@ mod tests {
 
     #[test]
     fn markdown_of_empty_lines_is_empty() {
-        assert_eq!(lines_to_markdown(&[]), "");
+        assert_eq!(lines_to_markdown(&[], 12.0), "");
     }
 
     #[test]
@@ -1588,7 +2062,7 @@ mod tests {
                 )],
             ),
         ];
-        let md = lines_to_markdown(&lines);
+        let md = lines_to_markdown(&lines, estimate_body_font_size(&lines));
         assert!(!md.contains("\n\n\n"));
         assert_eq!(md, md.trim());
     }

@@ -6,6 +6,38 @@ mod common;
 use common::{Text, pdfium, write_pdf};
 use pdf_cutter::{PageSelection, extract_text};
 
+/// Pins the pdfium behavior the extractor's font-size fallback depends on:
+/// for text drawn with a rotated matrix, `scaled_font_size` collapses to
+/// (approximately) zero, while `unscaled_font_size` keeps the /Tf size.
+#[test]
+fn rotated_text_reports_zero_scaled_font_size() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = dir.path().join("rotated.pdf");
+    crate::common::write_rotated_pdf(
+        &pdfium,
+        &input,
+        &[Text::plain(100.0, 100.0, 12.0, "alpha rotated")],
+    );
+
+    let document = pdfium.load_pdf_from_file(&input, None).expect("load");
+    let pages = document.pages();
+    let page = pages.get(0).expect("page");
+    let text = page.text().expect("text");
+    let first = text.chars().first().expect("first char");
+
+    assert!(
+        first.scaled_font_size().value <= 0.0,
+        "expected collapsed scaled size, got {}",
+        first.scaled_font_size().value
+    );
+    assert!(
+        (first.unscaled_font_size().value - 12.0).abs() < 0.5,
+        "expected /Tf size ~12, got {}",
+        first.unscaled_font_size().value
+    );
+}
+
 #[test]
 fn characters_beyond_page_edge_are_not_extracted() {
     let pdfium = pdfium();

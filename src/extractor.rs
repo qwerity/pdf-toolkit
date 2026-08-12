@@ -1,4 +1,6 @@
-use crate::document::{open_document, page_dimensions_px, page_info_for_page};
+use crate::document::{
+    open_document, page_count_u16, page_dimensions_px, page_index, page_info_for_page,
+};
 use crate::error::{PdfCutterError, Result};
 use crate::output::{
     OutputFormat, PageInfo, PageResult, PngSize, file_size_kb, output_stem,
@@ -81,7 +83,7 @@ pub fn extract_pages(
     let document = open_document(pdfium, pdf_path)?;
 
     let pages = document.pages();
-    let total_pages = pages.len();
+    let total_pages = page_count_u16(pages)?;
 
     if total_pages == 0 {
         return Err(PdfCutterError::EmptyDocument);
@@ -137,8 +139,7 @@ pub fn extract_pages(
     let mut source_pages = Vec::with_capacity(page_numbers.len());
 
     for page_number in page_numbers {
-        let source_page_index = page_number.get() - 1;
-        let page = match pages.get(source_page_index) {
+        let page = match pages.get(page_index(page_number)) {
             Ok(page) => page,
             Err(error) => {
                 warnings.push(ExtractionWarning::LoadPage {
@@ -156,7 +157,6 @@ pub fn extract_pages(
             pdfium,
             &document,
             &page,
-            source_page_index,
             OutputContext {
                 output_dir: &output_dir,
                 stem: &stem,
@@ -233,23 +233,23 @@ fn save_concat_pdf(
                 path: reserved_output.path.clone(),
                 source,
             })?;
-    let mut copied_pages = 0usize;
+    // Bounded by the deduplicated `NonZeroU16` selection, so it fits in u16.
+    let mut copied_pages: u16 = 0;
     let mut source_pages = Vec::with_capacity(page_numbers.len());
     let document_pages = source_document.pages();
 
     for &page_number in page_numbers {
-        let destination_page_index =
-            u16::try_from(copied_pages).expect("copied page counts must fit in u16");
+        let source_page_index = page_index(page_number);
 
         match output_document.pages_mut().copy_page_from_document(
             source_document,
-            page_number.get() - 1,
-            destination_page_index,
+            source_page_index,
+            i32::from(copied_pages),
         ) {
             Ok(()) => {
                 copied_pages += 1;
 
-                match document_pages.get(page_number.get() - 1) {
+                match document_pages.get(source_page_index) {
                     Ok(page) => source_pages.push(page_info_for_page(page_number.get(), &page)),
                     Err(error) => warnings.push(ExtractionWarning::LoadPage {
                         page_number: page_number.get(),
@@ -281,7 +281,7 @@ fn save_concat_pdf(
     Ok(Some(SavedConcatOutput {
         saved_page: SavedPage {
             output_path: reserved_output.path,
-            page_count: copied_pages,
+            page_count: usize::from(copied_pages),
             size_kb,
         },
         source_pages,
@@ -292,13 +292,10 @@ fn save_page(
     pdfium: &Pdfium,
     source_document: &PdfDocument<'_>,
     source_page: &PdfPage<'_>,
-    source_page_index: u16,
     output_context: OutputContext<'_>,
 ) -> Result<SavedPage> {
     match output_context.output_format {
-        OutputFormat::Pdf { .. } => {
-            save_pdf_page(pdfium, source_document, source_page_index, &output_context)
-        }
+        OutputFormat::Pdf { .. } => save_pdf_page(pdfium, source_document, &output_context),
         OutputFormat::Png { .. } => save_png_page(source_page, &output_context),
     }
 }
@@ -306,13 +303,13 @@ fn save_page(
 fn save_pdf_page(
     pdfium: &Pdfium,
     source_document: &PdfDocument<'_>,
-    source_page_index: u16,
     output_context: &OutputContext<'_>,
 ) -> Result<SavedPage> {
+    let page_number = output_context.page_number;
     let mut reserved_output = reserve_output_file(
         output_context.output_dir,
         output_context.stem,
-        output_context.page_number,
+        page_number,
         OutputFormat::Pdf { concat: false },
     )?;
     let mut output_document =
@@ -325,9 +322,9 @@ fn save_pdf_page(
 
     output_document
         .pages_mut()
-        .copy_page_from_document(source_document, source_page_index, 0)
+        .copy_page_from_document(source_document, page_index(page_number), 0)
         .map_err(|source| PdfCutterError::CopyPage {
-            page_number: source_page_index + 1,
+            page_number: page_number.get(),
             path: reserved_output.path.clone(),
             source,
         })?;
@@ -364,6 +361,7 @@ fn save_png_page(
 
     bitmap
         .as_image()
+        .map_err(|source| PdfCutterError::RenderPage { source })?
         .write_to(&mut reserved_output.file, image::ImageFormat::Png)
         .map_err(|source| PdfCutterError::SaveImage {
             format: "PNG",

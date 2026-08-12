@@ -1,4 +1,4 @@
-use crate::document::open_document;
+use crate::document::{open_document, page_count_u16, page_index};
 use crate::error::{PdfCutterError, Result};
 use crate::extractor::ExtractionWarning;
 use crate::output::{
@@ -44,7 +44,7 @@ pub fn extract_text(
 ) -> Result<TextExtractionReport> {
     let document = open_document(pdfium, pdf_path)?;
     let pages = document.pages();
-    let total_pages = pages.len();
+    let total_pages = page_count_u16(pages)?;
 
     if total_pages == 0 {
         return Err(PdfCutterError::EmptyDocument);
@@ -170,9 +170,8 @@ fn read_page_text(
     pages: &PdfPages<'_>,
     page_number: NonZeroU16,
 ) -> std::result::Result<String, ExtractionWarning> {
-    let source_page_index = page_number.get() - 1;
     let page = pages
-        .get(source_page_index)
+        .get(page_index(page_number))
         .map_err(|error| ExtractionWarning::LoadPage {
             page_number: page_number.get(),
             reason: error.to_string(),

@@ -1,8 +1,10 @@
 use crate::error::{PdfCutterError, Result};
 use crate::output::PageInfo;
 use pdfium_render::prelude::{
-    PdfDocument, PdfPage, PdfPageObject, PdfPageObjectCommon, PdfPageObjectsCommon, Pdfium,
+    PdfDocument, PdfPage, PdfPageObject, PdfPageObjectCommon, PdfPageObjectsCommon, PdfPages,
+    Pdfium,
 };
+use std::num::NonZeroU16;
 use std::path::Path;
 
 /// Detailed metadata for a PDF document.
@@ -13,33 +15,47 @@ pub struct DocumentInfo {
 
 /// Returns the page count for a PDF.
 pub fn document_page_count(pdfium: &Pdfium, pdf_path: &Path) -> Result<u16> {
-    Ok(open_document(pdfium, pdf_path)?.pages().len())
+    page_count_u16(open_document(pdfium, pdf_path)?.pages())
 }
 
 /// Returns page count and per-page metadata for a PDF.
 pub fn inspect_document(pdfium: &Pdfium, pdf_path: &Path) -> Result<DocumentInfo> {
     let document = open_document(pdfium, pdf_path)?;
     let pages = document.pages();
-    let page_count = pages.len();
+    let page_count = page_count_u16(pages)?;
     let mut page_info = Vec::with_capacity(usize::from(page_count));
 
-    for page_index in pages.as_range() {
-        let page_number = page_index + 1;
-        let page = pages
-            .get(page_index)
-            .map_err(|source| PdfCutterError::LoadPage {
-                path: pdf_path.to_path_buf(),
-                page_number,
-                source,
-            })?;
+    for page_number in (1..=page_count).filter_map(NonZeroU16::new) {
+        let page =
+            pages
+                .get(page_index(page_number))
+                .map_err(|source| PdfCutterError::LoadPage {
+                    path: pdf_path.to_path_buf(),
+                    page_number: page_number.get(),
+                    source,
+                })?;
 
-        page_info.push(page_info_for_page(page_number, &page));
+        page_info.push(page_info_for_page(page_number.get(), &page));
     }
 
     Ok(DocumentInfo {
         page_count,
         pages: page_info,
     })
+}
+
+/// Number of pages addressable by the crate's `u16`-based page model.
+/// Documents beyond `u16::MAX` pages (or negative pdfium error counts)
+/// are rejected instead of silently truncated.
+pub(crate) fn page_count_u16(pages: &PdfPages<'_>) -> Result<u16> {
+    let page_count = pages.len();
+    u16::try_from(page_count)
+        .map_err(|_| PdfCutterError::UnsupportedPageCount { actual: page_count })
+}
+
+/// Converts a one-based page number to a pdfium zero-based page index.
+pub(crate) fn page_index(page_number: NonZeroU16) -> i32 {
+    i32::from(page_number.get()) - 1
 }
 
 pub(crate) fn open_document<'pdfium>(

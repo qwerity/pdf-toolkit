@@ -25,6 +25,11 @@ pub enum PdfCutterError {
     #[error("the document contains no pages")]
     EmptyDocument,
     #[error(
+        "the document reports an unsupported page count ({actual}); at most {max} pages are supported",
+        max = u16::MAX
+    )]
+    UnsupportedPageCount { actual: i32 },
+    #[error(
         "failed to bind to pdfium library; checked the executable directory, system library, ./, ./dist/"
     )]
     PdfiumBinding,

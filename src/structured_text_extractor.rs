@@ -1,4 +1,4 @@
-use crate::document::open_document;
+use crate::document::{open_document, page_count_u16, page_index};
 use crate::error::{PdfCutterError, Result};
 use crate::extractor::ExtractionWarning;
 use crate::page_selection::PageSelection;
@@ -129,7 +129,7 @@ pub fn extract_structured_text(
 ) -> Result<StructuredExtractionReport> {
     let document = open_document(pdfium, pdf_path)?;
     let pages = document.pages();
-    let total_pages = pages.len();
+    let total_pages = page_count_u16(pages)?;
 
     if total_pages == 0 {
         return Err(PdfCutterError::EmptyDocument);
@@ -170,9 +170,8 @@ fn extract_page_structured(
     page_number: NonZeroU16,
     format: StructuredOutputFormat,
 ) -> std::result::Result<StructuredPage, ExtractionWarning> {
-    let page_index = page_number.get() - 1;
     let page = pages
-        .get(page_index)
+        .get(page_index(page_number))
         .map_err(|error| ExtractionWarning::LoadPage {
             page_number: page_number.get(),
             reason: error.to_string(),

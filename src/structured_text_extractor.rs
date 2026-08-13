@@ -132,9 +132,15 @@ enum LineKind {
 }
 
 struct DetectedTable {
+    /// First line of the table. Derived: equals `rows[0][0]`.
     start_line: usize,
+    /// One past the table's last line. Derived: equals the last row's last
+    /// line index + 1.
     end_line: usize,
     columns: Vec<f32>,
+    /// Logical rows as groups of line indices: wrapped cell text lines are
+    /// grouped with the row line they continue.
+    rows: Vec<Vec<usize>>,
 }
 
 enum Block {
@@ -731,77 +737,159 @@ fn column_split_is_plausible(lines: &[TextLine], gutter_x: f32) -> bool {
 // ── Step 4: Detect tables ──────────────────────────────────────────
 
 fn detect_tables(lines: &[TextLine]) -> Vec<DetectedTable> {
-    let line_xs: Vec<Vec<f32>> = lines
-        .iter()
-        .map(|l| l.spans.iter().map(|s| s.x).collect())
-        .collect();
-
     let mut tables = Vec::new();
     let mut i = 0;
 
     while i < lines.len() {
-        if line_xs[i].len() < MIN_TABLE_COLUMNS {
-            i += 1;
-            continue;
-        }
-
-        // Collect column anchors as the union of x-positions across rows that align.
-        let mut anchors = line_xs[i].clone();
-        let mut end = i + 1;
-
-        while end < lines.len() {
-            let candidate = &line_xs[end];
-            if candidate.len() < MIN_TABLE_COLUMNS {
-                break;
+        match detect_table_at(lines, i) {
+            Some(table) => {
+                i = table.end_line;
+                tables.push(table);
             }
-
-            let aligned = count_aligned(&anchors, candidate);
-            // A candidate is part of the table if a majority of its cols hit anchors.
-            if aligned >= MIN_TABLE_COLUMNS && aligned * 2 >= candidate.len() {
-                // Extend anchors with any new column positions.
-                for &cx in candidate {
-                    if !anchors
-                        .iter()
-                        .any(|&a| (a - cx).abs() < COLUMN_ANCHOR_TOLERANCE)
-                    {
-                        anchors.push(cx);
-                    }
-                }
-                end += 1;
-            } else {
-                break;
-            }
+            None => i += 1,
         }
-
-        if end - i >= MIN_TABLE_ROWS {
-            anchors.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            // Keep only anchors that have hits in at least half the rows (drops noise).
-            let final_anchors = filter_anchors(&anchors, &line_xs[i..end]);
-            if final_anchors.len() >= MIN_TABLE_COLUMNS {
-                tables.push(DetectedTable {
-                    start_line: i,
-                    end_line: end,
-                    columns: final_anchors,
-                });
-                i = end;
-                continue;
-            }
-        }
-
-        i += 1;
     }
 
     tables
 }
 
+/// Tries to grow a table starting at `start`. A table is a run of "row"
+/// lines (several spans, mostly aligned to the accumulated column anchors)
+/// interleaved with "continuation" lines — wrapped cell text whose spans
+/// each stay inside a single column's territory. Continuations attach to the
+/// logical row above them.
+fn detect_table_at(lines: &[TextLine], start: usize) -> Option<DetectedTable> {
+    if lines[start].spans.len() < MIN_TABLE_COLUMNS {
+        return None;
+    }
+
+    let line_xs = |line: &TextLine| -> Vec<f32> { line.spans.iter().map(|s| s.x).collect() };
+
+    // Column anchors are the union of x-positions across rows that align,
+    // kept sorted so the continuation check can search them directly.
+    let first_xs = line_xs(&lines[start]);
+    let mut anchors = first_xs.clone();
+    anchors.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mut row_xs: Vec<Vec<f32>> = vec![first_xs];
+    let mut end = start + 1;
+
+    while end < lines.len() {
+        let line = &lines[end];
+
+        if line.spans.len() >= MIN_TABLE_COLUMNS {
+            let candidate = line_xs(line);
+            let aligned = count_aligned(&anchors, &candidate);
+
+            // A candidate is a row if a majority of its columns hit anchors.
+            if aligned >= MIN_TABLE_COLUMNS && aligned * 2 >= candidate.len() {
+                for &cx in &candidate {
+                    if !aligned_to_any(&anchors, cx) {
+                        let position = anchors.partition_point(|&a| a < cx);
+                        anchors.insert(position, cx);
+                    }
+                }
+                row_xs.push(candidate);
+                end += 1;
+                continue;
+            }
+        }
+
+        if is_continuation_line(line, &anchors) {
+            end += 1;
+        } else {
+            break;
+        }
+    }
+
+    if row_xs.len() < MIN_TABLE_ROWS {
+        return None;
+    }
+
+    // Keep only anchors that have hits in at least half the rows (drops noise).
+    let final_anchors = filter_anchors(&anchors, &row_xs);
+    if final_anchors.len() < MIN_TABLE_COLUMNS {
+        return None;
+    }
+
+    let rows = cluster_lines_into_rows(lines, start, end, &final_anchors);
+
+    Some(DetectedTable {
+        start_line: start,
+        end_line: end,
+        columns: final_anchors,
+        rows,
+    })
+}
+
+/// True when every span of the line sits inside a single column's territory:
+/// aligned to an anchor and not reaching into the next column. Full-width
+/// paragraph text following a table fails this and ends the table.
+/// `sorted_anchors` must be in ascending order.
+fn is_continuation_line(line: &TextLine, sorted_anchors: &[f32]) -> bool {
+    !line.spans.is_empty()
+        && line
+            .spans
+            .iter()
+            .all(|span| span_stays_in_column(span, sorted_anchors))
+}
+
+fn span_stays_in_column(span: &TextSpan, sorted_anchors: &[f32]) -> bool {
+    let column = nearest_column(span.x, sorted_anchors);
+    if !is_aligned(sorted_anchors[column], span.x) {
+        return false;
+    }
+
+    match sorted_anchors.get(column + 1) {
+        Some(&next_anchor) => span.x + span.width < next_anchor,
+        None => true,
+    }
+}
+
+/// The single alignment rule shared by table growth, anchor filtering, row
+/// clustering, and the continuation check.
+fn is_aligned(anchor: f32, x: f32) -> bool {
+    (anchor - x).abs() < COLUMN_ANCHOR_TOLERANCE
+}
+
+fn aligned_to_any(anchors: &[f32], x: f32) -> bool {
+    anchors.iter().any(|&anchor| is_aligned(anchor, x))
+}
+
+/// Groups the table's lines into logical rows: a line with content in the
+/// first column starts a new row, every other line continues the row above
+/// (wrapped cell text).
+fn cluster_lines_into_rows(
+    lines: &[TextLine],
+    start: usize,
+    end: usize,
+    columns: &[f32],
+) -> Vec<Vec<usize>> {
+    let first_anchor = columns[0];
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+
+    for (offset, line) in lines[start..end].iter().enumerate() {
+        let index = start + offset;
+        // A span opens a new row only when the first column is its nearest
+        // anchor — plain distance would also match spans of a narrowly
+        // indented second column.
+        let starts_row = line
+            .spans
+            .iter()
+            .any(|span| nearest_column(span.x, columns) == 0 && is_aligned(first_anchor, span.x));
+
+        match rows.last_mut() {
+            Some(row) if !starts_row => row.push(index),
+            _ => rows.push(vec![index]),
+        }
+    }
+
+    rows
+}
+
 fn count_aligned(anchors: &[f32], candidate: &[f32]) -> usize {
     candidate
         .iter()
-        .filter(|&&cx| {
-            anchors
-                .iter()
-                .any(|&a| (a - cx).abs() < COLUMN_ANCHOR_TOLERANCE)
-        })
+        .filter(|&&cx| aligned_to_any(anchors, cx))
         .count()
 }
 
@@ -809,12 +897,9 @@ fn filter_anchors(anchors: &[f32], rows: &[Vec<f32>]) -> Vec<f32> {
     let threshold = (rows.len() / 2).max(1);
     anchors
         .iter()
-        .filter(|&&a| {
+        .filter(|&&anchor| {
             rows.iter()
-                .filter(|row| {
-                    row.iter()
-                        .any(|&cx| (cx - a).abs() < COLUMN_ANCHOR_TOLERANCE)
-                })
+                .filter(|row| row.iter().any(|&cx| is_aligned(anchor, cx)))
                 .count()
                 >= threshold
         })
@@ -1267,7 +1352,7 @@ fn push_emphasis_close(md: &mut String, state: (bool, bool)) {
 }
 
 fn render_table_markdown(md: &mut String, lines: &[TextLine], table: &DetectedTable) {
-    if table.start_line >= table.end_line {
+    if table.rows.is_empty() {
         return;
     }
 
@@ -1279,24 +1364,28 @@ fn render_table_markdown(md: &mut String, lines: &[TextLine], table: &DetectedTa
 
     md.push('\n');
 
-    for (line_idx, line) in lines
-        .iter()
-        .enumerate()
-        .take(table.end_line)
-        .skip(table.start_line)
-    {
+    for (row_index, row) in table.rows.iter().enumerate() {
         let mut cells: Vec<String> = vec![String::new(); num_cols];
-        let mut previous_span_in_cell: Vec<Option<&TextSpan>> = vec![None; num_cols];
-        for span in &line.spans {
-            let col_idx = nearest_column(span.x, columns);
-            if previous_span_in_cell[col_idx]
-                .is_none_or(|previous| needs_space_between(previous, span))
-                && !cells[col_idx].is_empty()
-            {
-                cells[col_idx].push(' ');
+        // (previous span, its line index) per cell, to decide separators.
+        let mut cell_state: Vec<Option<(&TextSpan, usize)>> = vec![None; num_cols];
+
+        for &line_index in row {
+            for span in &lines[line_index].spans {
+                let col_idx = nearest_column(span.x, columns);
+                let wants_space = match cell_state[col_idx] {
+                    // Wrapped text from a later line always joins with a space;
+                    // same-line neighbors join on the geometric gap rule.
+                    Some((previous, previous_line)) => {
+                        previous_line != line_index || needs_space_between(previous, span)
+                    }
+                    None => false,
+                };
+                if wants_space && !cells[col_idx].is_empty() {
+                    cells[col_idx].push(' ');
+                }
+                escape_markdown_into(&mut cells[col_idx], &span.text);
+                cell_state[col_idx] = Some((span, line_index));
             }
-            escape_markdown_into(&mut cells[col_idx], &span.text);
-            previous_span_in_cell[col_idx] = Some(span);
         }
 
         md.push('|');
@@ -1307,7 +1396,8 @@ fn render_table_markdown(md: &mut String, lines: &[TextLine], table: &DetectedTa
         }
         md.push('\n');
 
-        if line_idx == table.start_line {
+        // Markdown tables require a separator after the first row.
+        if row_index == 0 {
             md.push('|');
             for _ in 0..num_cols {
                 md.push_str(" --- |");
@@ -1580,6 +1670,94 @@ mod tests {
         assert_eq!(tables[0].start_line, 0);
         assert_eq!(tables[0].end_line, 3);
         assert_eq!(tables[0].columns.len(), 2);
+        assert_eq!(tables[0].rows, vec![vec![0], vec![1], vec![2]]);
+    }
+
+    fn wrapped_table_lines() -> Vec<TextLine> {
+        vec![
+            text_line(
+                700.0,
+                vec![
+                    span("A1", 60.0, 700.0, 15.0, 12.0),
+                    span("Agriculture", 150.0, 700.0, 60.0, 12.0),
+                    span("5 acres", 300.0, 700.0, 40.0, 12.0),
+                ],
+            ),
+            text_line(
+                685.0,
+                vec![span("One-Family Dwellings,", 150.0, 685.0, 100.0, 12.0)],
+            ),
+            text_line(
+                670.0,
+                vec![span("Parks and Playgrounds", 150.0, 670.0, 100.0, 12.0)],
+            ),
+            text_line(
+                655.0,
+                vec![
+                    span("A2", 60.0, 655.0, 15.0, 12.0),
+                    span("More farming", 150.0, 655.0, 70.0, 12.0),
+                    span("2 acres", 300.0, 655.0, 40.0, 12.0),
+                ],
+            ),
+            text_line(
+                640.0,
+                vec![span("with extra uses", 150.0, 640.0, 80.0, 12.0)],
+            ),
+        ]
+    }
+
+    #[test]
+    fn detect_tables_absorbs_wrapped_cell_lines() {
+        let lines = wrapped_table_lines();
+        let tables = detect_tables(&lines);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].start_line, 0);
+        assert_eq!(tables[0].end_line, 5);
+        assert_eq!(tables[0].rows, vec![vec![0, 1, 2], vec![3, 4]]);
+    }
+
+    #[test]
+    fn markdown_merges_wrapped_cells_into_their_row() {
+        let lines = wrapped_table_lines();
+        let md = lines_to_markdown(&lines, estimate_body_font_size(&lines));
+        assert!(
+            md.contains(
+                "| A1 | Agriculture One-Family Dwellings, Parks and Playgrounds | 5 acres |"
+            ),
+            "row 1 must merge wrapped text: {md}"
+        );
+        assert!(
+            md.contains("| A2 | More farming with extra uses | 2 acres |"),
+            "row 2 must merge wrapped text: {md}"
+        );
+    }
+
+    #[test]
+    fn wide_text_after_table_ends_the_table() {
+        let mut lines = wrapped_table_lines();
+        lines.push(text_line(
+            625.0,
+            vec![span(
+                "This general note runs across the whole width of the page after the table",
+                60.0,
+                625.0,
+                320.0,
+                12.0,
+            )],
+        ));
+
+        let tables = detect_tables(&lines);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(
+            tables[0].end_line, 5,
+            "wide paragraph must not be swallowed into the table"
+        );
+
+        let md = lines_to_markdown(&lines, estimate_body_font_size(&lines));
+        assert!(
+            md.contains("This general note runs across"),
+            "trailing paragraph must render: {md}"
+        );
     }
 
     #[test]

@@ -808,6 +808,44 @@ fn structured_reads_rotated_pages_in_visual_order() {
 }
 
 #[test]
+fn structured_merges_wrapped_table_rows() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = fixture_path(dir.path(), "wrapped_table.pdf");
+    write_pdf(
+        &pdfium,
+        &input,
+        &[vec![
+            Text::plain(72.0, 700.0, 12.0, "A1"),
+            Text::plain(200.0, 700.0, 12.0, "Agriculture uses"),
+            Text::plain(430.0, 700.0, 12.0, "5 acres"),
+            Text::plain(200.0, 685.0, 12.0, "One family dwellings"),
+            Text::plain(72.0, 670.0, 12.0, "A2"),
+            Text::plain(200.0, 670.0, 12.0, "More farming"),
+            Text::plain(430.0, 670.0, 12.0, "2 acres"),
+        ]],
+    );
+
+    let report = extract_structured_text(
+        &pdfium,
+        &input,
+        PageSelection::All,
+        StructuredOutputFormat::MarkdownOnly,
+    )
+    .expect("extract structured text");
+
+    let markdown = &report.pages[0].markdown;
+    assert!(
+        markdown.contains("| A1 | Agriculture uses One family dwellings | 5 acres |"),
+        "wrapped cell must merge into its row: {markdown}"
+    );
+    assert!(
+        markdown.contains("| A2 | More farming | 2 acres |"),
+        "following row must stay intact: {markdown}"
+    );
+}
+
+#[test]
 fn structured_selection_reports_out_of_bounds() {
     let pdfium = pdfium();
     let dir = tempfile::tempdir().expect("temp dir");

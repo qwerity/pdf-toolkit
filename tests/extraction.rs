@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    Text, minimal_empty_pdf, pdfium, write_pdf, write_pdf_with_image, write_rotated_pdf,
-    write_simple_pdf,
+    Text, minimal_empty_pdf, pdfium, write_garbled_pdf, write_pdf, write_pdf_with_image,
+    write_rotated_pdf, write_simple_pdf,
 };
 use pdf_cutter::error::PdfCutterError;
 use pdf_cutter::{
@@ -492,13 +492,7 @@ fn garbled_page_is_skipped_with_unreadable_warning() {
     let pdfium = pdfium();
     let dir = tempfile::tempdir().expect("temp dir");
     let input = fixture_path(dir.path(), "garbled.pdf");
-    // Split across lines so every character stays on the page: pdfium drops
-    // characters positioned beyond the page edge from text extraction.
-    let garbled_line = "X9#Z 7Q$W 3K%T ".repeat(4);
-    let garbled_lines: Vec<Text> = (0..4)
-        .map(|row| Text::plain(72.0, 720.0 - row as f32 * 20.0, 12.0, &garbled_line))
-        .collect();
-    write_pdf(&pdfium, &input, &[garbled_lines]);
+    write_garbled_pdf(&pdfium, &input);
     let out_dir = dir.path().join("out");
 
     let report = extract_text(&pdfium, &input, PageSelection::All, false, Some(&out_dir))
@@ -672,11 +666,7 @@ fn structured_skips_garbled_pages_with_warning() {
     let pdfium = pdfium();
     let dir = tempfile::tempdir().expect("temp dir");
     let input = fixture_path(dir.path(), "garbled.pdf");
-    let garbled_line = "X9#Z 7Q$W 3K%T ".repeat(4);
-    let garbled_lines: Vec<Text> = (0..4)
-        .map(|row| Text::plain(72.0, 720.0 - row as f32 * 20.0, 12.0, &garbled_line))
-        .collect();
-    write_pdf(&pdfium, &input, &[garbled_lines]);
+    write_garbled_pdf(&pdfium, &input);
 
     let report = extract_structured_text(
         &pdfium,

@@ -114,6 +114,21 @@ pub fn write_simple_pdf(pdfium: &Pdfium, path: &Path, page_count: usize) {
     write_pdf(pdfium, path, &pages);
 }
 
+/// One unit of text that defeats the readability heuristic: vowel-less
+/// uppercase words with heavy digit/symbol noise.
+pub const GARBLED_UNIT: &str = "X9#Z 7Q$W 3K%T ";
+
+/// Writes a one-page fixture whose text is statistically unreadable.
+/// The text is split across lines so every character stays on the page:
+/// pdfium drops characters positioned beyond the page edge.
+pub fn write_garbled_pdf(pdfium: &Pdfium, path: &Path) {
+    let garbled_line = GARBLED_UNIT.repeat(4);
+    let garbled_lines: Vec<Text> = (0..4)
+        .map(|row| Text::plain(72.0, 720.0 - row as f32 * 20.0, 12.0, &garbled_line))
+        .collect();
+    write_pdf(pdfium, path, &[garbled_lines]);
+}
+
 /// Writes a one-page fixture that mimics a rotated scan: every text object
 /// is pre-rotated 90° counter-clockwise in page space and the page carries a
 /// 90° clockwise `/Rotate` entry, so the text reads normally when displayed.

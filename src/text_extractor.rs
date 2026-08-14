@@ -6,7 +6,7 @@ use crate::output::{
     reserve_output_file_with_extension, resolve_output_dir,
 };
 use crate::page_selection::PageSelection;
-use crate::text_quality::is_probably_unreadable_text;
+use crate::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
 use pdfium_render::prelude::{PdfPage, PdfPages, Pdfium, PdfiumError};
 use std::io::Write;
 use std::num::NonZeroU16;
@@ -216,19 +216,6 @@ fn page_marker(page_number: NonZeroU16) -> String {
     format!("____Page{}____", page_number.get())
 }
 
-fn sanitize_extracted_text(text: &str) -> String {
-    let filtered = text
-        .chars()
-        .filter(|ch| is_allowed_text_char(*ch))
-        .collect::<String>();
-
-    filtered.trim_end().to_string()
-}
-
-fn is_allowed_text_char(ch: char) -> bool {
-    !ch.is_control() || matches!(ch, '\n' | '\r' | '\t')
-}
-
 fn write_text(reserved_output: &mut OutputReservation, text: &str) -> Result<()> {
     reserved_output
         .file
@@ -264,21 +251,6 @@ fn finalize_text_output(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn sanitize_removes_disallowed_control_characters() {
-        assert_eq!(sanitize_extracted_text("a\u{0}b\u{7}c"), "abc");
-    }
-
-    #[test]
-    fn sanitize_keeps_newlines_tabs_and_carriage_returns() {
-        assert_eq!(sanitize_extracted_text("a\tb\nc\rd"), "a\tb\nc\rd");
-    }
-
-    #[test]
-    fn sanitize_trims_trailing_whitespace_only() {
-        assert_eq!(sanitize_extracted_text("  a b \n\t "), "  a b");
-    }
 
     #[test]
     fn page_marker_format_is_stable() {

@@ -2,9 +2,9 @@ use crate::document::{open_document, page_count_u16, page_index};
 use crate::error::{PdfCutterError, Result};
 use crate::extractor::ExtractionWarning;
 use crate::page_selection::PageSelection;
-use crate::text_quality::is_probably_unreadable_text;
+use crate::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
 use pdfium_render::prelude::{
-    PdfFontWeight, PdfPage, PdfPageRenderRotation, PdfPages, Pdfium, PdfiumError,
+    PdfFontWeight, PdfPage, PdfPageRenderRotation, PdfPageText, PdfPages, Pdfium,
 };
 use serde::Serialize;
 use std::num::NonZeroU16;
@@ -132,15 +132,29 @@ enum LineKind {
 }
 
 struct DetectedTable {
-    /// First line of the table. Derived: equals `rows[0][0]`.
-    start_line: usize,
-    /// One past the table's last line. Derived: equals the last row's last
-    /// line index + 1.
-    end_line: usize,
     columns: Vec<f32>,
-    /// Logical rows as groups of line indices: wrapped cell text lines are
-    /// grouped with the row line they continue.
+    /// Logical rows as groups of contiguous line indices: wrapped cell text
+    /// lines are grouped with the row line they continue. Never empty.
     rows: Vec<Vec<usize>>,
+}
+
+impl DetectedTable {
+    /// First line of the table.
+    fn start_line(&self) -> usize {
+        self.rows[0][0]
+    }
+
+    /// One past the table's last line.
+    fn end_line(&self) -> usize {
+        self.rows
+            .last()
+            .and_then(|row| row.last())
+            .map_or(0, |&line| line + 1)
+    }
+
+    fn contains_line(&self, line: usize) -> bool {
+        line >= self.start_line() && line < self.end_line()
+    }
 }
 
 enum Block {
@@ -217,17 +231,20 @@ fn extract_page_structured(
             reason: error.to_string(),
         })?;
 
-    let raw_chars = extract_raw_chars(&page).map_err(|error| ExtractionWarning::LoadPage {
+    let text = page.text().map_err(|error| ExtractionWarning::LoadPage {
         page_number: page_number.get(),
         reason: error.to_string(),
     })?;
 
-    if is_probably_unreadable_text(&raw_chars_to_text(&raw_chars)) {
+    // Judge the same sanitized page text as the plain-text extractor, so the
+    // shared heuristic's thresholds apply to one input distribution.
+    if is_probably_unreadable_text(&sanitize_extracted_text(&text.all())) {
         return Err(ExtractionWarning::UnreadableText {
             page_number: page_number.get(),
         });
     }
 
+    let raw_chars = extract_raw_chars(&page, &text);
     let spans = group_chars_into_spans(&raw_chars);
     let markdown = spans_to_markdown(&spans);
 
@@ -245,14 +262,15 @@ fn extract_page_structured(
 
 // ── Step 1: Extract raw characters ─────────────────────────────────
 
-fn extract_raw_chars(page: &PdfPage<'_>) -> std::result::Result<Vec<RawChar>, PdfiumError> {
-    let text = page.text()?;
+fn extract_raw_chars(page: &PdfPage<'_>, text: &PdfPageText<'_>) -> Vec<RawChar> {
     let rotation = page.rotation().unwrap_or(PdfPageRenderRotation::None);
     let page_width = page.width().value;
     let page_height = page.height().value;
     let mut chars = Vec::new();
     let mut pending_space = false;
-    let mut last_font: Option<(Rc<str>, bool, bool)> = None;
+    // Pages rarely use more than a handful of fonts; a linearly probed list
+    // keeps style lookups cached even when runs alternate between fonts.
+    let mut font_cache: Vec<(Rc<str>, bool, bool)> = Vec::new();
 
     for char_ref in text.chars().iter() {
         let ch = match char_ref.unicode_char() {
@@ -284,27 +302,26 @@ fn extract_raw_chars(page: &PdfPage<'_>) -> std::result::Result<Vec<RawChar>, Pd
             continue;
         }
 
-        // Consecutive characters usually share a font; weight, flags, and the
-        // name-derived style are font properties, so they are computed once
-        // per font run and reused. Only the bold-reenforced check remains per
-        // character (it reflects the text render mode, not the font).
+        // Weight, flags, and the name-derived style are font properties, so
+        // they are computed once per font and reused. Only the
+        // bold-reenforced check remains per character (it reflects the text
+        // render mode, not the font).
         let raw_font_name = char_ref.font_name();
-        let (font_name, font_bold, font_italic) = match &last_font {
-            Some((name, font_bold, font_italic)) if **name == raw_font_name => {
-                (Rc::clone(name), *font_bold, *font_italic)
-            }
-            _ => {
-                let name: Rc<str> = raw_font_name.into();
-                let (name_bold, name_italic) = font_name_style(&name);
-                let font_bold = name_bold
-                    || char_ref
-                        .font_weight()
-                        .is_some_and(|w| font_weight_numeric(&w) >= 600);
-                let font_italic = name_italic || char_ref.font_is_italic();
-                last_font = Some((Rc::clone(&name), font_bold, font_italic));
-                (name, font_bold, font_italic)
-            }
-        };
+        let (font_name, font_bold, font_italic) =
+            match font_cache.iter().find(|(name, ..)| **name == raw_font_name) {
+                Some((name, font_bold, font_italic)) => (Rc::clone(name), *font_bold, *font_italic),
+                None => {
+                    let name: Rc<str> = raw_font_name.into();
+                    let (name_bold, name_italic) = font_name_style(&name);
+                    let font_bold = name_bold
+                        || char_ref
+                            .font_weight()
+                            .is_some_and(|w| font_weight_numeric(&w) >= 600);
+                    let font_italic = name_italic || char_ref.font_is_italic();
+                    font_cache.push((Rc::clone(&name), font_bold, font_italic));
+                    (name, font_bold, font_italic)
+                }
+            };
 
         let bold = font_bold || char_ref.font_is_bold_reenforced();
 
@@ -336,7 +353,7 @@ fn extract_raw_chars(page: &PdfPage<'_>) -> std::result::Result<Vec<RawChar>, Pd
         pending_space = false;
     }
 
-    Ok(chars)
+    chars
 }
 
 /// Maps a glyph box from unrotated page space into visual (display) space
@@ -366,19 +383,6 @@ fn rotate_to_visual(
         // 270° clockwise: visual point = (page_height - y, x).
         PdfPageRenderRotation::Degrees270 => (page_height - top, left + width, height, width),
     }
-}
-
-/// Rebuilds plain text (with word spaces) from raw characters so the shared
-/// garbled-text heuristic can judge the page.
-fn raw_chars_to_text(chars: &[RawChar]) -> String {
-    let mut text = String::with_capacity(chars.len() * 2);
-    for raw in chars {
-        if raw.space_before && !text.is_empty() {
-            text.push(' ');
-        }
-        text.push(raw.ch);
-    }
-    text
 }
 
 /// Fallback style detection from the font name, for fonts that carry no
@@ -476,9 +480,10 @@ fn horizontal_gap_ok(span: &TextSpan, raw: &RawChar) -> bool {
 /// Clusters spans into lines by vertical position and orders the result
 /// visually: lines top-to-bottom, spans within a line left-to-right.
 ///
-/// Spans are matched against every existing line (not only the previous one)
-/// because PDF content streams frequently emit text out of visual order
-/// (e.g. footers first, or two-column layouts interleaved).
+/// Spans are sorted top-to-bottom first, so a single pass comparing each
+/// span against the current line suffices even when the PDF content stream
+/// emits text out of visual order (e.g. footers first, or two-column
+/// layouts interleaved).
 fn group_spans_into_lines(spans: &[TextSpan]) -> Vec<TextLine> {
     group_spans_into_lines_owned(spans.to_vec())
 }
@@ -737,13 +742,20 @@ fn column_split_is_plausible(lines: &[TextLine], gutter_x: f32) -> bool {
 // ── Step 4: Detect tables ──────────────────────────────────────────
 
 fn detect_tables(lines: &[TextLine]) -> Vec<DetectedTable> {
+    // Precomputed once: a rejected table attempt retries at the next line
+    // and rescans largely the same lines.
+    let line_xs: Vec<Vec<f32>> = lines
+        .iter()
+        .map(|line| line.spans.iter().map(|span| span.x).collect())
+        .collect();
+
     let mut tables = Vec::new();
     let mut i = 0;
 
     while i < lines.len() {
-        match detect_table_at(lines, i) {
+        match detect_table_at(lines, &line_xs, i) {
             Some(table) => {
-                i = table.end_line;
+                i = table.end_line();
                 tables.push(table);
             }
             None => i += 1,
@@ -758,31 +770,31 @@ fn detect_tables(lines: &[TextLine]) -> Vec<DetectedTable> {
 /// interleaved with "continuation" lines — wrapped cell text whose spans
 /// each stay inside a single column's territory. Continuations attach to the
 /// logical row above them.
-fn detect_table_at(lines: &[TextLine], start: usize) -> Option<DetectedTable> {
-    if lines[start].spans.len() < MIN_TABLE_COLUMNS {
+fn detect_table_at(
+    lines: &[TextLine],
+    line_xs: &[Vec<f32>],
+    start: usize,
+) -> Option<DetectedTable> {
+    if line_xs[start].len() < MIN_TABLE_COLUMNS {
         return None;
     }
 
-    let line_xs = |line: &TextLine| -> Vec<f32> { line.spans.iter().map(|s| s.x).collect() };
-
     // Column anchors are the union of x-positions across rows that align,
     // kept sorted so the continuation check can search them directly.
-    let first_xs = line_xs(&lines[start]);
-    let mut anchors = first_xs.clone();
+    let mut anchors = line_xs[start].clone();
     anchors.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let mut row_xs: Vec<Vec<f32>> = vec![first_xs];
+    let mut row_xs: Vec<&[f32]> = vec![&line_xs[start]];
     let mut end = start + 1;
 
     while end < lines.len() {
-        let line = &lines[end];
+        let candidate = &line_xs[end];
 
-        if line.spans.len() >= MIN_TABLE_COLUMNS {
-            let candidate = line_xs(line);
-            let aligned = count_aligned(&anchors, &candidate);
+        if candidate.len() >= MIN_TABLE_COLUMNS {
+            let aligned = count_aligned(&anchors, candidate);
 
             // A candidate is a row if a majority of its columns hit anchors.
             if aligned >= MIN_TABLE_COLUMNS && aligned * 2 >= candidate.len() {
-                for &cx in &candidate {
+                for &cx in candidate {
                     if !aligned_to_any(&anchors, cx) {
                         let position = anchors.partition_point(|&a| a < cx);
                         anchors.insert(position, cx);
@@ -794,7 +806,7 @@ fn detect_table_at(lines: &[TextLine], start: usize) -> Option<DetectedTable> {
             }
         }
 
-        if is_continuation_line(line, &anchors) {
+        if is_continuation_line(&lines[end], &anchors) {
             end += 1;
         } else {
             break;
@@ -814,8 +826,6 @@ fn detect_table_at(lines: &[TextLine], start: usize) -> Option<DetectedTable> {
     let rows = cluster_lines_into_rows(lines, start, end, &final_anchors);
 
     Some(DetectedTable {
-        start_line: start,
-        end_line: end,
         columns: final_anchors,
         rows,
     })
@@ -893,7 +903,7 @@ fn count_aligned(anchors: &[f32], candidate: &[f32]) -> usize {
         .count()
 }
 
-fn filter_anchors(anchors: &[f32], rows: &[Vec<f32>]) -> Vec<f32> {
+fn filter_anchors(anchors: &[f32], rows: &[&[f32]]) -> Vec<f32> {
     let threshold = (rows.len() / 2).max(1);
     anchors
         .iter()
@@ -941,33 +951,44 @@ fn classify_line(line: &TextLine, body_size: f32) -> LineKind {
 }
 
 fn is_list_item_start(text: &str) -> bool {
+    list_marker_len(text).is_some()
+}
+
+/// The single definition of a list marker, shared by classification and
+/// rendering: a bullet glyph, or `-` followed by a space. Returns the
+/// marker's byte length.
+fn list_marker_len(text: &str) -> Option<usize> {
     let mut chars = text.chars();
-    let first = match chars.next() {
-        Some(c) => c,
-        None => return false,
-    };
-    matches!(first, '•' | '●' | '◦' | '▪' | '■' | '–' | '—' | '·')
-        || (first == '-' && chars.next() == Some(' '))
+    let first = chars.next()?;
+    match first {
+        '•' | '●' | '◦' | '▪' | '■' | '–' | '—' | '·' => Some(first.len_utf8()),
+        '-' if chars.next() == Some(' ') => Some(1),
+        _ => None,
+    }
 }
 
 // ── Step 6: Group lines into blocks ────────────────────────────────
 
 fn group_into_blocks(lines: &[TextLine], tables: &[DetectedTable], body_size: f32) -> Vec<Block> {
+    // Classification and style extraction rebuild each line's text, and the
+    // lookahead loops below revisit lines; precompute both once per line.
+    let kinds: Vec<LineKind> = lines
+        .iter()
+        .map(|line| classify_line(line, body_size))
+        .collect();
+    let styles: Vec<(f32, bool, bool)> = lines.iter().map(dominant_style).collect();
+
     let mut blocks = Vec::new();
     let mut i = 0;
 
     while i < lines.len() {
-        if let Some((idx, table)) = tables
-            .iter()
-            .enumerate()
-            .find(|(_, t)| i >= t.start_line && i < t.end_line)
-        {
+        if let Some((idx, table)) = tables.iter().enumerate().find(|(_, t)| t.contains_line(i)) {
             blocks.push(Block::Table { index: idx });
-            i = table.end_line;
+            i = table.end_line();
             continue;
         }
 
-        let kind = classify_line(&lines[i], body_size);
+        let kind = &kinds[i];
         if matches!(kind, LineKind::Empty) {
             i += 1;
             continue;
@@ -978,14 +999,13 @@ fn group_into_blocks(lines: &[TextLine], tables: &[DetectedTable], body_size: f3
             let mut items: Vec<Vec<usize>> = vec![vec![i]];
             let mut j = i + 1;
             while j < lines.len() {
-                if tables.iter().any(|t| j >= t.start_line && j < t.end_line) {
+                if tables.iter().any(|t| t.contains_line(j)) {
                     break;
                 }
                 if !is_vertically_close(&lines[j - 1], &lines[j]) {
                     break;
                 }
-                let next_kind = classify_line(&lines[j], body_size);
-                match next_kind {
+                match kinds[j] {
                     LineKind::ListItem => {
                         items.push(vec![j]);
                         j += 1;
@@ -1007,12 +1027,11 @@ fn group_into_blocks(lines: &[TextLine], tables: &[DetectedTable], body_size: f3
         let mut j = i + 1;
 
         while j < lines.len() {
-            if tables.iter().any(|t| j >= t.start_line && j < t.end_line) {
+            if tables.iter().any(|t| t.contains_line(j)) {
                 break;
             }
 
-            let next_kind = classify_line(&lines[j], body_size);
-            if !same_block_kind(&kind, &next_kind) {
+            if !same_block_kind(kind, &kinds[j]) {
                 break;
             }
 
@@ -1020,7 +1039,7 @@ fn group_into_blocks(lines: &[TextLine], tables: &[DetectedTable], body_size: f3
                 break;
             }
 
-            if matches!(kind, LineKind::Paragraph) && !same_text_style(&lines[j - 1], &lines[j]) {
+            if matches!(kind, LineKind::Paragraph) && !same_style(styles[j - 1], styles[j]) {
                 break;
             }
 
@@ -1074,10 +1093,8 @@ fn average_line_height(line: &TextLine) -> f32 {
     sum / line.spans.len() as f32
 }
 
-fn same_text_style(a: &TextLine, b: &TextLine) -> bool {
-    let style_a = dominant_style(a);
-    let style_b = dominant_style(b);
-    (style_a.0 - style_b.0).abs() < 1.0 && style_a.1 == style_b.1 && style_a.2 == style_b.2
+fn same_style(a: (f32, bool, bool), b: (f32, bool, bool)) -> bool {
+    (a.0 - b.0).abs() < 1.0 && a.1 == b.1 && a.2 == b.2
 }
 
 /// Returns (font_size, bold, italic) for the dominant span on a line.
@@ -1104,10 +1121,27 @@ fn lines_to_markdown(lines: &[TextLine], body_size: f32) -> String {
         render_block(&mut md, block, lines, &tables);
     }
 
-    while md.contains("\n\n\n") {
-        md = md.replace("\n\n\n", "\n\n");
+    collapse_blank_lines(&md).trim().to_string()
+}
+
+/// Limits consecutive newlines to two (one blank line) in a single pass.
+fn collapse_blank_lines(md: &str) -> String {
+    let mut collapsed = String::with_capacity(md.len());
+    let mut newline_run = 0usize;
+
+    for ch in md.chars() {
+        if ch == '\n' {
+            newline_run += 1;
+            if newline_run > 2 {
+                continue;
+            }
+        } else {
+            newline_run = 0;
+        }
+        collapsed.push(ch);
     }
-    md.trim().to_string()
+
+    collapsed
 }
 
 fn render_block(md: &mut String, block: &Block, lines: &[TextLine], tables: &[DetectedTable]) {
@@ -1153,20 +1187,9 @@ fn render_block(md: &mut String, block: &Block, lines: &[TextLine], tables: &[De
 }
 
 fn strip_list_marker(text: &str) -> String {
-    let mut chars = text.chars();
-    let first = chars.next();
-    match first {
-        Some('•') | Some('●') | Some('◦') | Some('▪') | Some('■') | Some('–') | Some('—')
-        | Some('·') => chars.as_str().trim_start().to_string(),
-        Some('-') => {
-            let rest = chars.as_str();
-            if rest.starts_with(' ') {
-                rest.trim_start().to_string()
-            } else {
-                text.to_string()
-            }
-        }
-        _ => text.to_string(),
+    match list_marker_len(text) {
+        Some(marker_len) => text[marker_len..].trim_start().to_string(),
+        None => text.to_string(),
     }
 }
 
@@ -1667,8 +1690,8 @@ mod tests {
     fn detect_tables_finds_aligned_columns() {
         let tables = detect_tables(&table_lines());
         assert_eq!(tables.len(), 1);
-        assert_eq!(tables[0].start_line, 0);
-        assert_eq!(tables[0].end_line, 3);
+        assert_eq!(tables[0].start_line(), 0);
+        assert_eq!(tables[0].end_line(), 3);
         assert_eq!(tables[0].columns.len(), 2);
         assert_eq!(tables[0].rows, vec![vec![0], vec![1], vec![2]]);
     }
@@ -1711,8 +1734,8 @@ mod tests {
         let lines = wrapped_table_lines();
         let tables = detect_tables(&lines);
         assert_eq!(tables.len(), 1);
-        assert_eq!(tables[0].start_line, 0);
-        assert_eq!(tables[0].end_line, 5);
+        assert_eq!(tables[0].start_line(), 0);
+        assert_eq!(tables[0].end_line(), 5);
         assert_eq!(tables[0].rows, vec![vec![0, 1, 2], vec![3, 4]]);
     }
 
@@ -1749,7 +1772,8 @@ mod tests {
         let tables = detect_tables(&lines);
         assert_eq!(tables.len(), 1);
         assert_eq!(
-            tables[0].end_line, 5,
+            tables[0].end_line(),
+            5,
             "wide paragraph must not be swallowed into the table"
         );
 
@@ -2158,17 +2182,6 @@ mod tests {
             .collect();
         let lines = group_spans_into_lines(&spans);
         assert!(find_column_gutter(&lines).is_none());
-    }
-
-    #[test]
-    fn raw_chars_to_text_restores_word_spaces() {
-        let mut chars = vec![
-            raw_char('H', 10.0, 700.0, 6.0, 12.0),
-            raw_char('i', 16.0, 700.0, 3.0, 12.0),
-            raw_char('y', 25.0, 700.0, 6.0, 12.0),
-        ];
-        chars[2].space_before = true;
-        assert_eq!(raw_chars_to_text(&chars), "Hi y");
     }
 
     // ── markdown rendering ─────────────────────────────────────────

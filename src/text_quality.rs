@@ -1,5 +1,22 @@
 //! Heuristics for detecting garbled extracted text (e.g. broken CID font
-//! mappings) shared by the plain-text and structured extractors.
+//! mappings) shared by the plain-text and structured extractors. Both paths
+//! must judge the same input shape — `sanitize_extracted_text` of the page's
+//! full text — so the thresholds below apply to one distribution.
+
+/// Drops control characters (except line breaks and tabs) and trailing
+/// whitespace from raw pdfium page text.
+pub(crate) fn sanitize_extracted_text(text: &str) -> String {
+    let filtered = text
+        .chars()
+        .filter(|ch| is_allowed_text_char(*ch))
+        .collect::<String>();
+
+    filtered.trim_end().to_string()
+}
+
+fn is_allowed_text_char(ch: char) -> bool {
+    !ch.is_control() || matches!(ch, '\n' | '\r' | '\t')
+}
 
 /// Returns true when extracted text is statistically likely to be garbage:
 /// enough material to judge, high symbol/digit noise, almost no lowercase,
@@ -98,6 +115,21 @@ impl TextQualityMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_removes_disallowed_control_characters() {
+        assert_eq!(sanitize_extracted_text("a\u{0}b\u{7}c"), "abc");
+    }
+
+    #[test]
+    fn sanitize_keeps_newlines_tabs_and_carriage_returns() {
+        assert_eq!(sanitize_extracted_text("a\tb\nc\rd"), "a\tb\nc\rd");
+    }
+
+    #[test]
+    fn sanitize_trims_trailing_whitespace_only() {
+        assert_eq!(sanitize_extracted_text("  a b \n\t "), "  a b");
+    }
 
     #[test]
     fn normal_prose_is_not_flagged_unreadable() {

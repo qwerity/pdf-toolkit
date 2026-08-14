@@ -1,9 +1,10 @@
-//! Pins a pdfium behavior the text-quality heuristic depends on: characters
-//! positioned beyond the page boundary are dropped from text extraction.
+//! Pins pdfium behaviors the extractors depend on: characters positioned
+//! beyond the page boundary are dropped from text extraction, and rotated
+//! text matrices collapse the scaled font size to zero.
 
 mod common;
 
-use common::{Text, pdfium, write_pdf};
+use common::{GARBLED_UNIT, Text, pdfium, write_pdf, write_rotated_pdf};
 use pdf_cutter::{PageSelection, extract_text};
 
 /// Pins the pdfium behavior the extractor's font-size fallback depends on:
@@ -14,7 +15,7 @@ fn rotated_text_reports_zero_scaled_font_size() {
     let pdfium = pdfium();
     let dir = tempfile::tempdir().expect("temp dir");
     let input = dir.path().join("rotated.pdf");
-    crate::common::write_rotated_pdf(
+    write_rotated_pdf(
         &pdfium,
         &input,
         &[Text::plain(100.0, 100.0, 12.0, "alpha rotated")],
@@ -44,7 +45,7 @@ fn characters_beyond_page_edge_are_not_extracted() {
     let dir = tempfile::tempdir().expect("temp dir");
     let input = dir.path().join("overflow.pdf");
     // ~1050pt of text on a 595pt-wide A4 page: roughly half must be clipped.
-    let overflowing = "X9#Z 7Q$W 3K%T ".repeat(10);
+    let overflowing = GARBLED_UNIT.repeat(10);
     write_pdf(
         &pdfium,
         &input,

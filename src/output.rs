@@ -43,6 +43,10 @@ pub enum LlmReason {
     /// The text layer exists but is statistically garbled (e.g. a broken
     /// CID font mapping); rendered pixels are the only reliable source.
     UnreadableText,
+    /// The page contains a table with wrapped or merged cells across several
+    /// columns; extracted cell-to-column association is approximate and a
+    /// vision pass can verify or reconstruct the exact structure.
+    ComplexTable,
 }
 
 impl LlmReason {
@@ -52,6 +56,7 @@ impl LlmReason {
             Self::NoTextLayer => "no_text_layer",
             Self::ImageHeavy => "image_heavy",
             Self::UnreadableText => "unreadable_text",
+            Self::ComplexTable => "complex_table",
         }
     }
 
@@ -64,6 +69,10 @@ impl LlmReason {
             }
             Self::UnreadableText => {
                 "text layer appears garbled; rendered pixels are the reliable source"
+            }
+            Self::ComplexTable => {
+                "table with wrapped or merged cells; extracted cell-to-column \
+                 association is approximate"
             }
         }
     }

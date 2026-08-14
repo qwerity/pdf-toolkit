@@ -69,6 +69,11 @@ const BAND_SPLIT_MIN_GAP: f32 = 24.0;
 /// Maximum recursion depth for column splitting (2 → up to 4 columns).
 const MAX_COLUMN_SPLIT_DEPTH: usize = 2;
 
+/// Minimum number of table columns for wrapped rows to make the extracted
+/// structure approximate. Two-column tables with wrapped cells (definition
+/// lists, footnotes) reconstruct reliably; wider ones do not.
+const COMPLEX_TABLE_MIN_COLUMNS: usize = 3;
+
 // ── Public types ───────────────────────────────────────────────────
 
 pub struct StructuredExtractionReport {
@@ -756,6 +761,29 @@ fn column_split_is_plausible(lines: &[TextLine], gutter_x: f32) -> bool {
 }
 
 // ── Step 4: Detect tables ──────────────────────────────────────────
+
+/// True when the page contains a table whose extracted structure is
+/// approximate: wrapped (multi-line) rows spread across several columns,
+/// where cell-to-column association relies on geometry alone. Used by page
+/// inspection to recommend a vision-LLM verification pass.
+pub(crate) fn page_has_complex_tables(page: &PdfPage<'_>) -> bool {
+    let Ok(text) = page.text() else {
+        return false;
+    };
+
+    let raw_chars = extract_raw_chars(page, &text);
+    if raw_chars.is_empty() {
+        return false;
+    }
+
+    let spans = group_chars_into_spans(&raw_chars);
+    let lines = group_spans_into_lines(&spans);
+    detect_tables(&lines).iter().any(is_complex_table)
+}
+
+fn is_complex_table(table: &DetectedTable) -> bool {
+    table.columns.len() >= COMPLEX_TABLE_MIN_COLUMNS && table.rows.iter().any(|row| row.len() > 1)
+}
 
 fn detect_tables(lines: &[TextLine]) -> Vec<DetectedTable> {
     // Precomputed once: a rejected table attempt retries at the next line
@@ -1755,6 +1783,24 @@ mod tests {
                 vec![span("with extra uses", 150.0, 640.0, 80.0, 12.0)],
             ),
         ]
+    }
+
+    #[test]
+    fn complex_table_requires_wrapped_rows_and_width() {
+        let wrapped_wide = detect_tables(&wrapped_table_lines());
+        assert!(wrapped_wide.iter().any(is_complex_table));
+
+        // Single-line rows: regular grid, reliable extraction.
+        let simple = detect_tables(&table_lines());
+        assert!(!simple.iter().any(is_complex_table));
+
+        // Two columns with wrapped rows (footnotes / definition lists)
+        // reconstruct reliably and must not be flagged.
+        let narrow = DetectedTable {
+            columns: vec![60.0, 150.0],
+            rows: vec![vec![0, 1], vec![2]],
+        };
+        assert!(!is_complex_table(&narrow));
     }
 
     #[test]

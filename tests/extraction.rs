@@ -116,6 +116,50 @@ fn inspect_document_recommends_llm_for_garbled_pages() {
 }
 
 #[test]
+fn inspect_document_flags_complex_tables() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    // Three columns with a wrapped cell: structure is approximate.
+    let wrapped = fixture_path(dir.path(), "wrapped_table.pdf");
+    write_pdf(
+        &pdfium,
+        &wrapped,
+        &[vec![
+            Text::plain(72.0, 700.0, 12.0, "A1"),
+            Text::plain(200.0, 700.0, 12.0, "Agriculture uses"),
+            Text::plain(430.0, 700.0, 12.0, "5 acres"),
+            Text::plain(200.0, 685.0, 12.0, "One family dwellings"),
+            Text::plain(72.0, 670.0, 12.0, "A2"),
+            Text::plain(200.0, 670.0, 12.0, "More farming"),
+            Text::plain(430.0, 670.0, 12.0, "2 acres"),
+        ]],
+    );
+    let info = inspect_document(&pdfium, &wrapped).expect("inspect document");
+    assert_eq!(info.pages[0].llm_reasons, vec![LlmReason::ComplexTable]);
+
+    // A regular grid without wrapped rows extracts reliably: not flagged.
+    let simple = fixture_path(dir.path(), "simple_table.pdf");
+    write_pdf(
+        &pdfium,
+        &simple,
+        &[vec![
+            Text::plain(72.0, 700.0, 12.0, "Name"),
+            Text::plain(250.0, 700.0, 12.0, "Size"),
+            Text::plain(430.0, 700.0, 12.0, "Width"),
+            Text::plain(72.0, 680.0, 12.0, "Alpha"),
+            Text::plain(250.0, 680.0, 12.0, "1"),
+            Text::plain(430.0, 680.0, 12.0, "2"),
+            Text::plain(72.0, 660.0, 12.0, "Beta"),
+            Text::plain(250.0, 660.0, 12.0, "3"),
+            Text::plain(430.0, 660.0, 12.0, "4"),
+        ]],
+    );
+    let info = inspect_document(&pdfium, &simple).expect("inspect document");
+    assert!(info.pages[0].llm_reasons.is_empty());
+}
+
+#[test]
 fn inspect_document_does_not_recommend_llm_for_text_pages() {
     let pdfium = pdfium();
     let dir = tempfile::tempdir().expect("temp dir");

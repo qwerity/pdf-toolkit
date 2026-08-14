@@ -189,6 +189,7 @@ Page inspection with `--page-count`:
 - `no_text_layer`: the page has images but (almost) no extractable text — likely a scanned page
 - `image_heavy`: at least 20% of the page area is covered by embedded images, whose contents (diagram labels, figure text) are invisible to the text layer
 - `unreadable_text`: the text layer exists but is statistically garbled (e.g. a broken CID font mapping); rendered pixels are the only reliable source
+- `complex_table`: the page contains a table with wrapped or merged cells across three or more columns; all cell text is extracted, but its cell-to-column association is approximate and a vision pass can verify or reconstruct the exact structure (two-column wrapped tables such as footnote lists reconstruct reliably and are not flagged)
 
 Use this field to route pages in a hybrid pipeline: pdf_cutter for deterministic, verbatim text and table extraction everywhere, and a vision-LLM pass only for the flagged pages (optionally rendered via `--format png`).
 

@@ -1,5 +1,6 @@
 use crate::error::{PdfCutterError, Result};
 use crate::output::{LlmReason, PageInfo};
+use crate::structured_text_extractor::page_has_complex_tables;
 use crate::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
 use pdfium_render::prelude::{
     PdfDocument, PdfPage, PdfPageObject, PdfPageObjectCommon, PdfPageObjectsCommon, PdfPages,
@@ -102,6 +103,13 @@ pub(crate) fn page_info_for_page(page_number: u16, page: &PdfPage<'_>) -> PageIn
         .map(|text| sanitize_extracted_text(&text.all()))
         .unwrap_or_default();
 
+    let mut llm_reasons = llm_reasons(&text, image_count, image_coverage);
+    // Only readable pages can be judged for table complexity; an unreadable
+    // or empty text layer is already flagged by the reasons above.
+    if !llm_reasons.contains(&LlmReason::UnreadableText) && page_has_complex_tables(page) {
+        llm_reasons.push(LlmReason::ComplexTable);
+    }
+
     PageInfo {
         page_number,
         width_px,
@@ -109,7 +117,7 @@ pub(crate) fn page_info_for_page(page_number: u16, page: &PdfPage<'_>) -> PageIn
         contains_images: image_count > 0,
         image_count,
         image_coverage,
-        llm_reasons: llm_reasons(&text, image_count, image_coverage),
+        llm_reasons,
     }
 }
 
@@ -225,5 +233,6 @@ mod tests {
         assert_eq!(LlmReason::NoTextLayer.slug(), "no_text_layer");
         assert_eq!(LlmReason::ImageHeavy.slug(), "image_heavy");
         assert_eq!(LlmReason::UnreadableText.slug(), "unreadable_text");
+        assert_eq!(LlmReason::ComplexTable.slug(), "complex_table");
     }
 }

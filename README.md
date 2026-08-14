@@ -137,8 +137,10 @@ The CLI writes structured JSON to stdout. Human-readable warnings are written to
 - `--scale-width-px`: optional for `--format png`; sets the output PNG width in pixels and preserves aspect ratio; cannot be used together with `--scale`
 - `--concat` / `-c`: merges selected pages into one PDF, or one text file when used with `--extract`
 - `--output` / `-o`: output directory
-- `--page-count` / `-n`: prints the total page count plus per-page `width_px`, `height_px`, `contains_images`, `image_count`, and `image_coverage` metadata as JSON
+- `--page-count` / `-n`: prints the total page count plus per-page `width_px`, `height_px`, `contains_images`, `image_count`, `image_coverage`, and `llm_recommended` metadata as JSON
 - extracted text starts each page with a `____PageN____` marker
+- structured markdown reconstructs the page in visual reading order (bands, multi-column layouts, and `/Rotate`d pages included), detects tables with wrapped cells merged into logical rows, renders bold/italic inline styles, repairs line-break hyphenation, and escapes markdown syntax characters in extracted text
+- pages whose text layer is statistically garbled (e.g. broken font mappings) are skipped with a per-page warning in both text extraction modes
 - page extraction JSON includes per-page `width_px`, `height_px`, and `contains_images`
 - inspection and PDF extraction report page dimensions in pixels at render scale `1.0`
 - PNG extraction reports the actual rendered output dimensions in pixels for the chosen `--scale` or `--scale-width-px`
@@ -159,20 +161,36 @@ Page inspection with `--page-count`:
       "height_px": 842,
       "contains_images": false,
       "image_count": 0,
-      "image_coverage": 0.0
+      "image_coverage": 0.0,
+      "llm_recommended": false
     },
     "2": {
       "width_px": 842,
       "height_px": 595,
       "contains_images": true,
       "image_count": 2,
-      "image_coverage": 0.43
+      "image_coverage": 0.43,
+      "llm_recommended": true,
+      "llm_reasons": [
+        {
+          "reason": "image_heavy",
+          "detail": "large image coverage; text inside embedded images is not extractable"
+        }
+      ]
     }
   }
 }
 ```
 
 `image_count` is the total number of image objects on the page, including images nested inside Form XObjects (reusable page fragments). `image_coverage` is the estimated fraction of the page area (0.0–1.0) covered by top-level image bounding boxes; images inside Form XObjects are excluded from coverage because their bounds are in the form's local coordinate space, not the page's.
+
+`llm_recommended` is `true` when a vision-capable LLM or OCR pass is likely to recover content that text-layer extraction cannot; `llm_reasons` lists why. Reasons:
+
+- `no_text_layer`: the page has images but (almost) no extractable text — likely a scanned page
+- `image_heavy`: at least 20% of the page area is covered by embedded images, whose contents (diagram labels, figure text) are invisible to the text layer
+- `unreadable_text`: the text layer exists but is statistically garbled (e.g. a broken CID font mapping); rendered pixels are the only reliable source
+
+Use this field to route pages in a hybrid pipeline: pdf_cutter for deterministic, verbatim text and table extraction everywhere, and a vision-LLM pass only for the flagged pages (optionally rendered via `--format png`).
 
 Per-page PDF or PNG extraction:
 
@@ -303,3 +321,34 @@ Structured text extraction with `--structured-format markdown` (no spans):
 ```
 
 If requested pages are skipped or fail, the JSON includes an `errors` object keyed by page number.
+
+## Library Usage
+
+The binary is a thin CLI over the `pdf_cutter` library crate, which exposes the same operations for embedding:
+
+```rust
+use pdf_cutter::{
+    PageSelection, StructuredOutputFormat, create_pdfium, extract_structured_text,
+    inspect_document,
+};
+
+let pdfium = create_pdfium()?;
+
+// Route pages: text extraction everywhere, vision-LLM where recommended.
+let info = inspect_document(&pdfium, "input.pdf".as_ref())?;
+let llm_pages: Vec<u16> = info
+    .pages
+    .iter()
+    .filter(|page| page.llm_recommended())
+    .map(|page| page.page_number)
+    .collect();
+
+let report = extract_structured_text(
+    &pdfium,
+    "input.pdf".as_ref(),
+    PageSelection::All,
+    StructuredOutputFormat::MarkdownOnly,
+)?;
+```
+
+Run `cargo doc --open` for the full API documentation. `create_pdfium()` binds the native PDFium library from the executable's directory, the system, `./`, or `./dist/` (in that order).

@@ -243,13 +243,30 @@ fn page_info_map(page_info: &[PageInfo]) -> Value {
 }
 
 fn single_page_info_json(page_info: &PageInfo) -> Value {
-    json!({
+    let mut object = json!({
         "width_px": page_info.width_px,
         "height_px": page_info.height_px,
         "contains_images": page_info.contains_images,
         "image_count": page_info.image_count,
         "image_coverage": page_info.image_coverage,
-    })
+        "llm_recommended": page_info.llm_recommended(),
+    });
+
+    if page_info.llm_recommended() {
+        let reasons: Vec<Value> = page_info
+            .llm_reasons
+            .iter()
+            .map(|reason| {
+                json!({
+                    "reason": reason.slug(),
+                    "detail": reason.description(),
+                })
+            })
+            .collect();
+        object["llm_reasons"] = Value::Array(reasons);
+    }
+
+    object
 }
 
 fn add_errors(output: &mut Map<String, Value>, warnings: &[ExtractionWarning]) {
@@ -294,7 +311,7 @@ fn print_json(value: Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pdf_cutter::{PageResult, StructuredPage, TextFileResult, TextSpan};
+    use pdf_cutter::{LlmReason, PageResult, StructuredPage, TextFileResult, TextSpan};
     use std::path::PathBuf;
 
     fn args(extra: &[&str]) -> Args {
@@ -321,6 +338,7 @@ mod tests {
             contains_images: true,
             image_count: 2,
             image_coverage: 0.5,
+            llm_reasons: vec![LlmReason::ImageHeavy],
         }
     }
 
@@ -526,6 +544,25 @@ mod tests {
         assert_eq!(value["page_count"], 2);
         assert_eq!(value["pages"]["1"]["image_count"], 2);
         assert_eq!(value["pages"]["2"]["contains_images"], true);
+        assert_eq!(value["pages"]["1"]["llm_recommended"], true);
+        assert_eq!(
+            value["pages"]["1"]["llm_reasons"][0]["reason"],
+            "image_heavy"
+        );
+        assert!(
+            value["pages"]["1"]["llm_reasons"][0]["detail"]
+                .as_str()
+                .is_some_and(|detail| !detail.is_empty())
+        );
+    }
+
+    #[test]
+    fn page_info_json_omits_reasons_when_not_recommended() {
+        let mut info = page_info(1);
+        info.llm_reasons.clear();
+        let value = single_page_info_json(&info);
+        assert_eq!(value["llm_recommended"], false);
+        assert!(value.get("llm_reasons").is_none());
     }
 
     #[test]

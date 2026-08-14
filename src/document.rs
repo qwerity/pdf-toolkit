@@ -1,11 +1,21 @@
 use crate::error::{PdfCutterError, Result};
-use crate::output::PageInfo;
+use crate::output::{LlmReason, PageInfo};
+use crate::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
 use pdfium_render::prelude::{
     PdfDocument, PdfPage, PdfPageObject, PdfPageObjectCommon, PdfPageObjectsCommon, PdfPages,
     Pdfium,
 };
 use std::num::NonZeroU16;
 use std::path::Path;
+
+/// Image coverage (fraction of page area) above which a page is flagged for
+/// a vision-LLM pass: text inside embedded images is invisible to the text
+/// layer.
+const LLM_IMAGE_COVERAGE_THRESHOLD: f32 = 0.2;
+
+/// Pages with fewer visible text characters than this — while carrying
+/// images — are treated as having no usable text layer (scanned pages).
+const LLM_MIN_TEXT_CHARS: usize = 20;
 
 /// Detailed metadata for a PDF document.
 pub struct DocumentInfo {
@@ -87,6 +97,11 @@ pub(crate) fn page_info_for_page(page_number: u16, page: &PdfPage<'_>) -> PageIn
         0.0
     };
 
+    let text = page
+        .text()
+        .map(|text| sanitize_extracted_text(&text.all()))
+        .unwrap_or_default();
+
     PageInfo {
         page_number,
         width_px,
@@ -94,7 +109,27 @@ pub(crate) fn page_info_for_page(page_number: u16, page: &PdfPage<'_>) -> PageIn
         contains_images: image_count > 0,
         image_count,
         image_coverage,
+        llm_reasons: llm_reasons(&text, image_count, image_coverage),
     }
+}
+
+/// Determines why (if at all) a vision-LLM/OCR pass would recover content
+/// that text extraction cannot, from the page's text layer and image stats.
+fn llm_reasons(text: &str, image_count: u32, image_coverage: f32) -> Vec<LlmReason> {
+    let mut reasons = Vec::new();
+    let visible_chars = text.chars().filter(|ch| !ch.is_whitespace()).count();
+
+    if visible_chars < LLM_MIN_TEXT_CHARS && image_count > 0 {
+        reasons.push(LlmReason::NoTextLayer);
+    }
+    if image_coverage >= LLM_IMAGE_COVERAGE_THRESHOLD {
+        reasons.push(LlmReason::ImageHeavy);
+    }
+    if is_probably_unreadable_text(text) {
+        reasons.push(LlmReason::UnreadableText);
+    }
+
+    reasons
 }
 
 pub(crate) fn page_dimensions_px(page: &PdfPage<'_>, scale: f32) -> (u32, u32) {
@@ -142,4 +177,53 @@ fn collect_image_stats<'a>(
     }
 
     (count, area)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const READABLE_TEXT: &str = "This page carries a perfectly ordinary paragraph of extractable text \
+         with plenty of readable words in it.";
+
+    #[test]
+    fn text_pages_are_not_flagged_for_llm() {
+        assert!(llm_reasons(READABLE_TEXT, 0, 0.0).is_empty());
+        assert!(llm_reasons(READABLE_TEXT, 2, 0.1).is_empty());
+    }
+
+    #[test]
+    fn scanned_pages_have_no_text_layer() {
+        assert_eq!(
+            llm_reasons("", 1, 0.9),
+            vec![LlmReason::NoTextLayer, LlmReason::ImageHeavy]
+        );
+        // Images plus a trivial caption still count as no usable text layer.
+        assert!(llm_reasons("p. 4", 1, 0.05).contains(&LlmReason::NoTextLayer));
+        // No images and no text: an empty page, not a scan.
+        assert!(llm_reasons("", 0, 0.0).is_empty());
+    }
+
+    #[test]
+    fn image_heavy_pages_are_flagged() {
+        let reasons = llm_reasons(READABLE_TEXT, 2, 0.39);
+        assert_eq!(reasons, vec![LlmReason::ImageHeavy]);
+        assert!(llm_reasons(READABLE_TEXT, 2, 0.19).is_empty());
+    }
+
+    #[test]
+    fn garbled_text_layers_are_flagged() {
+        let garbled = "X9#Z 7Q$W 3K%T ".repeat(10);
+        assert_eq!(
+            llm_reasons(&garbled, 0, 0.0),
+            vec![LlmReason::UnreadableText]
+        );
+    }
+
+    #[test]
+    fn llm_reason_slugs_are_stable() {
+        assert_eq!(LlmReason::NoTextLayer.slug(), "no_text_layer");
+        assert_eq!(LlmReason::ImageHeavy.slug(), "image_heavy");
+        assert_eq!(LlmReason::UnreadableText.slug(), "unreadable_text");
+    }
 }

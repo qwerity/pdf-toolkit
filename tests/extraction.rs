@@ -6,7 +6,7 @@ use common::{
 };
 use pdf_cutter::error::PdfCutterError;
 use pdf_cutter::{
-    ExtractionWarning, OutputFormat, PageSelection, PngSize, StructuredOutputFormat,
+    ExtractionWarning, LlmReason, OutputFormat, PageSelection, PngSize, StructuredOutputFormat,
     document_page_count, extract_pages, extract_structured_text, extract_text, inspect_document,
 };
 use std::fs;
@@ -76,7 +76,7 @@ fn inspect_document_counts_embedded_images() {
     let pdfium = pdfium();
     let dir = tempfile::tempdir().expect("temp dir");
     let input = fixture_path(dir.path(), "with_image.pdf");
-    write_pdf_with_image(&pdfium, &input);
+    write_pdf_with_image(&pdfium, &input, 200.0);
 
     let info = inspect_document(&pdfium, &input).expect("inspect document");
     let page = &info.pages[0];
@@ -87,6 +87,44 @@ fn inspect_document_counts_embedded_images() {
         "unexpected coverage {}",
         page.image_coverage
     );
+}
+
+#[test]
+fn inspect_document_recommends_llm_for_image_only_pages() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = fixture_path(dir.path(), "image_heavy.pdf");
+    // 400pt image on A4 ≈ 32% coverage, no text at all.
+    write_pdf_with_image(&pdfium, &input, 400.0);
+
+    let info = inspect_document(&pdfium, &input).expect("inspect document");
+    let page = &info.pages[0];
+    assert!(page.llm_recommended());
+    assert!(page.llm_reasons.contains(&LlmReason::NoTextLayer));
+    assert!(page.llm_reasons.contains(&LlmReason::ImageHeavy));
+}
+
+#[test]
+fn inspect_document_recommends_llm_for_garbled_pages() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = fixture_path(dir.path(), "garbled.pdf");
+    write_garbled_pdf(&pdfium, &input);
+
+    let info = inspect_document(&pdfium, &input).expect("inspect document");
+    assert_eq!(info.pages[0].llm_reasons, vec![LlmReason::UnreadableText]);
+}
+
+#[test]
+fn inspect_document_does_not_recommend_llm_for_text_pages() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = fixture_path(dir.path(), "fixture.pdf");
+    write_simple_pdf(&pdfium, &input, 1);
+
+    let info = inspect_document(&pdfium, &input).expect("inspect document");
+    assert!(!info.pages[0].llm_recommended());
+    assert!(info.pages[0].llm_reasons.is_empty());
 }
 
 #[test]

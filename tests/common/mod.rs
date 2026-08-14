@@ -164,8 +164,10 @@ pub fn write_rotated_pdf(pdfium: &Pdfium, path: &Path, texts: &[Text]) {
     document.save_to_file(path).expect("save fixture PDF");
 }
 
-/// Writes a one-page fixture PDF containing a single 200x200pt image.
-pub fn write_pdf_with_image(pdfium: &Pdfium, path: &Path) {
+/// Writes a one-page fixture PDF containing a single square image of
+/// `size_pt` points per side (A4 page, so 200pt ≈ 8% coverage and
+/// 400pt ≈ 32%).
+pub fn write_pdf_with_image(pdfium: &Pdfium, path: &Path, size_pt: f32) {
     let mut document = pdfium.create_new_pdf().expect("create document");
     let mut page = document
         .pages_mut()
@@ -178,9 +180,9 @@ pub fn write_pdf_with_image(pdfium: &Pdfium, path: &Path) {
         image::Rgb([200, 30, 30]),
     ));
     let mut object = PdfPageImageObject::new(&document, &bitmap).expect("create image object");
-    object.scale(200.0, 200.0).expect("scale image");
+    object.scale(size_pt, size_pt).expect("scale image");
     object
-        .translate(PdfPoints::new(100.0), PdfPoints::new(500.0))
+        .translate(PdfPoints::new(100.0), PdfPoints::new(400.0))
         .expect("position image");
     page.objects_mut()
         .add_image_object(object)

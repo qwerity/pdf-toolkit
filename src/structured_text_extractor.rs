@@ -548,7 +548,7 @@ fn spans_to_markdown(spans: &[TextSpan]) -> String {
 
     for band in split_into_bands(lines) {
         for column in split_band_into_columns(band, 0) {
-            let rendered = lines_to_markdown(&column, body_size);
+            let rendered = lines_to_markdown(&column.lines, body_size, column.tables);
             if !rendered.is_empty() {
                 md.push_str(&rendered);
                 md.push_str("\n\n");
@@ -557,6 +557,14 @@ fn spans_to_markdown(spans: &[TextSpan]) -> String {
     }
 
     md.trim_end().to_string()
+}
+
+/// A final rendering unit: a column's lines, plus the tables the gutter
+/// guard already detected for exactly this line set (reused by rendering so
+/// the expensive detection pass runs once per line set).
+struct ColumnLines {
+    lines: Vec<TextLine>,
+    tables: Option<Vec<DetectedTable>>,
 }
 
 /// Splits top-to-bottom ordered lines into bands at unusually large vertical
@@ -591,13 +599,18 @@ fn split_into_bands(lines: Vec<TextLine>) -> Vec<Vec<TextLine>> {
 /// Recursively splits a band into columns along detected gutters. Lines are
 /// re-clustered per column so text on the same height in different columns
 /// no longer shares a line.
-fn split_band_into_columns(lines: Vec<TextLine>, depth: usize) -> Vec<Vec<TextLine>> {
+fn split_band_into_columns(lines: Vec<TextLine>, depth: usize) -> Vec<ColumnLines> {
     if depth >= MAX_COLUMN_SPLIT_DEPTH {
-        return vec![lines];
+        return vec![ColumnLines {
+            lines,
+            tables: None,
+        }];
     }
 
-    let Some(gutter_x) = find_column_gutter(&lines) else {
-        return vec![lines];
+    let (gutter, tables) = find_column_gutter(&lines);
+    let Some(gutter_x) = gutter else {
+        // Tables detected by the guard describe exactly this line set.
+        return vec![ColumnLines { lines, tables }];
     };
 
     let spans: Vec<TextSpan> = lines.into_iter().flat_map(|line| line.spans).collect();
@@ -614,12 +627,13 @@ fn split_band_into_columns(lines: Vec<TextLine>, depth: usize) -> Vec<Vec<TextLi
 }
 
 /// Looks for a vertical whitespace gutter separating two independent column
-/// flows. Returns the gutter's center x, or `None` when no plausible gutter
-/// exists (including when the gap is a table column divider, recognizable by
-/// rows aligned across it).
-fn find_column_gutter(lines: &[TextLine]) -> Option<f32> {
+/// flows. Returns the gutter's center x (or `None` when no plausible gutter
+/// exists, including when the gap is a table column divider, recognizable by
+/// rows aligned across it), alongside any tables detected for the guard so
+/// the caller can reuse them when the lines are left unsplit.
+fn find_column_gutter(lines: &[TextLine]) -> (Option<f32>, Option<Vec<DetectedTable>>) {
     if lines.len() < MIN_COLUMN_LINES {
-        return None;
+        return (None, None);
     }
 
     let (min_x, max_x) = lines
@@ -630,7 +644,7 @@ fn find_column_gutter(lines: &[TextLine]) -> Option<f32> {
         });
     let extent = max_x - min_x;
     if !extent.is_finite() || extent <= COLUMN_GUTTER_MIN_WIDTH * 4.0 {
-        return None;
+        return (None, None);
     }
 
     // Coverage histogram over x: how many spans touch each bin.
@@ -660,19 +674,21 @@ fn find_column_gutter(lines: &[TextLine]) -> Option<f32> {
         })
         .collect();
     if candidates.is_empty() {
-        return None;
+        return (None, None);
     }
 
     // Table detection is the expensive pass; run it only for the rare bands
     // that actually have a plausible-looking gap.
     let tables = detect_tables(lines);
 
-    candidates
+    let gutter = candidates
         .into_iter()
         .filter(|&(_, center)| !gutter_is_inside_table(&tables, center))
         .filter(|&(_, center)| column_split_is_plausible(lines, center))
         .max_by_key(|&(run_len, _)| run_len)
-        .map(|(_, center)| center)
+        .map(|(_, center)| center);
+
+    (gutter, Some(tables))
 }
 
 /// Maximal runs of bins whose coverage does not exceed `allowed_crossings`,
@@ -861,8 +877,16 @@ fn is_aligned(anchor: f32, x: f32) -> bool {
     (anchor - x).abs() < COLUMN_ANCHOR_TOLERANCE
 }
 
-fn aligned_to_any(anchors: &[f32], x: f32) -> bool {
-    anchors.iter().any(|&anchor| is_aligned(anchor, x))
+/// `sorted_anchors` must be ascending; only the two anchors flanking the
+/// insertion point can be within tolerance.
+fn aligned_to_any(sorted_anchors: &[f32], x: f32) -> bool {
+    let insertion = sorted_anchors.partition_point(|&a| a < x);
+    let below = insertion.checked_sub(1).map(|i| sorted_anchors[i]);
+    let above = sorted_anchors.get(insertion).copied();
+    below
+        .into_iter()
+        .chain(above)
+        .any(|anchor| is_aligned(anchor, x))
 }
 
 /// Groups the table's lines into logical rows: a line with content in the
@@ -1108,12 +1132,16 @@ fn dominant_style(line: &TextLine) -> (f32, bool, bool) {
 
 // ── Step 7: Render markdown from blocks ────────────────────────────
 
-fn lines_to_markdown(lines: &[TextLine], body_size: f32) -> String {
+fn lines_to_markdown(
+    lines: &[TextLine],
+    body_size: f32,
+    detected_tables: Option<Vec<DetectedTable>>,
+) -> String {
     if lines.is_empty() {
         return String::new();
     }
 
-    let tables = detect_tables(lines);
+    let tables = detected_tables.unwrap_or_else(|| detect_tables(lines));
     let blocks = group_into_blocks(lines, &tables, body_size);
 
     let mut md = String::new();
@@ -1742,7 +1770,7 @@ mod tests {
     #[test]
     fn markdown_merges_wrapped_cells_into_their_row() {
         let lines = wrapped_table_lines();
-        let md = lines_to_markdown(&lines, estimate_body_font_size(&lines));
+        let md = lines_to_markdown(&lines, estimate_body_font_size(&lines), None);
         assert!(
             md.contains(
                 "| A1 | Agriculture One-Family Dwellings, Parks and Playgrounds | 5 acres |"
@@ -1777,7 +1805,7 @@ mod tests {
             "wide paragraph must not be swallowed into the table"
         );
 
-        let md = lines_to_markdown(&lines, estimate_body_font_size(&lines));
+        let md = lines_to_markdown(&lines, estimate_body_font_size(&lines), None);
         assert!(
             md.contains("This general note runs across"),
             "trailing paragraph must render: {md}"
@@ -2142,7 +2170,7 @@ mod tests {
     fn aligned_rows_are_a_table_not_columns() {
         let spans = column_fixture(true);
         let lines = group_spans_into_lines(&spans);
-        assert!(find_column_gutter(&lines).is_none());
+        assert!(find_column_gutter(&lines).0.is_none());
 
         let md = spans_to_markdown(&spans);
         assert!(
@@ -2181,7 +2209,7 @@ mod tests {
             })
             .collect();
         let lines = group_spans_into_lines(&spans);
-        assert!(find_column_gutter(&lines).is_none());
+        assert!(find_column_gutter(&lines).0.is_none());
     }
 
     // ── markdown rendering ─────────────────────────────────────────
@@ -2214,7 +2242,7 @@ mod tests {
             text_line(685.0, vec![span("• Two", 50.0, 685.0, 40.0, 12.0)]),
         ];
 
-        let md = lines_to_markdown(&lines, estimate_body_font_size(&lines));
+        let md = lines_to_markdown(&lines, estimate_body_font_size(&lines), None);
         assert!(md.contains("# Title"), "missing heading in: {md}");
         assert!(
             md.contains("First body line with plenty of characters here second body line"),
@@ -2226,7 +2254,7 @@ mod tests {
     #[test]
     fn markdown_renders_table_with_separator() {
         let lines = table_lines();
-        let md = lines_to_markdown(&lines, estimate_body_font_size(&lines));
+        let md = lines_to_markdown(&lines, estimate_body_font_size(&lines), None);
         assert!(md.contains("| Name | Value |"), "missing header row: {md}");
         assert!(md.contains("| --- | --- |"), "missing separator: {md}");
         assert!(md.contains("| Alpha | 1 |"), "missing data row: {md}");
@@ -2235,7 +2263,7 @@ mod tests {
 
     #[test]
     fn markdown_of_empty_lines_is_empty() {
-        assert_eq!(lines_to_markdown(&[], 12.0), "");
+        assert_eq!(lines_to_markdown(&[], 12.0, None), "");
     }
 
     #[test]
@@ -2253,7 +2281,7 @@ mod tests {
                 )],
             ),
         ];
-        let md = lines_to_markdown(&lines, estimate_body_font_size(&lines));
+        let md = lines_to_markdown(&lines, estimate_body_font_size(&lines), None);
         assert!(!md.contains("\n\n\n"));
         assert_eq!(md, md.trim());
     }

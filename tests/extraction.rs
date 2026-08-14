@@ -399,6 +399,43 @@ fn renders_png_at_target_width_preserving_aspect_ratio() {
     assert!(png_height.abs_diff(expected_height) <= 1);
 }
 
+#[test]
+fn extract_pages_rejects_invalid_formats_without_panicking() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = fixture_path(dir.path(), "fixture.pdf");
+    write_simple_pdf(&pdfium, &input, 1);
+    let out_dir = dir.path().join("out");
+
+    let oversized = extract_pages(
+        &pdfium,
+        &input,
+        PageSelection::All,
+        OutputFormat::Png {
+            size: PngSize::WidthPx(i32::MAX as u32 + 1),
+        },
+        Some(&out_dir),
+    );
+    assert!(matches!(
+        oversized,
+        Err(PdfCutterError::InvalidImageWidth { .. })
+    ));
+
+    let bad_scale = extract_pages(
+        &pdfium,
+        &input,
+        PageSelection::All,
+        OutputFormat::Png {
+            size: PngSize::Scale(f32::NAN),
+        },
+        Some(&out_dir),
+    );
+    assert!(matches!(
+        bad_scale,
+        Err(PdfCutterError::InvalidImageScale { .. })
+    ));
+}
+
 // ── Text extraction ────────────────────────────────────────────────
 
 #[test]

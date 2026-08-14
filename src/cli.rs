@@ -114,6 +114,16 @@ impl PagesArg {
 }
 
 impl Args {
+    /// Test-support constructor: parses `extra` flags on top of the required
+    /// `--input input.pdf` seed. Hidden from the documented API; kept public
+    /// so the binary crate's tests can share it.
+    #[doc(hidden)]
+    pub fn try_from_flags(extra: &[&str]) -> std::result::Result<Self, clap::Error> {
+        let mut argv = vec!["pdf_cutter", "--input", "input.pdf"];
+        argv.extend_from_slice(extra);
+        Self::try_parse_from(argv)
+    }
+
     pub fn validate_extract_args(&self) -> Result<()> {
         if self.format.is_some() {
             bail!(MODE_ERROR);
@@ -233,9 +243,7 @@ mod tests {
     use super::*;
 
     fn parse_args(extra: &[&str]) -> Result<Args, clap::Error> {
-        let mut argv = vec!["pdf_cutter", "--input", "input.pdf"];
-        argv.extend_from_slice(extra);
-        Args::try_parse_from(argv)
+        Args::try_from_flags(extra)
     }
 
     fn args(extra: &[&str]) -> Args {

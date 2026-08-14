@@ -58,6 +58,12 @@ pub(crate) fn page_index(page_number: NonZeroU16) -> i32 {
     i32::from(page_number.get()) - 1
 }
 
+/// Converts a zero-based destination index (bounded by the crate's `u16`
+/// page model) to a pdfium page index.
+pub(crate) fn destination_page_index(index: u16) -> i32 {
+    i32::from(index)
+}
+
 pub(crate) fn open_document<'pdfium>(
     pdfium: &'pdfium Pdfium,
     pdf_path: &Path,

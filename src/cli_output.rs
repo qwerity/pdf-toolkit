@@ -294,14 +294,11 @@ fn print_json(value: Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
     use pdf_cutter::{PageResult, StructuredPage, TextFileResult, TextSpan};
     use std::path::PathBuf;
 
     fn args(extra: &[&str]) -> Args {
-        let mut argv = vec!["pdf_cutter", "--input", "input.pdf"];
-        argv.extend_from_slice(extra);
-        Args::try_parse_from(argv).expect("arguments must parse")
+        Args::try_from_flags(extra).expect("arguments must parse")
     }
 
     fn page_result(page_number: Option<u16>) -> PageResult {

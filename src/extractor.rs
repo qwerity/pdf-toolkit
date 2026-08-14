@@ -1,5 +1,6 @@
 use crate::document::{
-    open_document, page_count_u16, page_dimensions_px, page_index, page_info_for_page,
+    destination_page_index, open_document, page_count_u16, page_dimensions_px, page_index,
+    page_info_for_page,
 };
 use crate::error::{PdfCutterError, Result};
 use crate::output::{
@@ -80,6 +81,11 @@ pub fn extract_pages(
     output_format: OutputFormat,
     output_folder: Option<&Path>,
 ) -> Result<ExtractionReport> {
+    // Validate up front so library callers that bypass the CLI's own
+    // validation get a structured error instead of a panic at render time
+    // (e.g. a PNG width beyond i32::MAX).
+    output_format.validate()?;
+
     let document = open_document(pdfium, pdf_path)?;
 
     let pages = document.pages();
@@ -244,7 +250,7 @@ fn save_concat_pdf(
         match output_document.pages_mut().copy_page_from_document(
             source_document,
             source_page_index,
-            i32::from(copied_pages),
+            destination_page_index(copied_pages),
         ) {
             Ok(()) => {
                 copied_pages += 1;
@@ -383,8 +389,10 @@ fn render_page_to_bitmap<'page>(
 ) -> Result<PdfBitmap<'page>> {
     let render_config = match size {
         PngSize::Scale(scale) => PdfRenderConfig::new().scale_page_by_factor(scale),
-        PngSize::WidthPx(width_px) => PdfRenderConfig::new()
-            .set_target_width(i32::try_from(width_px).expect("image width must fit in i32")),
+        PngSize::WidthPx(width_px) => PdfRenderConfig::new().set_target_width(
+            i32::try_from(width_px)
+                .expect("invariant: extract_pages validates width <= i32::MAX on entry"),
+        ),
     }
     .set_clear_color(PdfColor::WHITE);
 

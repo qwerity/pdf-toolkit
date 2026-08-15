@@ -284,27 +284,31 @@ main() {
 
     echo "=== Packaging ${crate_name} ${release_tag} for ${PLATFORM}/${arch} ==="
 
-    if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-        echo "1. Running Cargo checks and building Rust CLI..."
-        run_cargo_pipeline
-    else
-        echo "1. Skipping build because SKIP_BUILD=1"
-    fi
-
-    echo "2. Preparing runtime bundle..."
-    prune_runtime_bundle "${dist_dir}" "${binary_name}" "${library_name}"
-
-    echo "3. Copying binary..."
-    cp "target/release/${binary_name}" "${dist_dir}/${binary_name}"
-
+    # The PDFium library must be in place BEFORE the Cargo pipeline: the
+    # integration tests bind ./dist/<library> at runtime, and dist/ is not
+    # checked in, so fresh checkouts (CI) have no library yet.
     if [[ -f "${dist_library_path}" ]]; then
-        echo "4. Reusing ${library_name} from ${dist_dir}"
+        echo "1. Reusing ${library_name} from ${dist_dir}"
     else
-        echo "4. Downloading ${library_name}..."
+        echo "1. Downloading ${library_name}..."
+        mkdir -p "${dist_dir}"
         ensure_temp_dir
         pdfium_library="$(download_pdfium "${PLATFORM}" "${arch}" "${TEMP_DIR}")"
         cp "${pdfium_library}" "${dist_library_path}"
     fi
+
+    if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+        echo "2. Running Cargo checks and building Rust CLI..."
+        run_cargo_pipeline
+    else
+        echo "2. Skipping build because SKIP_BUILD=1"
+    fi
+
+    echo "3. Preparing runtime bundle..."
+    prune_runtime_bundle "${dist_dir}" "${binary_name}" "${library_name}"
+
+    echo "4. Copying binary..."
+    cp "target/release/${binary_name}" "${dist_dir}/${binary_name}"
 
     if [[ "${create_artifacts}" == "1" ]]; then
         echo "5. Creating release artifacts..."

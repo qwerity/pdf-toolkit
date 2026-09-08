@@ -71,30 +71,24 @@ pub fn pdfium() -> PdfiumHandle {
 ///
 /// The library ships in the workspace's `dist/`, and cargo runs an integration
 /// test with the working directory set to the *package* root, so the runtime's
-/// own relative lookup cannot see it from here. The workspace path is derived
-/// rather than assumed to be the current directory, which also keeps the tests
-/// working when run from anywhere.
+/// own relative lookup cannot see it from here. Naming the directory is all
+/// that is needed; how a library file is found inside it stays the runtime's
+/// business.
 fn bind_pdfium() -> Pdfium {
-    let library = workspace_root()
-        .join("dist")
-        .join(Pdfium::pdfium_platform_library_name());
+    let dist = workspace_root().join("dist");
 
-    Pdfium::bind_to_library(&library)
-        .map(Pdfium::new)
-        .or_else(|_| pdf_toolkit::create_pdfium().map_err(anyhow_string))
-        .unwrap_or_else(|error| {
-            panic!(
-                "pdfium runtime must be available; tried {} then the runtime's own lookup: {error}",
-                library.display()
-            )
-        })
-}
-
-fn anyhow_string(error: impl std::fmt::Display) -> String {
-    error.to_string()
+    pdf_toolkit::create_pdfium_at(&dist).unwrap_or_else(|error| {
+        panic!(
+            "pdfium runtime must be available in {}: {error}",
+            dist.display()
+        )
+    })
 }
 
 /// The workspace root, two levels above this crate (`crates/pdf-toolkit`).
+///
+/// Shared with the CLI harness, which spawns the binary with this as its
+/// working directory.
 pub fn workspace_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

@@ -12,6 +12,7 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -71,7 +72,7 @@ impl Run {
 pub fn run(args: &[&str]) -> Run {
     let output = Command::new(binary())
         .args(args)
-        .current_dir(workspace_root())
+        .current_dir(crate::common::workspace_root())
         .output()
         .expect("failed to spawn the binary under test");
 
@@ -89,15 +90,6 @@ pub fn run_json(args: &[&str]) -> Value {
 
 pub fn binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_pdf-toolkit"))
-}
-
-/// The workspace root, two levels above this crate (`crates/pdf-toolkit`).
-pub fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate must live at <workspace>/crates/<name>")
-        .to_path_buf()
 }
 
 /// Every command line the tests issue, in one place.
@@ -208,6 +200,31 @@ pub fn run_argv(argv: &[String]) -> Run {
 /// Runs an owned argv built by [`argv`], requiring success.
 pub fn json_argv(argv: &[String]) -> Value {
     run_argv(argv).expect_success().json()
+}
+
+/// Runs an argv once per test binary and shares the parsed result.
+///
+/// Several tests assert on different fields of the same command's output.
+/// Spawning the binary for each of them re-pays a process launch and a dlopen
+/// of the 7 MB native library to re-derive a document a sibling test already
+/// produced, so identical command lines are run once and cached.
+///
+/// Only for commands that write nothing: a cached run cannot be observed
+/// twice, so anything asserting on files or on stderr must call [`run_argv`].
+pub fn json_argv_cached(argv: &[String]) -> Value {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Value>>> =
+        std::sync::OnceLock::new();
+
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let key = argv.join("\u{1f}");
+
+    if let Some(hit) = cache.lock().expect("cache lock").get(&key) {
+        return hit.clone();
+    }
+
+    let value = json_argv(argv);
+    cache.lock().expect("cache lock").insert(key, value.clone());
+    value
 }
 
 /// The exact set of keys on a JSON object, sorted.

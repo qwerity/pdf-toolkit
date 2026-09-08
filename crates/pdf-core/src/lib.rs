@@ -32,6 +32,6 @@ pub use page::{
     destination_page_index, open_document, page_count_u16, page_dimensions_px, page_index,
 };
 pub use page_selection::PageSelection;
-pub use pdfium_runtime::create_pdfium;
+pub use pdfium_runtime::{create_pdfium, create_pdfium_at};
 pub use text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
 pub use warning::ExtractionWarning;

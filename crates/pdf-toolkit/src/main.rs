@@ -6,7 +6,9 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use pdf_toolkit::cli::{Cli, Command, CutArgs, InspectArgs, RenderArgs, StructuredArgs, TextArgs};
+use pdf_toolkit::cli::{
+    Cli, Command, CutArgs, InspectArgs, RenderArgs, Source, StructuredArgs, TextArgs,
+};
 use pdf_toolkit::error::{PdfError, Result as LibraryResult};
 use pdf_toolkit::{
     OutputFormat, Pdfium, create_pdfium, extract_pages, extract_structured_text, extract_text,
@@ -48,41 +50,55 @@ fn inspect(args: &InspectArgs) -> Result<()> {
 }
 
 fn cut(args: &CutArgs) -> Result<()> {
-    let output_format = args.output_format();
-    let report = extract(
-        &args.source.input,
-        args.source.pages.selection().clone(),
-        output_format,
+    cut_pages(
+        &args.source,
         args.output.as_deref(),
-    )?;
-
-    print_page_output(args.source.pages.raw(), args.concat, output_format, &report)
+        args.output_format(),
+        args.concat,
+    )
 }
 
 fn render(args: &RenderArgs) -> Result<()> {
-    let output_format = args.output_format();
-    let report = extract(
-        &args.source.input,
-        args.source.pages.selection().clone(),
-        output_format,
-        args.output.as_deref(),
-    )?;
-
     // PNG output is one file per page, so there is never a merged result to
-    // describe and the selection text is not echoed.
-    print_page_output(args.source.pages.raw(), false, output_format, &report)
+    // describe and the selection text is not echoed back.
+    const ECHOES_A_MERGED_SELECTION: bool = false;
+
+    cut_pages(
+        &args.source,
+        args.output.as_deref(),
+        args.output_format(),
+        ECHOES_A_MERGED_SELECTION,
+    )
 }
 
-fn extract(
-    input: &Path,
-    selection: pdf_toolkit::PageSelection,
-    output_format: OutputFormat,
+/// Runs the page-extraction engine and reports what it produced.
+///
+/// `cut` and `render` differ only in the format they ask for and in whether a
+/// merged selection can exist to be echoed; everything between — resolving the
+/// selection, naming outputs, collecting per-page warnings — is one path.
+fn cut_pages(
+    source: &Source,
     output: Option<&Path>,
-) -> Result<pdf_toolkit::ExtractionReport> {
+    output_format: OutputFormat,
+    echoes_merged_selection: bool,
+) -> Result<()> {
     let pdfium = pdfium()?;
+    let input = &source.input;
+    let report = extract_pages(
+        &pdfium,
+        input,
+        source.pages.selection().clone(),
+        output_format,
+        output,
+    )
+    .with_context(|| format!("failed to extract pages from '{}'", input.display()))?;
 
-    extract_pages(&pdfium, input, selection, output_format, output)
-        .with_context(|| format!("failed to extract pages from '{}'", input.display()))
+    print_page_output(
+        source.pages.raw(),
+        echoes_merged_selection,
+        output_format,
+        &report,
+    )
 }
 
 fn text(args: &TextArgs) -> Result<()> {

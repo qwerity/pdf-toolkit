@@ -35,11 +35,10 @@
 pub mod cli;
 
 pub use pdf_core::error;
-pub use pdf_core::{ExtractionWarning, PageSelection, Pdfium, create_pdfium};
+pub use pdf_core::{ExtractionWarning, PageSelection, Pdfium, create_pdfium, create_pdfium_at};
 pub use pdf_inspect::{DocumentInfo, LlmReason, PageInfo, document_page_count, inspect_document};
 pub use pdf_pages::{ExtractionReport, OutputFormat, PageResult, extract_pages};
 pub use pdf_render::PngSize;
-pub use pdf_text::structured_text_extractor;
 pub use pdf_text::{
     StructuredExtractionReport, StructuredOutputFormat, StructuredPage, TextExtractionReport,
     TextFileResult, TextSpan, extract_structured_text, extract_text,

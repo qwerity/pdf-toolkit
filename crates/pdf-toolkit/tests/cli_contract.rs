@@ -15,7 +15,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use cli::{argv, as_str, assert_keys, assert_written, json_argv, run, run_argv};
+use cli::{argv, as_str, assert_keys, assert_written, json_argv, json_argv_cached, run, run_argv};
 use common::{Text, pdfium, write_garbled_pdf, write_pdf, write_pdf_with_image, write_simple_pdf};
 use serde_json::Value;
 use tempfile::TempDir;
@@ -85,7 +85,7 @@ fn simple() -> &'static Path {
 
 #[test]
 fn inspect_reports_page_count_and_one_entry_per_page() {
-    let output = json_argv(&argv::inspect(as_str(simple())));
+    let output = json_argv_cached(&argv::inspect(as_str(simple())));
 
     assert_eq!(output["page_count"], 3);
     let pages = output["pages"].as_object().expect("pages object");
@@ -99,7 +99,7 @@ fn inspect_reports_page_count_and_one_entry_per_page() {
 
 #[test]
 fn inspect_page_entry_carries_exactly_the_documented_keys() {
-    let output = json_argv(&argv::inspect(as_str(simple())));
+    let output = json_argv_cached(&argv::inspect(as_str(simple())));
 
     assert_keys(
         &output["pages"]["1"],
@@ -117,7 +117,7 @@ fn inspect_page_entry_carries_exactly_the_documented_keys() {
 
 #[test]
 fn inspect_reports_a4_dimensions_in_points_for_a_text_page() {
-    let output = json_argv(&argv::inspect(as_str(simple())));
+    let output = json_argv_cached(&argv::inspect(as_str(simple())));
     let page = &output["pages"]["1"];
 
     assert_eq!(page["width_px"], 595);
@@ -129,7 +129,7 @@ fn inspect_reports_a4_dimensions_in_points_for_a_text_page() {
 
 #[test]
 fn inspect_omits_llm_reasons_when_no_pass_is_recommended() {
-    let output = json_argv(&argv::inspect(as_str(simple())));
+    let output = json_argv_cached(&argv::inspect(as_str(simple())));
 
     assert_eq!(output["pages"]["1"]["llm_recommended"], false);
     assert!(
@@ -140,7 +140,7 @@ fn inspect_omits_llm_reasons_when_no_pass_is_recommended() {
 
 #[test]
 fn inspect_explains_why_an_image_heavy_page_needs_a_vision_pass() {
-    let output = json_argv(&argv::inspect(as_str(&fixtures().image)));
+    let output = json_argv_cached(&argv::inspect(as_str(&fixtures().image)));
     let page = &output["pages"]["1"];
 
     assert_eq!(page["llm_recommended"], true);
@@ -169,7 +169,7 @@ fn inspect_explains_why_an_image_heavy_page_needs_a_vision_pass() {
 
 #[test]
 fn inspect_flags_a_garbled_text_layer_as_unreadable() {
-    let output = json_argv(&argv::inspect(as_str(&fixtures().garbled)));
+    let output = json_argv_cached(&argv::inspect(as_str(&fixtures().garbled)));
     let page = &output["pages"]["1"];
 
     assert_eq!(page["llm_recommended"], true);
@@ -369,7 +369,7 @@ fn text_with_concat_collapses_a_selection_into_one_file() {
 
 #[test]
 fn structured_full_emits_pages_with_markdown_and_spans() {
-    let output = json_argv(&argv::structured(as_str(&fixtures().styled), "all"));
+    let output = json_argv_cached(&argv::structured(as_str(&fixtures().styled), "all"));
 
     assert_keys(&output, &["pages", "selected_page_count"]);
     assert_eq!(output["selected_page_count"], 1);
@@ -388,7 +388,7 @@ fn structured_full_emits_pages_with_markdown_and_spans() {
 
 #[test]
 fn structured_span_carries_exactly_the_documented_keys() {
-    let output = json_argv(&argv::structured(as_str(&fixtures().styled), "all"));
+    let output = json_argv_cached(&argv::structured(as_str(&fixtures().styled), "all"));
     let spans = output["pages"][0]["spans"].as_array().expect("spans array");
 
     assert!(!spans.is_empty(), "a text page must yield spans");
@@ -412,7 +412,7 @@ fn structured_span_carries_exactly_the_documented_keys() {
 
 #[test]
 fn structured_markdown_only_omits_spans_entirely() {
-    let output = json_argv(&argv::structured_markdown(
+    let output = json_argv_cached(&argv::structured_markdown(
         as_str(&fixtures().styled),
         "all",
     ));
@@ -428,7 +428,7 @@ fn structured_markdown_only_omits_spans_entirely() {
 
 #[test]
 fn structured_honours_a_page_selection() {
-    let output = json_argv(&argv::structured(as_str(simple()), "2"));
+    let output = json_argv_cached(&argv::structured(as_str(simple()), "2"));
 
     assert_eq!(output["selected_page_count"], 1);
     let pages = output["pages"].as_array().expect("pages array");

@@ -269,7 +269,7 @@ fn save_pdf_page(
         output_context.output_dir,
         output_context.stem,
         page_number,
-        OutputFormat::Pdf { concat: false }.extension(),
+        output_context.output_format.extension(),
     )?;
     let mut output_document =
         pdfium

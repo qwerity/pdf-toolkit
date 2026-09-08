@@ -4,12 +4,29 @@ on:
   push:
     tags:
       - '**'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build and attach artifacts to.
+        required: true
+        type: string
+      platforms:
+        description: Platforms to build.
+        required: true
+        type: choice
+        default: windows
+        options:
+          - windows
+          - macos
+          - linux
+          - macos,windows
+          - linux,macos,windows
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event.inputs.tag || github.ref }}
   cancel-in-progress: false
 
 env:
@@ -22,24 +39,65 @@ jobs:
     outputs:
       release_name: ${{ steps.version.outputs.release_name }}
       release_tag: ${{ steps.version.outputs.release_tag }}
+      matrix: ${{ steps.version.outputs.matrix }}
     steps:
       - id: version
-        name: Compute Release Tag
+        name: Compute Release Tag And Build Matrix
         shell: bash
+        env:
+          INPUT_PLATFORMS: ${{ github.event.inputs.platforms }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
 
-          release_tag="${GITHUB_REF_NAME}"
+          # A tag push publishes Linux and macOS. Windows is built on demand,
+          # against a tag that already exists, and attached to the release the
+          # tag push created.
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            release_tag="${INPUT_TAG}"
+            selected="${INPUT_PLATFORMS}"
+          else
+            release_tag="${GITHUB_REF_NAME}"
+            selected="linux,macos"
+          fi
 
           if [[ -z "${release_tag}" ]]; then
             echo "Could not read release tag from GitHub context" >&2
             exit 1
           fi
 
+          entries=()
+
+          IFS=',' read -ra platforms <<< "${selected}"
+          for platform in "${platforms[@]}"; do
+            case "${platform}" in
+              linux)
+                entries+=('{"os":"ubuntu-latest","platform":"linux"}')
+                ;;
+              macos)
+                entries+=('{"os":"macos-latest","platform":"macos"}')
+                ;;
+              windows)
+                entries+=('{"os":"windows-latest","platform":"windows"}')
+                ;;
+              *)
+                echo "Unsupported platform: ${platform}" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          if (( ${#entries[@]} == 0 )); then
+            echo "No platforms selected" >&2
+            exit 1
+          fi
+
+          matrix="{\"include\":[$(IFS=','; echo "${entries[*]}")]}"
           release_name="pdf_cutter ${release_tag}"
 
           echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "release_name=${release_name}" >> "${GITHUB_OUTPUT}"
+          echo "matrix=${matrix}" >> "${GITHUB_OUTPUT}"
 
   build:
     name: Build ${{ matrix.platform }}
@@ -47,16 +105,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            platform: linux
-          - os: macos-latest
-            platform: macos
-          - os: windows-latest
-            platform: windows
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.release_tag }}
 
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -91,6 +144,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.release_tag }}
 
       - name: Download Bundles
         uses: actions/download-artifact@v8
@@ -124,7 +179,6 @@ jobs:
           CUSTOM_NOTES: ${{ steps.notes.outputs.custom_notes }}
           RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-          TARGET_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -135,6 +189,10 @@ jobs:
             echo "No release artifacts were downloaded." >&2
             exit 1
           fi
+
+          # The checkout is pinned to the tag, so this is the tagged commit even
+          # when the run was dispatched from a branch.
+          target_sha="$(git rev-parse HEAD)"
 
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             gh release upload "${RELEASE_TAG}" "${files[@]}" --clobber
@@ -162,7 +220,7 @@ jobs:
               "${files[@]}"
               --title "${RELEASE_NAME}"
               --generate-notes
-              --target "${TARGET_SHA}"
+              --target "${target_sha}"
             )
 
             if [[ -n "${CUSTOM_NOTES:-}" ]]; then

@@ -866,7 +866,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-core"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "image",
  "pdfium-render",
@@ -896,7 +896,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-inspect"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "pdf-core",
  "pdf-text",
@@ -905,7 +905,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-pages"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "pdf-core",
  "pdf-inspect",
@@ -915,7 +915,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-render"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "image",
  "pdf-core",
@@ -924,7 +924,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-text"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "pdf-core",
  "pdfium-render",
@@ -933,7 +933,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-toolkit"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",

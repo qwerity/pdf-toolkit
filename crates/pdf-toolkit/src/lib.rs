@@ -31,12 +31,11 @@
 //! whole-document problems are [`error::PdfCutterError`]s.
 //!
 //! [pdfium-render]: https://crates.io/crates/pdfium-render
-//! [`Pdfium`]: pdfium_render::prelude::Pdfium
 
 pub mod cli;
 
 pub use pdf_core::error;
-pub use pdf_core::{ExtractionWarning, PageSelection, create_pdfium};
+pub use pdf_core::{ExtractionWarning, PageSelection, Pdfium, create_pdfium};
 pub use pdf_inspect::{DocumentInfo, LlmReason, PageInfo, document_page_count, inspect_document};
 pub use pdf_pages::{ExtractionReport, OutputFormat, PageResult, extract_pages};
 pub use pdf_render::PngSize;

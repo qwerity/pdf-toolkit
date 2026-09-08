@@ -509,16 +509,15 @@ fn a_garbled_page_is_skipped_and_explained_rather_than_silently_empty() {
     );
 }
 
-/// Pins an asymmetry in the current warning reporting, so that a refactor
-/// changes it deliberately rather than by accident.
+/// A run that produced nothing is the case a user most needs explained, so it
+/// reports on stderr like any other.
 ///
-/// When *some* pages succeed, each warning is echoed to stderr as well as
-/// listed in `errors`. When *every* page is skipped, the JSON still carries
-/// `errors` but stderr stays empty — the warnings are printed on the path that
-/// produced files, and the empty-result path returns before reaching it.
+/// It did not always: warnings were printed on the path that produced files,
+/// and the empty-result path returned before reaching it, leaving stderr
+/// silent and the reason visible only to a caller parsing `errors`.
 #[test]
-fn warnings_reach_stderr_only_when_some_page_succeeded() {
-    let out = out_dir("warn_asymmetry");
+fn warnings_reach_stderr_whether_or_not_any_page_succeeded() {
+    let out = out_dir("warn_both_paths");
 
     let partial = run_argv(&argv::text(as_str(simple()), "1,99", as_str(&out))).expect_success();
     assert!(
@@ -534,14 +533,13 @@ fn warnings_reach_stderr_only_when_some_page_succeeded() {
     ))
     .expect_success();
     assert!(
-        total.stderr.trim().is_empty(),
-        "current behaviour: a run that produced nothing reports only through `errors`, \
-         got {:?}",
+        total.stderr.contains("Warning:"),
+        "a run that produced nothing must still say why, got {:?}",
         total.stderr
     );
     assert!(
         total.json()["errors"].is_object(),
-        "the reason must still be available to a caller"
+        "the reason must also be available to a caller"
     );
 }
 
@@ -621,29 +619,27 @@ fn a_file_that_is_not_a_pdf_is_refused() {
     assert_rejected(&cli::as_args(&argv::inspect(as_str(&bogus))));
 }
 
+/// Options that were meaningful in one mode and an error in another no longer
+/// exist on the command they did not apply to, so the request cannot be
+/// expressed at all. `cli.rs` covers the parse; this covers the exit status a
+/// caller sees.
 #[test]
-fn cutting_and_text_extraction_cannot_be_requested_together() {
+fn an_option_that_does_not_belong_to_a_command_is_refused() {
     let input = as_str(simple());
-    assert_rejected(&["--input", input, "--extract", "--format", "pdf"]);
-}
 
-#[test]
-fn structured_extraction_excludes_the_other_modes() {
-    let input = as_str(simple());
-    assert_rejected(&["--input", input, "--extract-structured", "--extract"]);
-    assert_rejected(&["--input", input, "--extract-structured", "--page-count"]);
-    assert_rejected(&["--input", input, "--extract-structured", "--format", "pdf"]);
-    assert_rejected(&["--input", input, "--extract-structured", "--concat"]);
+    assert_rejected(&["cut", input, "--scale", "2"]);
+    assert_rejected(&["cut", input, "--scale-width-px", "800"]);
+    assert_rejected(&["render", input, "--concat"]);
+    assert_rejected(&["text", input, "--scale", "2"]);
+    assert_rejected(&["structured", input, "--concat"]);
+    assert_rejected(&["structured", input, "--output", "out"]);
 }
 
 #[test]
 fn png_sizing_options_are_mutually_exclusive() {
-    let input = as_str(simple());
     assert_rejected(&[
-        "--input",
-        input,
-        "--format",
-        "png",
+        "render",
+        as_str(simple()),
         "--scale",
         "2",
         "--scale-width-px",
@@ -652,44 +648,45 @@ fn png_sizing_options_are_mutually_exclusive() {
 }
 
 #[test]
-fn png_sizing_options_are_refused_outside_png_output() {
-    let input = as_str(simple());
-    assert_rejected(&["--input", input, "--format", "pdf", "--scale", "2"]);
-    assert_rejected(&[
-        "--input",
-        input,
-        "--format",
-        "pdf",
-        "--scale-width-px",
-        "800",
-    ]);
-    assert_rejected(&["--input", input, "--extract", "--scale", "2"]);
-}
-
-#[test]
-fn concat_is_refused_for_png_output() {
-    let input = as_str(simple());
-    assert_rejected(&["--input", input, "--format", "png", "--concat"]);
-}
-
-#[test]
 fn a_non_positive_scale_is_refused() {
     let input = as_str(simple());
-    assert_rejected(&["--input", input, "--format", "png", "--scale", "0"]);
-    assert_rejected(&["--input", input, "--format", "png", "--scale", "-1"]);
-    assert_rejected(&["--input", input, "--format", "png", "--scale-width-px", "0"]);
+
+    assert_rejected(&["render", input, "--scale", "0"]);
+    assert_rejected(&["render", input, "--scale", "-1"]);
+    assert_rejected(&["render", input, "--scale-width-px", "0"]);
 }
 
 #[test]
 fn an_unparseable_page_selection_is_refused() {
     let input = as_str(simple());
-    assert_rejected(&["--input", input, "--page-count", "--pages", "3-1"]);
-    assert_rejected(&["--input", input, "--page-count", "--pages", "abc"]);
+
+    assert_rejected(&["cut", input, "--pages", "3-1"]);
+    assert_rejected(&["cut", input, "--pages", "abc"]);
 }
 
 #[test]
-fn a_command_line_with_no_mode_is_refused() {
-    assert_rejected(&["--input", as_str(simple())]);
+fn a_command_line_naming_no_command_is_refused() {
+    assert_rejected(&[]);
+    assert_rejected(&[as_str(simple())]);
+}
+
+#[test]
+fn a_command_with_no_input_is_refused() {
+    for command in ["inspect", "cut", "render", "text", "structured"] {
+        assert_rejected(&[command]);
+    }
+}
+
+/// The old flag surface is gone rather than quietly accepted, so a caller
+/// still on it fails loudly instead of appearing to work.
+#[test]
+fn the_previous_flag_surface_is_no_longer_accepted() {
+    let input = as_str(simple());
+
+    assert_rejected(&["--input", input, "--page-count"]);
+    assert_rejected(&["--input", input, "--format", "pdf"]);
+    assert_rejected(&["--input", input, "--extract"]);
+    assert_rejected(&["--input", input, "--extract-structured"]);
 }
 
 // ---------------------------------------------------------------------------

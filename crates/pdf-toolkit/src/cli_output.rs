@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, bail};
-use pdf_toolkit::cli::Args;
 use pdf_toolkit::{
     DocumentInfo, ExtractionReport, ExtractionWarning, OutputFormat, PageInfo, PngSize,
     StructuredExtractionReport, TextExtractionReport,
@@ -17,10 +16,11 @@ pub fn print_structured_output(report: &StructuredExtractionReport) -> Result<()
     print_json(output)
 }
 
-pub fn print_text_output(args: &Args, report: &TextExtractionReport) -> Result<()> {
+pub fn print_text_output(pages: &str, report: &TextExtractionReport) -> Result<()> {
     if report.files.is_empty() {
         if !report.warnings.is_empty() {
-            return print_json(text_output_json(args, report)?);
+            print_warnings(&report.warnings);
+            return print_json(text_output_json(pages, report)?);
         }
 
         bail!(
@@ -29,11 +29,12 @@ pub fn print_text_output(args: &Args, report: &TextExtractionReport) -> Result<(
     }
 
     print_warnings(&report.warnings);
-    print_json(text_output_json(args, report)?)
+    print_json(text_output_json(pages, report)?)
 }
 
 pub fn print_page_output(
-    args: &Args,
+    pages: &str,
+    concat: bool,
     output_format: OutputFormat,
     report: &ExtractionReport,
 ) -> Result<()> {
@@ -45,18 +46,19 @@ pub fn print_page_output(
         );
     }
 
-    print_json(page_output_json(args, output_format, report)?)
+    print_json(page_output_json(pages, concat, output_format, report)?)
 }
 
 fn page_output_json(
-    args: &Args,
+    pages_spec: &str,
+    concat: bool,
     output_format: OutputFormat,
     report: &ExtractionReport,
 ) -> Result<Value> {
     let mut output = Map::new();
     add_png_settings(&mut output, output_format);
 
-    if args.concat {
+    if concat {
         let file = report
             .pages
             .first()
@@ -66,7 +68,7 @@ fn page_output_json(
             "concat".to_string(),
             json!({
                 "path": file.output_path.display().to_string(),
-                "pages": args.pages.raw(),
+                "pages": pages_spec,
                 "size_kb": file.size_kb,
             }),
         );
@@ -103,7 +105,7 @@ fn page_output_json(
     Ok(Value::Object(output))
 }
 
-fn text_output_json(args: &Args, report: &TextExtractionReport) -> Result<Value> {
+fn text_output_json(pages_spec: &str, report: &TextExtractionReport) -> Result<Value> {
     let mut output = Map::new();
     add_errors(&mut output, &report.warnings);
 
@@ -117,7 +119,7 @@ fn text_output_json(args: &Args, report: &TextExtractionReport) -> Result<Value>
             "concat".to_string(),
             json!({
                 "path": file.output_path.display().to_string(),
-                "pages": args.pages.raw(),
+                "pages": pages_spec,
                 "size_kb": file.size_kb,
             }),
         );
@@ -274,7 +276,7 @@ fn add_errors(output: &mut Map<String, Value>, warnings: &[ExtractionWarning]) {
         .iter()
         .map(|warning| {
             (
-                warning_page(warning).to_string(),
+                warning.page_number().to_string(),
                 Value::String(warning.to_string()),
             )
         })
@@ -282,15 +284,6 @@ fn add_errors(output: &mut Map<String, Value>, warnings: &[ExtractionWarning]) {
 
     if !errors.is_empty() {
         output.insert("errors".to_string(), Value::Object(errors));
-    }
-}
-
-fn warning_page(warning: &ExtractionWarning) -> u16 {
-    match warning {
-        ExtractionWarning::PageOutOfBounds { page_number, .. }
-        | ExtractionWarning::LoadPage { page_number, .. }
-        | ExtractionWarning::UnreadableText { page_number }
-        | ExtractionWarning::SavePage { page_number, .. } => *page_number,
     }
 }
 
@@ -313,10 +306,6 @@ mod tests {
     use super::*;
     use pdf_toolkit::{LlmReason, PageResult, StructuredPage, TextFileResult, TextSpan};
     use std::path::PathBuf;
-
-    fn args(extra: &[&str]) -> Args {
-        Args::try_from_flags(extra).expect("arguments must parse")
-    }
 
     fn page_result(page_number: Option<u16>) -> PageResult {
         PageResult {
@@ -358,12 +347,8 @@ mod tests {
             source_pages: Vec::new(),
             warnings: Vec::new(),
         };
-        let value = page_output_json(
-            &args(&["-f", "pdf"]),
-            OutputFormat::Pdf { concat: false },
-            &report,
-        )
-        .expect("json output");
+        let value = page_output_json("all", false, OutputFormat::Pdf { concat: false }, &report)
+            .expect("json output");
 
         assert!(value.get("concat").is_none());
         assert_eq!(value["pages"]["1"]["size_kb"], 12);
@@ -378,7 +363,8 @@ mod tests {
             warnings: Vec::new(),
         };
         let scale = page_output_json(
-            &args(&["-f", "png"]),
+            "all",
+            false,
             OutputFormat::Png {
                 size: PngSize::Scale(1.5),
             },
@@ -388,7 +374,8 @@ mod tests {
         assert_eq!(scale["scale"], 1.5);
 
         let width = page_output_json(
-            &args(&["-f", "png"]),
+            "all",
+            false,
             OutputFormat::Png {
                 size: PngSize::WidthPx(640),
             },
@@ -405,12 +392,8 @@ mod tests {
             source_pages: vec![page_info(1), page_info(2)],
             warnings: Vec::new(),
         };
-        let value = page_output_json(
-            &args(&["-f", "pdf", "-c", "-p", "1-2"]),
-            OutputFormat::Pdf { concat: true },
-            &report,
-        )
-        .expect("json output");
+        let value = page_output_json("1-2", true, OutputFormat::Pdf { concat: true }, &report)
+            .expect("json output");
 
         assert_eq!(value["concat"]["pages"], "1-2");
         assert_eq!(value["concat"]["size_kb"], 12);
@@ -426,12 +409,7 @@ mod tests {
             warnings: Vec::new(),
         };
         assert!(
-            page_output_json(
-                &args(&["-f", "pdf", "-c"]),
-                OutputFormat::Pdf { concat: true },
-                &report
-            )
-            .is_err()
+            page_output_json("all", true, OutputFormat::Pdf { concat: true }, &report).is_err()
         );
     }
 
@@ -443,12 +421,7 @@ mod tests {
             warnings: Vec::new(),
         };
         assert!(
-            page_output_json(
-                &args(&["-f", "pdf"]),
-                OutputFormat::Pdf { concat: false },
-                &report
-            )
-            .is_err()
+            page_output_json("all", false, OutputFormat::Pdf { concat: false }, &report).is_err()
         );
     }
 
@@ -459,7 +432,7 @@ mod tests {
             selected_page_count: 2,
             warnings: Vec::new(),
         };
-        let value = text_output_json(&args(&["-e", "-p", "1-2"]), &report).expect("json output");
+        let value = text_output_json("1-2", &report).expect("json output");
         assert_eq!(value["concat"]["pages"], "1-2");
         assert!(value.get("pages").is_none());
     }
@@ -471,7 +444,7 @@ mod tests {
             selected_page_count: 1,
             warnings: Vec::new(),
         };
-        let value = text_output_json(&args(&["-e", "-p", "2"]), &report).expect("json output");
+        let value = text_output_json("2", &report).expect("json output");
         assert_eq!(value["pages"]["2"]["size_kb"], 3);
     }
 
@@ -485,7 +458,7 @@ mod tests {
                 total_pages: 3,
             }],
         };
-        let value = text_output_json(&args(&["-e", "-p", "99"]), &report).expect("json output");
+        let value = text_output_json("99", &report).expect("json output");
         let message = value["errors"]["99"].as_str().expect("error message");
         assert!(message.contains("out of bounds"));
     }
@@ -566,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn warning_page_extracts_page_number_from_all_variants() {
+    fn warnings_are_keyed_by_the_page_they_are_about() {
         let warnings = [
             ExtractionWarning::PageOutOfBounds {
                 page_number: 1,
@@ -582,7 +555,10 @@ mod tests {
                 reason: "y".to_string(),
             },
         ];
-        let numbers: Vec<u16> = warnings.iter().map(warning_page).collect();
+        let numbers: Vec<u16> = warnings
+            .iter()
+            .map(ExtractionWarning::page_number)
+            .collect();
         assert_eq!(numbers, vec![1, 2, 3, 4]);
     }
 }

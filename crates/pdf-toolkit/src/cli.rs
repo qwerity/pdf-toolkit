@@ -1,41 +1,61 @@
-use anyhow::{Context, Result, bail};
-use clap::{Parser, ValueEnum};
+//! Command-line surface.
+//!
+//! One subcommand per operation, which is what lets clap reject a nonsensical
+//! request instead of the program checking for one. The flag form this
+//! replaced had four modes selected by `--page-count` / `--extract` /
+//! `--extract-structured` / `--format`, every pair of which had to be declared
+//! mutually exclusive, and options that were meaningful in one mode and an
+//! error in another: `--concat` applied to PDF but not PNG, `--scale` to PNG
+//! but not PDF, and neither to text. Those combinations are now unspeakable —
+//! `cut` has no `--scale` to reject — so the validation they needed is gone
+//! rather than reimplemented.
+//!
+//! Each tool is a subcommand, so adding one is adding a
+//! variant to [`Command`] rather than reconciling two ways of being invoked.
+
+use std::path::PathBuf;
+
+use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
+
 use pdf_core::PageSelection;
 use pdf_pages::OutputFormat;
 use pdf_render::PngSize;
 use pdf_text::StructuredOutputFormat;
-use std::path::PathBuf;
-
-const MODE_ERROR: &str = "choose either extraction or cutting: use --extract for text extraction, or use --format for page cutting";
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-pub struct Args {
-    /// Input PDF.
-    #[arg(short, long)]
+#[command(
+    name = "pdf-toolkit",
+    about = "Inspect PDFs, cut pages to PDF or PNG, and extract plain or structured text.",
+    version,
+    author
+)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Report the page count and per-page metadata, including whether a page
+    /// needs a vision-model pass.
+    Inspect(InspectArgs),
+    /// Cut selected pages into single-page PDFs, or one merged PDF.
+    Cut(CutArgs),
+    /// Render selected pages as PNG images.
+    Render(RenderArgs),
+    /// Extract plain text into `.txt` files.
+    Text(TextArgs),
+    /// Extract positioned text spans and a markdown reconstruction, to stdout.
+    Structured(StructuredArgs),
+}
+
+/// The source document and the pages wanted from it.
+#[derive(ClapArgs, Debug)]
+pub struct Source {
+    /// Source PDF.
     pub input: PathBuf,
 
-    /// Print page count and per-page metadata, then exit.
-    #[arg(short = 'n', long = "page-count")]
-    pub page_count: bool,
-
-    /// Extract text into `.txt` file(s).
-    #[arg(short = 'e', long, conflicts_with = "page_count")]
-    pub extract: bool,
-
-    /// Extract structured text as JSON with spans (font, position) and markdown.
-    #[arg(long = "extract-structured", conflicts_with_all = ["page_count", "extract"])]
-    pub extract_structured: bool,
-
-    /// Structured extraction format: "full" (spans + markdown) or "markdown" (markdown only).
-    #[arg(
-        long = "structured-format",
-        default_value = "full",
-        requires = "extract_structured"
-    )]
-    pub structured_format: StructuredFormatArg,
-
-    /// Pages to extract, like `1,2,5-7` or `all`.
+    /// Pages to act on, like `1,2,5-7` or `all`.
     #[arg(
         short = 'p',
         long,
@@ -44,38 +64,115 @@ pub struct Args {
         default_value = "all"
     )]
     pub pages: PagesArg,
+}
 
-    /// Cutting output format.
-    #[arg(short = 'f', long, value_enum)]
-    pub format: Option<CliFormat>,
+#[derive(ClapArgs, Debug)]
+pub struct InspectArgs {
+    /// Source PDF.
+    pub input: PathBuf,
+}
 
-    /// Merge selected pages into one file.
-    #[arg(short = 'c', long)]
-    pub concat: bool,
+#[derive(ClapArgs, Debug)]
+pub struct CutArgs {
+    #[command(flatten)]
+    pub source: Source,
 
     /// Output directory. Defaults to the current directory.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
-    /// PNG scale. Defaults to `2.0`.
-    #[arg(
-        short = 's',
-        long,
-        value_parser = parse_scale,
-        conflicts_with = "scale_width_px"
-    )]
+    /// Merge the selected pages into one PDF.
+    #[arg(short, long)]
+    pub concat: bool,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct RenderArgs {
+    #[command(flatten)]
+    pub source: Source,
+
+    /// Output directory. Defaults to the current directory.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Scale factor applied to the page's own size. Defaults to `2.0` when
+    /// no sizing option is given.
+    #[arg(short, long, value_parser = parse_scale, conflicts_with = "scale_width_px")]
     pub scale: Option<f32>,
 
-    /// Target PNG width in pixels. Preserves aspect ratio.
-    #[arg(long = "scale-width-px", value_parser = parse_scale_width_px, conflicts_with = "scale")]
+    /// Target width in pixels. Preserves the aspect ratio.
+    #[arg(long = "scale-width-px", value_parser = parse_scale_width_px)]
     pub scale_width_px: Option<u32>,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-pub enum CliFormat {
-    Pdf,
-    Png,
+#[derive(ClapArgs, Debug)]
+pub struct TextArgs {
+    #[command(flatten)]
+    pub source: Source,
+
+    /// Output directory. Defaults to the current directory.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Write the selected pages into one file.
+    #[arg(short, long)]
+    pub concat: bool,
 }
+
+#[derive(ClapArgs, Debug)]
+pub struct StructuredArgs {
+    #[command(flatten)]
+    pub source: Source,
+
+    /// `full` includes spans and markdown; `markdown` emits markdown only.
+    #[arg(long = "structured-format", default_value = "full")]
+    pub structured_format: StructuredFormatArg,
+}
+
+impl Command {
+    /// The source PDF, whichever command was asked for. Used by the one
+    /// check that applies to all of them: that the input exists and is a file.
+    pub fn input(&self) -> &PathBuf {
+        match self {
+            Self::Inspect(args) => &args.input,
+            Self::Cut(args) => &args.source.input,
+            Self::Render(args) => &args.source.input,
+            Self::Text(args) => &args.source.input,
+            Self::Structured(args) => &args.source.input,
+        }
+    }
+}
+
+impl CutArgs {
+    pub fn output_format(&self) -> OutputFormat {
+        OutputFormat::Pdf {
+            concat: self.concat,
+        }
+    }
+}
+
+impl RenderArgs {
+    /// The size to render at.
+    ///
+    /// `--scale` and `--scale-width-px` are declared as conflicting, so at
+    /// most one is present; neither means the default scale.
+    pub fn png_size(&self) -> PngSize {
+        match (self.scale, self.scale_width_px) {
+            (Some(scale), _) => PngSize::Scale(scale),
+            (None, Some(width_px)) => PngSize::WidthPx(width_px),
+            (None, None) => PngSize::Scale(DEFAULT_PNG_SCALE),
+        }
+    }
+
+    pub fn output_format(&self) -> OutputFormat {
+        OutputFormat::Png {
+            size: self.png_size(),
+        }
+    }
+}
+
+/// Applied when `render` is given neither sizing option.
+const DEFAULT_PNG_SCALE: f32 = 2.0;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum StructuredFormatArg {
@@ -92,6 +189,11 @@ impl StructuredFormatArg {
     }
 }
 
+/// A page selection, kept alongside the text it was written as.
+///
+/// The raw text is echoed back in the `concat` result, where it describes what
+/// the merged file contains; rendering the parsed selection instead would
+/// report `1-3` as `1,2,3` and no longer match what was asked for.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PagesArg {
     raw: String,
@@ -115,102 +217,14 @@ impl PagesArg {
     }
 }
 
-impl Args {
-    /// Test-support constructor: parses `extra` flags on top of the required
-    /// `--input input.pdf` seed. Hidden from the documented API; kept public
+impl Cli {
+    /// Test-support constructor. Hidden from the documented API; kept public
     /// so the binary crate's tests can share it.
     #[doc(hidden)]
-    pub fn try_from_flags(extra: &[&str]) -> std::result::Result<Self, clap::Error> {
-        let mut argv = vec!["pdf-toolkit", "--input", "input.pdf"];
-        argv.extend_from_slice(extra);
+    pub fn try_from_args(args: &[&str]) -> std::result::Result<Self, clap::Error> {
+        let mut argv = vec!["pdf-toolkit"];
+        argv.extend_from_slice(args);
         Self::try_parse_from(argv)
-    }
-
-    pub fn validate_extract_args(&self) -> Result<()> {
-        if self.format.is_some() {
-            bail!(MODE_ERROR);
-        }
-
-        if self.scale.is_some() {
-            bail!("--scale cannot be used with --extract");
-        }
-
-        if self.scale_width_px.is_some() {
-            bail!("--scale-width-px cannot be used with --extract");
-        }
-
-        Ok(())
-    }
-
-    pub fn validate_extract_structured_args(&self) -> Result<()> {
-        if self.format.is_some() {
-            bail!(MODE_ERROR);
-        }
-
-        if self.scale.is_some() {
-            bail!("--scale cannot be used with --extract-structured");
-        }
-
-        if self.scale_width_px.is_some() {
-            bail!("--scale-width-px cannot be used with --extract-structured");
-        }
-
-        if self.concat {
-            bail!("--concat cannot be used with --extract-structured");
-        }
-
-        Ok(())
-    }
-
-    pub fn output_format(&self) -> Result<OutputFormat> {
-        if self.scale.is_some() && self.format.is_none() {
-            bail!("--scale can only be used with --format png");
-        }
-
-        if self.scale_width_px.is_some() && self.format.is_none() {
-            bail!("--scale-width-px can only be used with --format png");
-        }
-
-        let format = self.format.context(MODE_ERROR)?;
-
-        let output_format = match format {
-            CliFormat::Pdf => {
-                if self.scale.is_some() {
-                    bail!("--scale can only be used with --format png");
-                }
-
-                if self.scale_width_px.is_some() {
-                    bail!("--scale-width-px can only be used with --format png");
-                }
-
-                OutputFormat::Pdf {
-                    concat: self.concat,
-                }
-            }
-            CliFormat::Png => {
-                if self.concat {
-                    bail!("--concat can only be used with --format pdf");
-                }
-
-                match (self.scale, self.scale_width_px) {
-                    (Some(scale), None) => OutputFormat::Png {
-                        size: PngSize::Scale(scale),
-                    },
-                    (None, Some(width_px)) => OutputFormat::Png {
-                        size: PngSize::WidthPx(width_px),
-                    },
-                    (None, None) => OutputFormat::Png {
-                        size: PngSize::Scale(2.0),
-                    },
-                    (Some(_), Some(_)) => {
-                        bail!("choose either --scale or --scale-width-px with --format png")
-                    }
-                }
-            }
-        };
-
-        output_format.validate()?;
-        Ok(output_format)
     }
 }
 
@@ -244,185 +258,171 @@ fn parse_scale_width_px(value: &str) -> std::result::Result<u32, String> {
 mod tests {
     use super::*;
 
-    fn parse_args(extra: &[&str]) -> Result<Args, clap::Error> {
-        Args::try_from_flags(extra)
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_from_args(args).expect("command line must parse")
     }
 
-    fn args(extra: &[&str]) -> Args {
-        parse_args(extra).expect("arguments must parse")
-    }
-
-    #[test]
-    fn defaults_select_all_pages_without_mode() {
-        let args = args(&[]);
-        assert_eq!(args.pages.raw(), "all");
-        assert_eq!(args.pages.selection(), &PageSelection::All);
-        assert!(args.format.is_none());
-        assert!(!args.concat);
-        assert!(!args.extract);
-        assert!(!args.extract_structured);
-    }
-
-    #[test]
-    fn pages_argument_parses_selection_and_keeps_raw() {
-        let args = args(&["-p", "2-3"]);
-        assert_eq!(args.pages.raw(), "2-3");
+    fn rejects(args: &[&str]) {
         assert!(
-            matches!(args.pages.selection(), PageSelection::Specific(pages) if pages.len() == 2)
+            Cli::try_from_args(args).is_err(),
+            "expected {args:?} to be rejected"
         );
     }
 
     #[test]
-    fn invalid_pages_argument_is_rejected() {
-        assert!(parse_args(&["-p", "0"]).is_err());
-        assert!(parse_args(&["-p", "5-3"]).is_err());
-        assert!(parse_args(&["-p", ""]).is_err());
+    fn every_command_names_its_input() {
+        let cases = [
+            vec!["inspect", "a.pdf"],
+            vec!["cut", "a.pdf"],
+            vec!["render", "a.pdf"],
+            vec!["text", "a.pdf"],
+            vec!["structured", "a.pdf"],
+        ];
+
+        for args in cases {
+            assert_eq!(
+                parse(&args).command.input(),
+                &PathBuf::from("a.pdf"),
+                "for {args:?}"
+            );
+        }
     }
 
     #[test]
-    fn extraction_modes_conflict_with_each_other() {
-        assert!(parse_args(&["--extract", "--page-count"]).is_err());
-        assert!(parse_args(&["--extract-structured", "--extract"]).is_err());
-        assert!(parse_args(&["--extract-structured", "--page-count"]).is_err());
+    fn a_command_is_required() {
+        rejects(&[]);
+        rejects(&["a.pdf"]);
     }
 
     #[test]
-    fn structured_format_requires_structured_mode() {
-        assert!(parse_args(&["--structured-format", "markdown"]).is_err());
-        let args = args(&["--extract-structured", "--structured-format", "markdown"]);
-        assert_eq!(args.structured_format, StructuredFormatArg::Markdown);
+    fn an_input_is_required() {
+        for command in ["inspect", "cut", "render", "text", "structured"] {
+            rejects(&[command]);
+        }
     }
 
     #[test]
-    fn structured_format_maps_to_output_format() {
+    fn pages_default_to_all_and_accept_lists_and_ranges() {
+        let Command::Cut(args) = parse(&["cut", "a.pdf"]).command else {
+            panic!("expected cut");
+        };
+        assert_eq!(args.source.pages.raw(), "all");
+
+        let Command::Cut(args) = parse(&["cut", "a.pdf", "--pages", "1-3,7"]).command else {
+            panic!("expected cut");
+        };
+        assert_eq!(args.source.pages.raw(), "1-3,7");
+    }
+
+    #[test]
+    fn page_is_an_alias_for_pages() {
+        let Command::Text(args) = parse(&["text", "a.pdf", "--page", "2"]).command else {
+            panic!("expected text");
+        };
+        assert_eq!(args.source.pages.raw(), "2");
+    }
+
+    #[test]
+    fn an_unparseable_selection_is_rejected_at_parse_time() {
+        rejects(&["cut", "a.pdf", "--pages", "3-1"]);
+        rejects(&["cut", "a.pdf", "--pages", "abc"]);
+        rejects(&["cut", "a.pdf", "--pages", ""]);
+    }
+
+    #[test]
+    fn cut_produces_pdf_output_and_honours_concat() {
+        let Command::Cut(args) = parse(&["cut", "a.pdf"]).command else {
+            panic!("expected cut");
+        };
+        assert_eq!(args.output_format(), OutputFormat::Pdf { concat: false });
+
+        let Command::Cut(args) = parse(&["cut", "a.pdf", "--concat"]).command else {
+            panic!("expected cut");
+        };
+        assert_eq!(args.output_format(), OutputFormat::Pdf { concat: true });
+    }
+
+    #[test]
+    fn render_defaults_to_scale_two() {
+        let Command::Render(args) = parse(&["render", "a.pdf"]).command else {
+            panic!("expected render");
+        };
+        assert_eq!(args.png_size(), PngSize::Scale(2.0));
+    }
+
+    #[test]
+    fn render_takes_either_a_scale_or_a_width() {
+        let Command::Render(args) = parse(&["render", "a.pdf", "--scale", "1.5"]).command else {
+            panic!("expected render");
+        };
+        assert_eq!(args.png_size(), PngSize::Scale(1.5));
+
+        let Command::Render(args) = parse(&["render", "a.pdf", "--scale-width-px", "800"]).command
+        else {
+            panic!("expected render");
+        };
+        assert_eq!(args.png_size(), PngSize::WidthPx(800));
+    }
+
+    #[test]
+    fn render_refuses_both_sizing_options_at_once() {
+        rejects(&["render", "a.pdf", "--scale", "2", "--scale-width-px", "800"]);
+    }
+
+    #[test]
+    fn render_refuses_a_size_that_cannot_be_drawn() {
+        for scale in ["0", "-1", "nan", "inf"] {
+            rejects(&["render", "a.pdf", "--scale", scale]);
+        }
+        rejects(&["render", "a.pdf", "--scale-width-px", "0"]);
+    }
+
+    /// The combinations the flag-based surface had to reject at runtime are
+    /// now unspeakable: the option does not exist on the command it was
+    /// meaningless for.
+    #[test]
+    fn options_do_not_exist_on_commands_they_never_applied_to() {
+        rejects(&["cut", "a.pdf", "--scale", "2"]);
+        rejects(&["cut", "a.pdf", "--scale-width-px", "800"]);
+        rejects(&["render", "a.pdf", "--concat"]);
+        rejects(&["text", "a.pdf", "--scale", "2"]);
+        rejects(&["structured", "a.pdf", "--concat"]);
+        rejects(&["structured", "a.pdf", "--output", "out"]);
+        rejects(&["inspect", "a.pdf", "--pages", "1"]);
+    }
+
+    #[test]
+    fn structured_format_defaults_to_full() {
+        let Command::Structured(args) = parse(&["structured", "a.pdf"]).command else {
+            panic!("expected structured");
+        };
+        assert_eq!(args.structured_format, StructuredFormatArg::Full);
         assert_eq!(
-            StructuredFormatArg::Full.to_output_format(),
+            args.structured_format.to_output_format(),
             StructuredOutputFormat::Full
         );
+
+        let Command::Structured(args) =
+            parse(&["structured", "a.pdf", "--structured-format", "markdown"]).command
+        else {
+            panic!("expected structured");
+        };
         assert_eq!(
-            StructuredFormatArg::Markdown.to_output_format(),
+            args.structured_format.to_output_format(),
             StructuredOutputFormat::MarkdownOnly
         );
     }
 
     #[test]
-    fn scale_flags_conflict() {
-        assert!(parse_args(&["-f", "png", "-s", "2", "--scale-width-px", "100"]).is_err());
-    }
+    fn output_directory_is_optional_where_files_are_written() {
+        let Command::Cut(args) = parse(&["cut", "a.pdf"]).command else {
+            panic!("expected cut");
+        };
+        assert!(args.output.is_none());
 
-    #[test]
-    fn scale_must_be_positive_and_finite() {
-        assert!(parse_args(&["-s", "0"]).is_err());
-        assert!(parse_args(&["-s", "-1"]).is_err());
-        assert!(parse_args(&["-s", "nan"]).is_err());
-        assert!(parse_args(&["-s", "inf"]).is_err());
-        assert!(parse_args(&["-s", "abc"]).is_err());
-    }
-
-    #[test]
-    fn scale_width_must_be_positive_integer() {
-        assert!(parse_args(&["--scale-width-px", "0"]).is_err());
-        assert!(parse_args(&["--scale-width-px", "1.5"]).is_err());
-    }
-
-    #[test]
-    fn validate_extract_args_rejects_cutting_flags() {
-        assert!(args(&["-e", "-f", "pdf"]).validate_extract_args().is_err());
-        assert!(args(&["-e", "-s", "2"]).validate_extract_args().is_err());
-        assert!(
-            args(&["-e", "--scale-width-px", "100"])
-                .validate_extract_args()
-                .is_err()
-        );
-        assert!(args(&["-e"]).validate_extract_args().is_ok());
-        assert!(args(&["-e", "-c"]).validate_extract_args().is_ok());
-    }
-
-    #[test]
-    fn validate_extract_structured_args_rejects_cutting_and_concat() {
-        let base = "--extract-structured";
-        assert!(
-            args(&[base, "-f", "pdf"])
-                .validate_extract_structured_args()
-                .is_err()
-        );
-        assert!(
-            args(&[base, "-s", "2"])
-                .validate_extract_structured_args()
-                .is_err()
-        );
-        assert!(
-            args(&[base, "--scale-width-px", "10"])
-                .validate_extract_structured_args()
-                .is_err()
-        );
-        assert!(
-            args(&[base, "-c"])
-                .validate_extract_structured_args()
-                .is_err()
-        );
-        assert!(args(&[base]).validate_extract_structured_args().is_ok());
-    }
-
-    #[test]
-    fn output_format_requires_format_flag() {
-        assert!(args(&[]).output_format().is_err());
-        assert!(args(&["-s", "2"]).output_format().is_err());
-        assert!(args(&["--scale-width-px", "10"]).output_format().is_err());
-    }
-
-    #[test]
-    fn output_format_pdf_rejects_png_flags() {
-        assert!(args(&["-f", "pdf", "-s", "2"]).output_format().is_err());
-        assert!(
-            args(&["-f", "pdf", "--scale-width-px", "10"])
-                .output_format()
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn output_format_pdf_carries_concat() {
-        assert_eq!(
-            args(&["-f", "pdf", "-c"]).output_format().unwrap(),
-            OutputFormat::Pdf { concat: true }
-        );
-        assert_eq!(
-            args(&["-f", "pdf"]).output_format().unwrap(),
-            OutputFormat::Pdf { concat: false }
-        );
-    }
-
-    #[test]
-    fn output_format_png_defaults_to_scale_two() {
-        assert_eq!(
-            args(&["-f", "png"]).output_format().unwrap(),
-            OutputFormat::Png {
-                size: PngSize::Scale(2.0)
-            }
-        );
-    }
-
-    #[test]
-    fn output_format_png_uses_explicit_sizes() {
-        assert_eq!(
-            args(&["-f", "png", "-s", "1.5"]).output_format().unwrap(),
-            OutputFormat::Png {
-                size: PngSize::Scale(1.5)
-            }
-        );
-        assert_eq!(
-            args(&["-f", "png", "--scale-width-px", "640"])
-                .output_format()
-                .unwrap(),
-            OutputFormat::Png {
-                size: PngSize::WidthPx(640)
-            }
-        );
-    }
-
-    #[test]
-    fn output_format_png_rejects_concat() {
-        assert!(args(&["-f", "png", "-c"]).output_format().is_err());
+        let Command::Cut(args) = parse(&["cut", "a.pdf", "-o", "out"]).command else {
+            panic!("expected cut");
+        };
+        assert_eq!(args.output.as_deref(), Some(std::path::Path::new("out")));
     }
 }

@@ -19,6 +19,10 @@ pub mod text_quality;
 pub mod utils;
 pub mod warning;
 
+/// The native runtime handle, re-exported so callers need not depend on
+/// `pdfium-render` directly just to name the type every entry point takes.
+pub use pdfium_render::prelude::Pdfium;
+
 pub use error::{PdfCutterError, Result};
 pub use naming::{
     OutputReservation, file_size_kb, output_stem, reserve_named_output_file_with_extension,

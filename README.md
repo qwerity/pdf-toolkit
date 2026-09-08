@@ -1,4 +1,4 @@
-# pdf_cutter
+# pdf-toolkit
 
 CLI tool for inspecting PDFs, extracting pages as single-page PDFs or PNGs, and extracting text.
 
@@ -10,7 +10,7 @@ PDFium, with no Python runtime to install.
 
 `build.sh` creates a runtime bundle in `./dist` with:
 
-- `pdf_cutter`
+- `pdf-toolkit`
 - the matching native PDFium library
 
 Basic build:
@@ -42,115 +42,89 @@ The build script downloads the matching PDFium binary and places it next to the 
 
 ## Usage
 
-Run the bundled binary from `./dist`:
+One subcommand per operation. Every command takes the source PDF as its first
+argument, and writes a single JSON document to stdout; warnings are written to
+stderr, so stdout stays parseable.
 
-```bash
-./dist/pdf_cutter --input input.pdf --format pdf
+```
+pdf-toolkit <COMMAND> <INPUT> [OPTIONS]
+
+  inspect     page count and per-page metadata
+  cut         selected pages as single-page PDFs, or one merged PDF
+  render      selected pages as PNG images
+  text        plain text into .txt files
+  structured  positioned spans and a markdown reconstruction, to stdout
 ```
 
-Extract specific pages as separate PDFs:
+### inspect
 
 ```bash
-./dist/pdf_cutter --input input.pdf --format pdf --pages 1,3,5
+./dist/pdf-toolkit inspect input.pdf
 ```
 
-Use page ranges:
+### cut
 
 ```bash
-./dist/pdf_cutter --input input.pdf --format pdf --pages 1-3,5-6,9
-./dist/pdf_cutter --input input.pdf --format pdf --page 1-3,5-6,9
+./dist/pdf-toolkit cut input.pdf                              # every page
+./dist/pdf-toolkit cut input.pdf --pages 1,3,5
+./dist/pdf-toolkit cut input.pdf --pages 1-3,5-6,9 -o out
+./dist/pdf-toolkit cut input.pdf --pages 2-5,9 --concat       # one merged PDF
 ```
 
-Render selected pages as PNG files:
+### render
 
 ```bash
-./dist/pdf_cutter --input input.pdf --pages 1-3 --format png --scale 2 --output out
+./dist/pdf-toolkit render input.pdf --pages 1-3 --scale 2 -o out
+./dist/pdf-toolkit render input.pdf --pages 1-3 --scale-width-px 1400 -o out
 ```
 
-Render PNG files with a required output width:
+With neither sizing option, `render` uses scale `2.0`.
+
+### text
 
 ```bash
-./dist/pdf_cutter --input input.pdf --pages 1-3 --format png --scale-width-px 1400 --output out
+./dist/pdf-toolkit text input.pdf -o out                      # one file per page
+./dist/pdf-toolkit text input.pdf --pages 2-5,9 --concat -o out
 ```
 
-Extract structured text (spans + markdown) for all pages:
+### structured
 
 ```bash
-./dist/pdf_cutter --input input.pdf --extract-structured
+./dist/pdf-toolkit structured input.pdf
+./dist/pdf-toolkit structured input.pdf --pages 1-3
+./dist/pdf-toolkit structured input.pdf --structured-format markdown
 ```
-
-Extract structured text in markdown-only mode:
-
-```bash
-./dist/pdf_cutter --input input.pdf --extract-structured --structured-format markdown
-```
-
-Extract structured text for specific pages:
-
-```bash
-./dist/pdf_cutter --input input.pdf --extract-structured --pages 1-3
-```
-
-Extract text for all pages into one file:
-
-```bash
-./dist/pdf_cutter --input input.pdf --extract --output out
-```
-
-Extract text for specific pages into separate files:
-
-```bash
-./dist/pdf_cutter --input input.pdf --extract --pages 1,3,5 --output out
-```
-
-Extract text for selected pages into one file:
-
-```bash
-./dist/pdf_cutter --input input.pdf --extract --pages 2-5,9 --concat --output out
-```
-
-Concatenate selected pages into one PDF:
-
-```bash
-./dist/pdf_cutter --input input.pdf --format pdf --pages 2-5,9 --concat
-```
-
-Print page count plus per-page metadata:
-
-```bash
-./dist/pdf_cutter --input input.pdf --page-count
-./dist/pdf_cutter --input input.pdf -n
-```
-
-The CLI writes structured JSON to stdout. Human-readable warnings are written to stderr.
 
 ## CLI Notes
 
-- `--input` / `-i`: source PDF file
-- `--pages` / `-p`: page list or inclusive ranges like `1-3,5,9-10`
-- `--page`: alias for `--pages`
-- `--extract` / `-e`: extracts text into `.txt` file(s); `--pages all` and `--concat` produce one file
-- `--extract-structured`: extracts per-page text spans (font size, position, bold/italic) and a markdown reconstruction as JSON to stdout; mutually exclusive with `--extract` and `--format`
-- `--structured-format`: controls structured extraction output; `full` (default) includes spans + markdown, `markdown` emits markdown only; requires `--extract-structured`
-- `--format` / `-f`: required for page cutting; `pdf` or `png`; not valid with `--extract`
-- `--scale` / `-s`: optional for `--format png`; if neither sizing option is provided it defaults to `2.0`; not valid with `--extract`
-- `--scale-width-px`: optional for `--format png`; sets the output PNG width in pixels and preserves aspect ratio; cannot be used together with `--scale`
-- `--concat` / `-c`: merges selected pages into one PDF, or one text file when used with `--extract`
-- `--output` / `-o`: output directory
-- `--page-count` / `-n`: prints the total page count plus per-page `width_px`, `height_px`, `contains_images`, `image_count`, `image_coverage`, and `llm_recommended` metadata as JSON
+- `--pages` / `-p` (alias `--page`): page list or inclusive ranges like
+  `1-3,5,9-10`, or `all` (the default). Accepted by every command except
+  `inspect`, which always reports the whole document.
+- `--output` / `-o`: output directory, for the commands that write files
+  (`cut`, `render`, `text`). Defaults to the current directory.
+- `--concat` / `-c`: `cut` merges the selection into one PDF; `text` merges it
+  into one `.txt` file.
+- `--scale` / `-s` and `--scale-width-px`: `render` only, and mutually
+  exclusive. `--scale-width-px` sets the output width and preserves the aspect
+  ratio.
+- `--structured-format`: `structured` only; `full` (default) includes spans and
+  markdown, `markdown` emits markdown only.
 - extracted text starts each page with a `____PageN____` marker
-- structured markdown reconstructs the page in visual reading order (bands, multi-column layouts, and `/Rotate`d pages included), detects tables with wrapped cells merged into logical rows, renders bold/italic inline styles, repairs line-break hyphenation, and escapes markdown syntax characters in extracted text
-- pages whose text layer is statistically garbled (e.g. broken font mappings) are skipped with a per-page warning in both text extraction modes
-- page extraction JSON includes per-page `width_px`, `height_px`, and `contains_images`
-- inspection and PDF extraction report page dimensions in pixels at render scale `1.0`
-- PNG extraction reports the actual rendered output dimensions in pixels for the chosen `--scale` or `--scale-width-px`
-- extraction JSON includes an `errors` object keyed by page number when pages are skipped or fail
-
-Use either `--extract` for text extraction or `--format` for page cutting.
+- structured markdown reconstructs the page in visual reading order (bands,
+  multi-column layouts, and `/Rotate`d pages included), detects tables with
+  wrapped cells merged into logical rows, renders bold/italic inline styles,
+  repairs line-break hyphenation, and escapes markdown syntax characters in
+  extracted text
+- pages whose text layer is statistically garbled (e.g. broken font mappings)
+  are skipped with a per-page warning in both text extraction modes
+- `inspect` and `cut` report page dimensions in pixels at render scale `1.0`;
+  `render` reports the actual rendered output dimensions
+- extraction JSON includes an `errors` object keyed by page number when pages
+  are skipped or fail
 
 ## Output Examples
 
-Page inspection with `--page-count`:
+Page inspection with `inspect`:
 
 ```json
 {
@@ -191,7 +165,7 @@ Page inspection with `--page-count`:
 - `unreadable_text`: the text layer exists but is statistically garbled (e.g. a broken CID font mapping); rendered pixels are the only reliable source
 - `complex_table`: the page contains a table with wrapped or merged cells across three or more columns; all cell text is extracted, but its cell-to-column association is approximate and a vision pass can verify or reconstruct the exact structure (two-column wrapped tables such as footnote lists reconstruct reliably and are not flagged)
 
-Use this field to route pages in a hybrid pipeline: pdf_cutter for deterministic, verbatim text and table extraction everywhere, and a vision-LLM pass only for the flagged pages (optionally rendered via `--format png`).
+Use this field to route pages in a hybrid pipeline: pdf-toolkit for deterministic, verbatim text and table extraction everywhere, and a vision-LLM pass only for the flagged pages (optionally rendered via `render`).
 
 Per-page PDF or PNG extraction:
 
@@ -280,7 +254,7 @@ Text extraction:
 }
 ```
 
-Structured text extraction (`--extract-structured`, default `full` format):
+Structured text extraction (`structured`, default `full` format):
 
 ```json
 {
@@ -325,10 +299,10 @@ If requested pages are skipped or fail, the JSON includes an `errors` object key
 
 ## Library Usage
 
-The binary is a thin CLI over the `pdf_cutter` library crate, which exposes the same operations for embedding:
+The binary is a thin CLI over the `pdf-toolkit` library crate, which re-exports the workspace's operations behind one import:
 
 ```rust
-use pdf_cutter::{
+use pdf_toolkit::{
     PageSelection, StructuredOutputFormat, create_pdfium, extract_structured_text,
     inspect_document,
 };
@@ -353,3 +327,22 @@ let report = extract_structured_text(
 ```
 
 Run `cargo doc --open` for the full API documentation. `create_pdfium()` binds the native PDFium library from the executable's directory, the system, `./`, or `./dist/` (in that order).
+
+### Crate layout
+
+The workspace is split so that the parts with reach beyond this CLI can be
+depended on without it. `pdf-render` in particular exists to be consumed by
+other Rust code that would otherwise shell out to Poppler's `pdftoppm` for
+the same job.
+
+| crate | owns |
+|---|---|
+| `pdf-core` | PDFium runtime, page addressing, output naming, errors, warnings, text-quality heuristics |
+| `pdf-render` | `PngSize` and rasterising a page to PNG |
+| `pdf-text` | plain and structured text extraction |
+| `pdf-inspect` | per-page metadata and the vision-pass routing signals |
+| `pdf-pages` | cutting and concatenation |
+| `pdf-toolkit` | the CLI, plus the facade that re-exports all of the above |
+
+Nothing in `pdf-core` depends on another workspace crate. The rest form a
+single chain: `core -> {render, text} -> inspect -> pages -> toolkit`.

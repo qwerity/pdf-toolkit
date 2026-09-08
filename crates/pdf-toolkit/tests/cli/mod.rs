@@ -107,16 +107,14 @@ pub fn workspace_root() -> PathBuf {
 pub mod argv {
     /// Page count and per-page metadata.
     pub fn inspect(input: &str) -> Vec<String> {
-        vec!["--input".into(), input.into(), "--page-count".into()]
+        vec!["inspect".into(), input.into()]
     }
 
     /// Cut pages into single-page PDFs.
     pub fn cut_pdf(input: &str, pages: &str, out: &str) -> Vec<String> {
         vec![
-            "--input".into(),
+            "cut".into(),
             input.into(),
-            "--format".into(),
-            "pdf".into(),
             "--pages".into(),
             pages.into(),
             "--output".into(),
@@ -134,10 +132,8 @@ pub mod argv {
     /// Render pages to PNG at a scale factor.
     pub fn render_png_scale(input: &str, pages: &str, out: &str, scale: &str) -> Vec<String> {
         vec![
-            "--input".into(),
+            "render".into(),
             input.into(),
-            "--format".into(),
-            "png".into(),
             "--pages".into(),
             pages.into(),
             "--output".into(),
@@ -150,10 +146,8 @@ pub mod argv {
     /// Render pages to PNG at a fixed output width.
     pub fn render_png_width(input: &str, pages: &str, out: &str, width_px: &str) -> Vec<String> {
         vec![
-            "--input".into(),
+            "render".into(),
             input.into(),
-            "--format".into(),
-            "png".into(),
             "--pages".into(),
             pages.into(),
             "--output".into(),
@@ -166,9 +160,8 @@ pub mod argv {
     /// Extract plain text into `.txt` files.
     pub fn text(input: &str, pages: &str, out: &str) -> Vec<String> {
         vec![
-            "--input".into(),
+            "text".into(),
             input.into(),
-            "--extract".into(),
             "--pages".into(),
             pages.into(),
             "--output".into(),
@@ -186,9 +179,8 @@ pub mod argv {
     /// Structured extraction with spans and markdown.
     pub fn structured(input: &str, pages: &str) -> Vec<String> {
         vec![
-            "--input".into(),
+            "structured".into(),
             input.into(),
-            "--extract-structured".into(),
             "--pages".into(),
             pages.into(),
         ]

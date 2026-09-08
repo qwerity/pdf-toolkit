@@ -18,7 +18,6 @@ use std::sync::OnceLock;
 use cli::{argv, as_str, assert_keys, assert_written, json_argv, json_argv_cached, run, run_argv};
 use common::{Text, pdfium, write_garbled_pdf, write_pdf, write_pdf_with_image, write_simple_pdf};
 use serde_json::Value;
-use tempfile::TempDir;
 
 /// Fixture PDFs, written once for the whole test binary.
 ///
@@ -30,7 +29,7 @@ fn fixtures() -> &'static Fixtures {
 }
 
 struct Fixtures {
-    dir: TempDir,
+    dir: PathBuf,
     simple: PathBuf,
     garbled: PathBuf,
     image: PathBuf,
@@ -38,12 +37,30 @@ struct Fixtures {
 }
 
 impl Fixtures {
+    /// Where the fixtures live.
+    ///
+    /// Deliberately not a `TempDir`: these are owned by a `static`, and a
+    /// static's destructor never runs, so a `TempDir` here would clean up
+    /// nothing and leave one orphaned tree per `cargo test`. A fixed path
+    /// under `target/` is emptied on the way in, so a run reuses one directory
+    /// instead of accumulating them, and `cargo clean` takes it away.
+    fn root() -> PathBuf {
+        let root = common::workspace_root()
+            .join("target")
+            .join("tmp")
+            .join("cli_contract");
+
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create fixture directory");
+        root
+    }
+
     fn build() -> Self {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let simple = dir.path().join("simple.pdf");
-        let garbled = dir.path().join("garbled.pdf");
-        let image = dir.path().join("image.pdf");
-        let styled = dir.path().join("styled.pdf");
+        let dir = Self::root();
+        let simple = dir.join("simple.pdf");
+        let garbled = dir.join("garbled.pdf");
+        let image = dir.join("image.pdf");
+        let styled = dir.join("styled.pdf");
 
         let pdfium = pdfium();
         write_simple_pdf(&pdfium, &simple, 3);
@@ -70,7 +87,7 @@ impl Fixtures {
 
 /// A private output directory for one test.
 fn out_dir(name: &str) -> PathBuf {
-    let dir = fixtures().dir.path().join(format!("out_{name}"));
+    let dir = fixtures().dir.join(format!("out_{name}"));
     std::fs::create_dir_all(&dir).expect("create output dir");
     dir
 }
@@ -607,13 +624,18 @@ fn a_missing_input_file_is_refused() {
 
 #[test]
 fn a_directory_given_as_input_is_refused() {
-    assert_rejected(&cli::as_args(&argv::inspect("src")));
+    // A directory that is actually in the repository, so this keeps exercising
+    // the not-a-file guard. Naming one that does not exist on a fresh clone
+    // would still pass, by way of the missing-input guard instead.
+    let directory = common::workspace_root().join("crates");
+    assert!(directory.is_dir(), "fixture directory must exist");
+
+    assert_rejected(&cli::as_args(&argv::inspect(as_str(&directory))));
 }
 
 #[test]
 fn a_file_that_is_not_a_pdf_is_refused() {
-    let dir = fixtures().dir.path();
-    let bogus = dir.join("not_a_pdf.pdf");
+    let bogus = fixtures().dir.join("not_a_pdf.pdf");
     std::fs::write(&bogus, b"this is not a PDF").expect("write bogus file");
 
     assert_rejected(&cli::as_args(&argv::inspect(as_str(&bogus))));

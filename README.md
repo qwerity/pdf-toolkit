@@ -83,9 +83,15 @@ With neither sizing option, `render` uses scale `2.0`.
 ### text
 
 ```bash
-./dist/pdf-toolkit text input.pdf -o out                      # one file per page
+./dist/pdf-toolkit text input.pdf -o out                      # all pages, one file
+./dist/pdf-toolkit text input.pdf --pages 1,3,5 -o out        # one file per page
 ./dist/pdf-toolkit text input.pdf --pages 2-5,9 --concat -o out
 ```
+
+`text` writes one aggregate file whenever the whole document is selected (the
+default) or `--concat` is given, and reports it under `concat`. A selection of
+specific pages without `--concat` writes one file per page, reported under
+`pages`.
 
 ### structured
 
@@ -103,7 +109,8 @@ With neither sizing option, `render` uses scale `2.0`.
 - `--output` / `-o`: output directory, for the commands that write files
   (`cut`, `render`, `text`). Defaults to the current directory.
 - `--concat` / `-c`: `cut` merges the selection into one PDF; `text` merges it
-  into one `.txt` file.
+  into one `.txt` file. `text` also merges when the selection is `all`, which is
+  the default — so only an explicit page selection yields per-page files.
 - `--scale` / `-s` and `--scale-width-px`: `render` only, and mutually
   exclusive. `--scale-width-px` sets the output width and preserves the aspect
   ratio.

@@ -28,7 +28,7 @@
 //! Pages are addressed one-based through [`PageSelection`] (`"all"` or
 //! lists/ranges like `"1,3,5-7"`). Per-page failures surface as
 //! [`ExtractionWarning`]s in each report rather than aborting the run;
-//! whole-document problems are [`error::PdfCutterError`]s.
+//! whole-document problems are [`error::PdfError`]s.
 //!
 //! [pdfium-render]: https://crates.io/crates/pdfium-render
 

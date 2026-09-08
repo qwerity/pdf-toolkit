@@ -17,7 +17,7 @@ use std::path::Path;
 
 use pdfium_render::prelude::{PdfBitmap, PdfColor, PdfPage, PdfRenderConfig};
 
-use pdf_core::error::{PdfCutterError, Result};
+use pdf_core::error::{PdfError, Result};
 use pdf_core::page::page_dimensions_px;
 
 /// Widths beyond this cannot reach PDFium, whose render target is `i32`.
@@ -38,9 +38,9 @@ impl PngSize {
     pub fn validate(self) -> Result<()> {
         match self {
             Self::Scale(scale) if scale.is_finite() && scale > 0.0 => Ok(()),
-            Self::Scale(scale) => Err(PdfCutterError::InvalidImageScale { value: scale }),
+            Self::Scale(scale) => Err(PdfError::InvalidImageScale { value: scale }),
             Self::WidthPx(width_px) if (1..=MAX_IMAGE_WIDTH_PX).contains(&width_px) => Ok(()),
-            Self::WidthPx(width_px) => Err(PdfCutterError::InvalidImageWidth {
+            Self::WidthPx(width_px) => Err(PdfError::InvalidImageWidth {
                 value: width_px,
                 max: MAX_IMAGE_WIDTH_PX,
             }),
@@ -81,7 +81,7 @@ pub fn render_page<'page>(page: &'page PdfPage<'page>, size: PngSize) -> Result<
     .set_clear_color(PdfColor::WHITE);
 
     page.render_with_config(&render_config)
-        .map_err(|source| PdfCutterError::RenderPage { source })
+        .map_err(|source| PdfError::RenderPage { source })
 }
 
 /// Encodes a rendered bitmap as a PNG.
@@ -96,9 +96,9 @@ pub fn write_png<W: Write + std::io::Seek>(
 ) -> Result<()> {
     bitmap
         .as_image()
-        .map_err(|source| PdfCutterError::RenderPage { source })?
+        .map_err(|source| PdfError::RenderPage { source })?
         .write_to(writer, image::ImageFormat::Png)
-        .map_err(|source| PdfCutterError::SaveImage {
+        .map_err(|source| PdfError::SaveImage {
             format: "PNG",
             path: path.to_path_buf(),
             source,
@@ -127,7 +127,7 @@ mod tests {
             assert!(
                 matches!(
                     PngSize::Scale(scale).validate(),
-                    Err(PdfCutterError::InvalidImageScale { .. })
+                    Err(PdfError::InvalidImageScale { .. })
                 ),
                 "scale {scale} must be rejected"
             );
@@ -140,7 +140,7 @@ mod tests {
             assert!(
                 matches!(
                     PngSize::WidthPx(width_px).validate(),
-                    Err(PdfCutterError::InvalidImageWidth { .. })
+                    Err(PdfError::InvalidImageWidth { .. })
                 ),
                 "width {width_px} must be rejected"
             );

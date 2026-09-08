@@ -1,5 +1,5 @@
 use crate::output::{OutputFormat, PageResult};
-use pdf_core::error::{PdfCutterError, Result};
+use pdf_core::error::{PdfError, Result};
 use pdf_core::naming::{
     file_size_kb, output_stem, reserve_named_output_file_with_extension,
     reserve_output_file_with_extension, resolve_output_dir,
@@ -57,7 +57,7 @@ pub fn extract_pages(
     let total_pages = page_count_u16(pages)?;
 
     if total_pages == 0 {
-        return Err(PdfCutterError::EmptyDocument);
+        return Err(PdfError::EmptyDocument);
     }
 
     let resolved_selection = selection.resolve(total_pages);
@@ -188,7 +188,7 @@ fn save_concat_pdf(
     let mut output_document =
         pdfium
             .create_new_pdf()
-            .map_err(|source| PdfCutterError::CreateOutputPdf {
+            .map_err(|source| PdfError::CreateOutputPdf {
                 path: reserved_output.path.clone(),
                 source,
             })?;
@@ -231,7 +231,7 @@ fn save_concat_pdf(
 
     output_document
         .save_to_writer(&mut reserved_output.file)
-        .map_err(|source| PdfCutterError::SavePdf {
+        .map_err(|source| PdfError::SavePdf {
             path: reserved_output.path.clone(),
             source,
         })?;
@@ -274,7 +274,7 @@ fn save_pdf_page(
     let mut output_document =
         pdfium
             .create_new_pdf()
-            .map_err(|source| PdfCutterError::CreateOutputPdf {
+            .map_err(|source| PdfError::CreateOutputPdf {
                 path: reserved_output.path.clone(),
                 source,
             })?;
@@ -282,7 +282,7 @@ fn save_pdf_page(
     output_document
         .pages_mut()
         .copy_page_from_document(source_document, page_index(page_number), 0)
-        .map_err(|source| PdfCutterError::CopyPage {
+        .map_err(|source| PdfError::CopyPage {
             page_number: page_number.get(),
             path: reserved_output.path.clone(),
             source,
@@ -290,7 +290,7 @@ fn save_pdf_page(
 
     output_document
         .save_to_writer(&mut reserved_output.file)
-        .map_err(|source| PdfCutterError::SavePdf {
+        .map_err(|source| PdfError::SavePdf {
             path: reserved_output.path.clone(),
             source,
         })?;

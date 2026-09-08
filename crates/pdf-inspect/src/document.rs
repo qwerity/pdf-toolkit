@@ -1,5 +1,5 @@
 use crate::page_info::{LlmReason, PageInfo};
-use pdf_core::error::{PdfCutterError, Result};
+use pdf_core::error::{PdfError, Result};
 use pdf_core::page::{open_document, page_count_u16, page_dimensions_px, page_index};
 use pdf_core::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
 use pdf_text::page_has_complex_tables;
@@ -37,14 +37,13 @@ pub fn inspect_document(pdfium: &Pdfium, pdf_path: &Path) -> Result<DocumentInfo
     let mut page_info = Vec::with_capacity(usize::from(page_count));
 
     for page_number in (1..=page_count).filter_map(NonZeroU16::new) {
-        let page =
-            pages
-                .get(page_index(page_number))
-                .map_err(|source| PdfCutterError::LoadPage {
-                    path: pdf_path.to_path_buf(),
-                    page_number: page_number.get(),
-                    source,
-                })?;
+        let page = pages
+            .get(page_index(page_number))
+            .map_err(|source| PdfError::LoadPage {
+                path: pdf_path.to_path_buf(),
+                page_number: page_number.get(),
+                source,
+            })?;
 
         page_info.push(page_info_for_page(page_number.get(), &page));
     }

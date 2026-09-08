@@ -1,4 +1,4 @@
-use crate::error::{PdfCutterError, Result};
+use crate::error::{PdfError, Result};
 use std::num::NonZeroU16;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -27,7 +27,7 @@ impl PageSelection {
         }
 
         if page_numbers.is_empty() {
-            return Err(PdfCutterError::EmptyPageSelection);
+            return Err(PdfError::EmptyPageSelection);
         }
 
         Ok(Self::Specific(page_numbers))
@@ -73,7 +73,7 @@ fn extend_page_range(
     let end_page = parse_page_number(end, position)?;
 
     if start_page > end_page {
-        return Err(PdfCutterError::InvalidPageSelectionRange {
+        return Err(PdfError::InvalidPageSelectionRange {
             position,
             value: value.to_string(),
         });
@@ -96,8 +96,8 @@ fn parse_page_number(value: &str, position: usize) -> Result<NonZeroU16> {
     NonZeroU16::new(raw_page).ok_or_else(|| invalid_page_token(position, value))
 }
 
-fn invalid_page_token(position: usize, value: &str) -> PdfCutterError {
-    PdfCutterError::InvalidPageSelectionToken {
+fn invalid_page_token(position: usize, value: &str) -> PdfError {
+    PdfError::InvalidPageSelectionToken {
         position,
         value: value.to_string(),
     }
@@ -188,11 +188,11 @@ mod tests {
     fn parse_rejects_empty_and_blank_tokens() {
         assert!(matches!(
             PageSelection::parse(""),
-            Err(PdfCutterError::InvalidPageSelectionToken { position: 1, .. })
+            Err(PdfError::InvalidPageSelectionToken { position: 1, .. })
         ));
         assert!(matches!(
             PageSelection::parse("1,,2"),
-            Err(PdfCutterError::InvalidPageSelectionToken { position: 2, .. })
+            Err(PdfError::InvalidPageSelectionToken { position: 2, .. })
         ));
     }
 
@@ -202,7 +202,7 @@ mod tests {
             assert!(
                 matches!(
                     PageSelection::parse(input),
-                    Err(PdfCutterError::InvalidPageSelectionToken { .. })
+                    Err(PdfError::InvalidPageSelectionToken { .. })
                 ),
                 "input {input:?} must be rejected"
             );
@@ -213,7 +213,7 @@ mod tests {
     fn parse_rejects_pages_beyond_u16() {
         assert!(matches!(
             PageSelection::parse("70000"),
-            Err(PdfCutterError::InvalidPageSelectionToken { .. })
+            Err(PdfError::InvalidPageSelectionToken { .. })
         ));
     }
 
@@ -221,7 +221,7 @@ mod tests {
     fn parse_rejects_descending_range() {
         assert!(matches!(
             PageSelection::parse("5-3"),
-            Err(PdfCutterError::InvalidPageSelectionRange { position: 1, .. })
+            Err(PdfError::InvalidPageSelectionRange { position: 1, .. })
         ));
     }
 
@@ -231,7 +231,7 @@ mod tests {
             assert!(
                 matches!(
                     PageSelection::parse(input),
-                    Err(PdfCutterError::InvalidPageSelectionToken { .. })
+                    Err(PdfError::InvalidPageSelectionToken { .. })
                 ),
                 "input {input:?} must be rejected"
             );

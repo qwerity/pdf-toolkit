@@ -1,4 +1,4 @@
-use pdf_core::error::{PdfCutterError, Result};
+use pdf_core::error::{PdfError, Result};
 use pdf_core::naming::{
     OutputReservation, file_size_kb, output_stem, reserve_named_output_file_with_extension,
     reserve_output_file_with_extension, resolve_output_dir,
@@ -48,7 +48,7 @@ pub fn extract_text(
     let total_pages = page_count_u16(pages)?;
 
     if total_pages == 0 {
-        return Err(PdfCutterError::EmptyDocument);
+        return Err(PdfError::EmptyDocument);
     }
 
     let output_mode = output_mode(&selection, concat);
@@ -220,7 +220,7 @@ fn write_text(reserved_output: &mut OutputReservation, text: &str) -> Result<()>
     reserved_output
         .file
         .write_all(text.as_bytes())
-        .map_err(|source| PdfCutterError::WriteText {
+        .map_err(|source| PdfError::WriteText {
             path: reserved_output.path.clone(),
             source,
         })

@@ -23,7 +23,7 @@ pub mod warning;
 /// `pdfium-render` directly just to name the type every entry point takes.
 pub use pdfium_render::prelude::Pdfium;
 
-pub use error::{PdfCutterError, Result};
+pub use error::{PdfError, Result};
 pub use naming::{
     OutputReservation, file_size_kb, output_stem, reserve_named_output_file_with_extension,
     reserve_output_file_with_extension, resolve_output_dir,

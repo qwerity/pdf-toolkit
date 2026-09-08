@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use pdf_toolkit::cli::{Cli, Command, CutArgs, InspectArgs, RenderArgs, StructuredArgs, TextArgs};
-use pdf_toolkit::error::{PdfCutterError, Result as LibraryResult};
+use pdf_toolkit::error::{PdfError, Result as LibraryResult};
 use pdf_toolkit::{
     OutputFormat, Pdfium, create_pdfium, extract_pages, extract_structured_text, extract_text,
     inspect_document,
@@ -128,11 +128,11 @@ fn pdfium() -> Result<Pdfium> {
 
 fn validate_input_file(path: &Path) -> LibraryResult<()> {
     if !path.exists() {
-        return Err(PdfCutterError::InputMissing(path.to_path_buf()));
+        return Err(PdfError::InputMissing(path.to_path_buf()));
     }
 
     if !path.is_file() {
-        return Err(PdfCutterError::InputNotFile(path.to_path_buf()));
+        return Err(PdfError::InputNotFile(path.to_path_buf()));
     }
 
     Ok(())

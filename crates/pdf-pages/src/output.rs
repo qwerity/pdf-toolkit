@@ -48,7 +48,7 @@ impl OutputFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pdf_core::error::PdfCutterError;
+    use pdf_core::error::PdfError;
     use pdf_render::MAX_IMAGE_WIDTH_PX;
 
     #[test]
@@ -86,7 +86,7 @@ mod tests {
                         size: PngSize::Scale(scale)
                     }
                     .validate(),
-                    Err(PdfCutterError::InvalidImageScale { .. })
+                    Err(PdfError::InvalidImageScale { .. })
                 ),
                 "scale {scale} must be rejected"
             );
@@ -102,7 +102,7 @@ mod tests {
                         size: PngSize::WidthPx(width_px)
                     }
                     .validate(),
-                    Err(PdfCutterError::InvalidImageWidth { .. })
+                    Err(PdfError::InvalidImageWidth { .. })
                 ),
                 "width {width_px} must be rejected"
             );

@@ -13,15 +13,14 @@ use std::path::Path;
 
 use pdfium_render::prelude::{PdfDocument, PdfPage, PdfPages, Pdfium};
 
-use crate::error::{PdfCutterError, Result};
+use crate::error::{PdfError, Result};
 
 /// Number of pages addressable by the workspace's `u16`-based page model.
 /// Documents beyond `u16::MAX` pages (or negative pdfium error counts)
 /// are rejected instead of silently truncated.
 pub fn page_count_u16(pages: &PdfPages<'_>) -> Result<u16> {
     let page_count = pages.len();
-    u16::try_from(page_count)
-        .map_err(|_| PdfCutterError::UnsupportedPageCount { actual: page_count })
+    u16::try_from(page_count).map_err(|_| PdfError::UnsupportedPageCount { actual: page_count })
 }
 
 /// Converts a one-based page number to a pdfium zero-based page index.
@@ -41,7 +40,7 @@ pub fn open_document<'pdfium>(
 ) -> Result<PdfDocument<'pdfium>> {
     pdfium
         .load_pdf_from_file(pdf_path, None)
-        .map_err(|source| PdfCutterError::OpenPdf {
+        .map_err(|source| PdfError::OpenPdf {
             path: pdf_path.to_path_buf(),
             source,
         })

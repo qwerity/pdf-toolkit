@@ -1,4 +1,4 @@
-use crate::error::{PdfCutterError, Result};
+use crate::error::{PdfError, Result};
 use pdfium_render::prelude::*;
 use std::path::{Path, PathBuf};
 
@@ -20,7 +20,7 @@ pub fn create_pdfium() -> Result<Pdfium> {
         }
     }
 
-    Err(PdfCutterError::PdfiumBinding)
+    Err(PdfError::PdfiumBinding)
 }
 
 fn executable_directory_candidate() -> Option<PathBuf> {

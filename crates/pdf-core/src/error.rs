@@ -3,11 +3,14 @@ use std::io;
 use std::path::PathBuf;
 use thiserror::Error;
 
-pub type Result<T> = std::result::Result<T, PdfCutterError>;
+pub type Result<T> = std::result::Result<T, PdfError>;
 
-/// Errors returned by the reusable extraction library.
+/// Errors that abort an operation.
+///
+/// Per-page problems that do not abort a run are [`crate::warning::ExtractionWarning`]s
+/// instead, and are reported beside the results rather than in place of them.
 #[derive(Debug, Error)]
-pub enum PdfCutterError {
+pub enum PdfError {
     #[error("input PDF '{path}' does not exist", path = .0.display())]
     InputMissing(PathBuf),
     #[error("input path '{path}' is not a file", path = .0.display())]
@@ -119,48 +122,48 @@ mod tests {
     /// pins the vocabulary a reader relies on: what failed, and where.
     #[test]
     fn messages_name_the_thing_that_failed() {
-        let cases: Vec<(PdfCutterError, &[&str])> = vec![
+        let cases: Vec<(PdfError, &[&str])> = vec![
             (
-                PdfCutterError::InputMissing(PathBuf::from("missing.pdf")),
+                PdfError::InputMissing(PathBuf::from("missing.pdf")),
                 &["missing.pdf", "does not exist"],
             ),
             (
-                PdfCutterError::InputNotFile(PathBuf::from("some/dir")),
+                PdfError::InputNotFile(PathBuf::from("some/dir")),
                 &["some/dir", "not a file"],
             ),
-            (PdfCutterError::EmptyPageSelection, &["cannot be empty"]),
+            (PdfError::EmptyPageSelection, &["cannot be empty"]),
             (
-                PdfCutterError::InvalidPageSelectionToken {
+                PdfError::InvalidPageSelectionToken {
                     position: 2,
                     value: "abc".into(),
                 },
                 &["#2", "abc", "positive integer"],
             ),
             (
-                PdfCutterError::InvalidPageSelectionRange {
+                PdfError::InvalidPageSelectionRange {
                     position: 1,
                     value: "9-3".into(),
                 },
                 &["#1", "9-3", "ascending"],
             ),
             (
-                PdfCutterError::InvalidImageScale { value: -1.0 },
+                PdfError::InvalidImageScale { value: -1.0 },
                 &["greater than zero", "-1"],
             ),
             (
-                PdfCutterError::InvalidImageWidth {
+                PdfError::InvalidImageWidth {
                     value: 0,
                     max: 10_000,
                 },
                 &["1..=10000", "0"],
             ),
-            (PdfCutterError::EmptyDocument, &["no pages"]),
+            (PdfError::EmptyDocument, &["no pages"]),
             (
-                PdfCutterError::UnsupportedPageCount { actual: 99_999 },
+                PdfError::UnsupportedPageCount { actual: 99_999 },
                 &["99999", "65535"],
             ),
             (
-                PdfCutterError::ExhaustedOutputNames {
+                PdfError::ExhaustedOutputNames {
                     dir: PathBuf::from("out"),
                     base_name: "doc".into(),
                 },
@@ -183,7 +186,7 @@ mod tests {
     /// native library, so it must list every place that was searched.
     #[test]
     fn binding_failure_lists_every_location_searched() {
-        let rendered = PdfCutterError::PdfiumBinding.to_string();
+        let rendered = PdfError::PdfiumBinding.to_string();
 
         for location in ["executable directory", "system library", "./", "./dist/"] {
             assert!(

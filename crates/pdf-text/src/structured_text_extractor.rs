@@ -1,4 +1,4 @@
-use pdf_core::error::{PdfCutterError, Result};
+use pdf_core::error::{PdfError, Result};
 use pdf_core::page::{open_document, page_count_u16, page_index};
 use pdf_core::page_selection::PageSelection;
 use pdf_core::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
@@ -191,7 +191,7 @@ pub fn extract_structured_text(
     let total_pages = page_count_u16(pages)?;
 
     if total_pages == 0 {
-        return Err(PdfCutterError::EmptyDocument);
+        return Err(PdfError::EmptyDocument);
     }
 
     let resolved_selection = selection.resolve(total_pages);

@@ -13,7 +13,7 @@ use std::fs::{File, OpenOptions};
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
 
-use crate::error::{PdfCutterError, Result};
+use crate::error::{PdfError, Result};
 use crate::utils::sanitize_filename_component;
 
 const MAX_OUTPUT_NAME_ATTEMPTS: u16 = 1024;
@@ -27,17 +27,13 @@ pub struct OutputReservation {
 pub fn resolve_output_dir(output_folder: Option<&Path>) -> Result<PathBuf> {
     match output_folder {
         Some(folder) => {
-            std::fs::create_dir_all(folder).map_err(|source| {
-                PdfCutterError::CreateOutputDirectory {
-                    path: folder.to_path_buf(),
-                    source,
-                }
+            std::fs::create_dir_all(folder).map_err(|source| PdfError::CreateOutputDirectory {
+                path: folder.to_path_buf(),
+                source,
             })?;
             Ok(folder.to_path_buf())
         }
-        None => {
-            std::env::current_dir().map_err(|source| PdfCutterError::CurrentDirectory { source })
-        }
+        None => std::env::current_dir().map_err(|source| PdfError::CurrentDirectory { source }),
     }
 }
 
@@ -82,24 +78,22 @@ fn reserve_output_file_for_base_name(
             Ok(file) => return Ok(OutputReservation { path, file }),
             Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(source) => {
-                return Err(PdfCutterError::CreateOutputFile { path, source });
+                return Err(PdfError::CreateOutputFile { path, source });
             }
         }
     }
 
-    Err(PdfCutterError::ExhaustedOutputNames {
+    Err(PdfError::ExhaustedOutputNames {
         dir: output_dir.to_path_buf(),
         base_name: base_name.to_string(),
     })
 }
 
 pub fn file_size_kb(file: &File, path: &Path) -> Result<u64> {
-    let metadata = file
-        .metadata()
-        .map_err(|source| PdfCutterError::ReadMetadata {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let metadata = file.metadata().map_err(|source| PdfError::ReadMetadata {
+        path: path.to_path_buf(),
+        source,
+    })?;
 
     Ok(metadata.len().div_ceil(1024))
 }
@@ -150,10 +144,7 @@ mod tests {
         }
 
         let result = reserve_named_output_file_with_extension(dir.path(), "base", "pdf");
-        assert!(matches!(
-            result,
-            Err(PdfCutterError::ExhaustedOutputNames { .. })
-        ));
+        assert!(matches!(result, Err(PdfError::ExhaustedOutputNames { .. })));
     }
 
     #[test]

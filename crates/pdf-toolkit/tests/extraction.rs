@@ -4,7 +4,7 @@ use common::{
     Text, minimal_empty_pdf, pdfium, write_garbled_pdf, write_pdf, write_pdf_with_image,
     write_rotated_pdf, write_simple_pdf,
 };
-use pdf_toolkit::error::PdfCutterError;
+use pdf_toolkit::error::PdfError;
 use pdf_toolkit::{
     ExtractionWarning, LlmReason, OutputFormat, PageSelection, PngSize, StructuredOutputFormat,
     document_page_count, extract_pages, extract_structured_text, extract_text, inspect_document,
@@ -179,14 +179,14 @@ fn opening_missing_or_corrupt_files_fails() {
     let missing = fixture_path(dir.path(), "missing.pdf");
     assert!(matches!(
         document_page_count(&pdfium, &missing),
-        Err(PdfCutterError::OpenPdf { .. })
+        Err(PdfError::OpenPdf { .. })
     ));
 
     let corrupt = fixture_path(dir.path(), "corrupt.pdf");
     fs::write(&corrupt, b"this is not a pdf").expect("write corrupt file");
     assert!(matches!(
         document_page_count(&pdfium, &corrupt),
-        Err(PdfCutterError::OpenPdf { .. })
+        Err(PdfError::OpenPdf { .. })
     ));
 }
 
@@ -208,11 +208,11 @@ fn zero_page_document_is_rejected_by_extraction() {
             OutputFormat::Pdf { concat: false },
             Some(&out_dir),
         ),
-        Err(PdfCutterError::EmptyDocument)
+        Err(PdfError::EmptyDocument)
     ));
     assert!(matches!(
         extract_text(&pdfium, &input, PageSelection::All, false, Some(&out_dir)),
-        Err(PdfCutterError::EmptyDocument)
+        Err(PdfError::EmptyDocument)
     ));
     assert!(matches!(
         extract_structured_text(
@@ -221,7 +221,7 @@ fn zero_page_document_is_rejected_by_extraction() {
             PageSelection::All,
             StructuredOutputFormat::Full
         ),
-        Err(PdfCutterError::EmptyDocument)
+        Err(PdfError::EmptyDocument)
     ));
 }
 
@@ -498,10 +498,7 @@ fn extract_pages_rejects_invalid_formats_without_panicking() {
         },
         Some(&out_dir),
     );
-    assert!(matches!(
-        oversized,
-        Err(PdfCutterError::InvalidImageWidth { .. })
-    ));
+    assert!(matches!(oversized, Err(PdfError::InvalidImageWidth { .. })));
 
     let bad_scale = extract_pages(
         &pdfium,
@@ -512,10 +509,7 @@ fn extract_pages_rejects_invalid_formats_without_panicking() {
         },
         Some(&out_dir),
     );
-    assert!(matches!(
-        bad_scale,
-        Err(PdfCutterError::InvalidImageScale { .. })
-    ));
+    assert!(matches!(bad_scale, Err(PdfError::InvalidImageScale { .. })));
 }
 
 // ── Text extraction ────────────────────────────────────────────────

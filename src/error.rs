@@ -109,3 +109,87 @@ pub enum PdfCutterError {
         source: image::ImageError,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The messages reach a user on stderr and a caller through the `errors`
+    /// object, so they are part of the surface rather than debug output. This
+    /// pins the vocabulary a reader relies on: what failed, and where.
+    #[test]
+    fn messages_name_the_thing_that_failed() {
+        let cases: Vec<(PdfCutterError, &[&str])> = vec![
+            (
+                PdfCutterError::InputMissing(PathBuf::from("missing.pdf")),
+                &["missing.pdf", "does not exist"],
+            ),
+            (
+                PdfCutterError::InputNotFile(PathBuf::from("some/dir")),
+                &["some/dir", "not a file"],
+            ),
+            (PdfCutterError::EmptyPageSelection, &["cannot be empty"]),
+            (
+                PdfCutterError::InvalidPageSelectionToken {
+                    position: 2,
+                    value: "abc".into(),
+                },
+                &["#2", "abc", "positive integer"],
+            ),
+            (
+                PdfCutterError::InvalidPageSelectionRange {
+                    position: 1,
+                    value: "9-3".into(),
+                },
+                &["#1", "9-3", "ascending"],
+            ),
+            (
+                PdfCutterError::InvalidImageScale { value: -1.0 },
+                &["greater than zero", "-1"],
+            ),
+            (
+                PdfCutterError::InvalidImageWidth {
+                    value: 0,
+                    max: 10_000,
+                },
+                &["1..=10000", "0"],
+            ),
+            (PdfCutterError::EmptyDocument, &["no pages"]),
+            (
+                PdfCutterError::UnsupportedPageCount { actual: 99_999 },
+                &["99999", "65535"],
+            ),
+            (
+                PdfCutterError::ExhaustedOutputNames {
+                    dir: PathBuf::from("out"),
+                    base_name: "doc".into(),
+                },
+                &["doc", "out"],
+            ),
+        ];
+
+        for (error, expected) in cases {
+            let rendered = error.to_string();
+            for fragment in expected {
+                assert!(
+                    rendered.contains(fragment),
+                    "expected {fragment:?} in {rendered:?}"
+                );
+            }
+        }
+    }
+
+    /// The binding failure is the one a user hits on a machine without the
+    /// native library, so it must list every place that was searched.
+    #[test]
+    fn binding_failure_lists_every_location_searched() {
+        let rendered = PdfCutterError::PdfiumBinding.to_string();
+
+        for location in ["executable directory", "system library", "./", "./dist/"] {
+            assert!(
+                rendered.contains(location),
+                "expected {location:?} in {rendered:?}"
+            );
+        }
+    }
+}

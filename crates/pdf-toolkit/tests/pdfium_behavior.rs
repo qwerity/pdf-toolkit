@@ -5,7 +5,7 @@
 mod common;
 
 use common::{GARBLED_UNIT, Text, pdfium, write_pdf, write_rotated_pdf};
-use pdf_cutter::{PageSelection, extract_text};
+use pdf_toolkit::{PageSelection, extract_text};
 
 /// Pins the pdfium behavior the extractor's font-size fallback depends on:
 /// for text drawn with a rotated matrix, `scaled_font_size` collapses to

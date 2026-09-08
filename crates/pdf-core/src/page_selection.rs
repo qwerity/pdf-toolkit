@@ -8,9 +8,9 @@ pub enum PageSelection {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) struct ResolvedPageSelection {
-    pub(crate) page_numbers: Vec<NonZeroU16>,
-    pub(crate) out_of_bounds: Vec<NonZeroU16>,
+pub struct ResolvedPageSelection {
+    pub page_numbers: Vec<NonZeroU16>,
+    pub out_of_bounds: Vec<NonZeroU16>,
 }
 
 impl PageSelection {
@@ -33,7 +33,7 @@ impl PageSelection {
         Ok(Self::Specific(page_numbers))
     }
 
-    pub(crate) fn resolve(&self, total_pages: u16) -> ResolvedPageSelection {
+    pub fn resolve(&self, total_pages: u16) -> ResolvedPageSelection {
         match self {
             Self::All => ResolvedPageSelection {
                 page_numbers: (1..=total_pages).filter_map(NonZeroU16::new).collect(),

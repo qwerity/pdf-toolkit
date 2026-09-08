@@ -5,9 +5,9 @@ use crate::cli_output::{
 };
 use anyhow::{Context, Result};
 use clap::Parser;
-use pdf_cutter::cli::Args;
-use pdf_cutter::error::{PdfCutterError, Result as LibraryResult};
-use pdf_cutter::{
+use pdf_toolkit::cli::Args;
+use pdf_toolkit::error::{PdfCutterError, Result as LibraryResult};
+use pdf_toolkit::{
     ExtractionReport, OutputFormat, create_pdfium, extract_pages, extract_structured_text,
     extract_text, inspect_document,
 };

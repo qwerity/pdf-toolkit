@@ -93,7 +93,7 @@ jobs:
           fi
 
           matrix="{\"include\":[$(IFS=','; echo "${entries[*]}")]}"
-          release_name="pdf_cutter ${release_tag}"
+          release_name="pdf-toolkit ${release_tag}"
 
           echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "release_name=${release_name}" >> "${GITHUB_OUTPUT}"

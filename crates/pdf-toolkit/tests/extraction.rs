@@ -4,8 +4,8 @@ use common::{
     Text, minimal_empty_pdf, pdfium, write_garbled_pdf, write_pdf, write_pdf_with_image,
     write_rotated_pdf, write_simple_pdf,
 };
-use pdf_cutter::error::PdfCutterError;
-use pdf_cutter::{
+use pdf_toolkit::error::PdfCutterError;
+use pdf_toolkit::{
     ExtractionWarning, LlmReason, OutputFormat, PageSelection, PngSize, StructuredOutputFormat,
     document_page_count, extract_pages, extract_structured_text, extract_text, inspect_document,
 };

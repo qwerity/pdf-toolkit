@@ -466,17 +466,67 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "pdf_cutter"
+name = "pdf-core"
+version = "0.7.1"
+dependencies = [
+ "image",
+ "pdfium-render",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "pdf-inspect"
+version = "0.7.1"
+dependencies = [
+ "pdf-core",
+ "pdf-text",
+ "pdfium-render",
+]
+
+[[package]]
+name = "pdf-pages"
+version = "0.7.1"
+dependencies = [
+ "pdf-core",
+ "pdf-inspect",
+ "pdf-render",
+ "pdfium-render",
+]
+
+[[package]]
+name = "pdf-render"
+version = "0.7.1"
+dependencies = [
+ "image",
+ "pdf-core",
+ "pdfium-render",
+]
+
+[[package]]
+name = "pdf-text"
+version = "0.7.1"
+dependencies = [
+ "pdf-core",
+ "pdfium-render",
+ "serde",
+]
+
+[[package]]
+name = "pdf-toolkit"
 version = "0.7.1"
 dependencies = [
  "anyhow",
  "clap",
  "image",
+ "pdf-core",
+ "pdf-inspect",
+ "pdf-pages",
+ "pdf-render",
+ "pdf-text",
  "pdfium-render",
- "serde",
  "serde_json",
  "tempfile",
- "thiserror",
 ]
 
 [[package]]

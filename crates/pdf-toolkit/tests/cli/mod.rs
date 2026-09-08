@@ -64,14 +64,14 @@ impl Run {
 
 /// Runs the binary with `args`.
 ///
-/// The working directory is pinned to the crate root because that is where the
-/// PDFium library sits (`./dist/`), and the runtime's last-resort lookup is
+/// The working directory is pinned to the workspace root because that is where
+/// the PDFium library sits (`./dist/`), and the runtime's last-resort lookup is
 /// relative. Inheriting the harness's directory would make the tests depend on
 /// how the runner was invoked.
 pub fn run(args: &[&str]) -> Run {
     let output = Command::new(binary())
         .args(args)
-        .current_dir(crate_root())
+        .current_dir(workspace_root())
         .output()
         .expect("failed to spawn the binary under test");
 
@@ -88,11 +88,16 @@ pub fn run_json(args: &[&str]) -> Value {
 }
 
 pub fn binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_pdf_cutter"))
+    PathBuf::from(env!("CARGO_BIN_EXE_pdf-toolkit"))
 }
 
-pub fn crate_root() -> PathBuf {
+/// The workspace root, two levels above this crate (`crates/pdf-toolkit`).
+pub fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate must live at <workspace>/crates/<name>")
+        .to_path_buf()
 }
 
 /// Every command line the tests issue, in one place.

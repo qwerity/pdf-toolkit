@@ -1,0 +1,26 @@
+[package]
+name = "pdf-toolkit"
+description = "CLI for inspecting PDFs, cutting pages to PDF or PNG, and extracting plain or structured text."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "pdf-toolkit"
+path = "src/main.rs"
+
+[dependencies]
+pdf-core.workspace = true
+pdf-inspect.workspace = true
+pdf-pages.workspace = true
+pdf-render.workspace = true
+pdf-text.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+image.workspace = true
+pdfium-render.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true

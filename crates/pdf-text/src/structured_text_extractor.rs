@@ -1,8 +1,8 @@
-use crate::document::{open_document, page_count_u16, page_index};
-use crate::error::{PdfCutterError, Result};
-use crate::extractor::ExtractionWarning;
-use crate::page_selection::PageSelection;
-use crate::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
+use pdf_core::error::{PdfCutterError, Result};
+use pdf_core::page::{open_document, page_count_u16, page_index};
+use pdf_core::page_selection::PageSelection;
+use pdf_core::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
+use pdf_core::warning::ExtractionWarning;
 use pdfium_render::prelude::{
     PdfFontWeight, PdfPage, PdfPageRenderRotation, PdfPageText, PdfPages, Pdfium,
 };
@@ -766,7 +766,7 @@ fn column_split_is_plausible(lines: &[TextLine], gutter_x: f32) -> bool {
 /// approximate: wrapped (multi-line) rows spread across several columns,
 /// where cell-to-column association relies on geometry alone. Used by page
 /// inspection to recommend a vision-LLM verification pass.
-pub(crate) fn page_has_complex_tables(page: &PdfPage<'_>) -> bool {
+pub fn page_has_complex_tables(page: &PdfPage<'_>) -> bool {
     let Ok(text) = page.text() else {
         return false;
     };

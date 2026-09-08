@@ -1,0 +1,11 @@
+[package]
+name = "pdf-text"
+description = "Plain and structured text extraction: positioned spans and a markdown reconstruction."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pdf-core.workspace = true
+pdfium-render.workspace = true
+serde.workspace = true

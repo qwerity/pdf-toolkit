@@ -1,15 +1,16 @@
-use crate::document::{
+use crate::output::{OutputFormat, PageResult};
+use pdf_core::error::{PdfCutterError, Result};
+use pdf_core::naming::{
+    file_size_kb, output_stem, reserve_named_output_file_with_extension,
+    reserve_output_file_with_extension, resolve_output_dir,
+};
+use pdf_core::page::{
     destination_page_index, open_document, page_count_u16, page_dimensions_px, page_index,
-    page_info_for_page,
 };
-use crate::error::{PdfCutterError, Result};
-use crate::output::{
-    OutputFormat, PageInfo, PageResult, PngSize, file_size_kb, output_stem,
-    reserve_named_output_file, reserve_output_file, resolve_output_dir,
-};
-use crate::page_selection::PageSelection;
+use pdf_core::page_selection::PageSelection;
+use pdf_core::warning::ExtractionWarning;
+use pdf_inspect::{PageInfo, page_info_for_page};
 use pdfium_render::prelude::*;
-use std::fmt;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
 
@@ -17,42 +18,6 @@ pub struct ExtractionReport {
     pub pages: Vec<PageResult>,
     pub source_pages: Vec<PageInfo>,
     pub warnings: Vec<ExtractionWarning>,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub enum ExtractionWarning {
-    PageOutOfBounds { page_number: u16, total_pages: u16 },
-    LoadPage { page_number: u16, reason: String },
-    UnreadableText { page_number: u16 },
-    SavePage { page_number: u16, reason: String },
-}
-
-impl fmt::Display for ExtractionWarning {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::PageOutOfBounds {
-                page_number,
-                total_pages,
-            } => write!(
-                f,
-                "page {page_number} is out of bounds (1..={total_pages}). Skipping."
-            ),
-            Self::LoadPage {
-                page_number,
-                reason,
-            } => write!(f, "could not get page {page_number}: {reason}. Skipping."),
-            Self::UnreadableText { page_number } => {
-                write!(
-                    f,
-                    "extracted text for page {page_number} appears corrupted and was skipped."
-                )
-            }
-            Self::SavePage {
-                page_number,
-                reason,
-            } => write!(f, "could not save page {page_number}: {reason}. Skipping."),
-        }
-    }
 }
 
 struct SavedPage {
@@ -199,19 +164,7 @@ pub fn extract_pages(
 fn output_dimensions_px(page: &PdfPage<'_>, output_format: OutputFormat) -> (u32, u32) {
     match output_format {
         OutputFormat::Pdf { .. } => page_dimensions_px(page, 1.0),
-        OutputFormat::Png { size } => png_output_dimensions_px(page, size),
-    }
-}
-
-fn png_output_dimensions_px(page: &PdfPage<'_>, size: PngSize) -> (u32, u32) {
-    match size {
-        PngSize::Scale(scale) => page_dimensions_px(page, scale),
-        PngSize::WidthPx(width_px) => {
-            let height_px =
-                ((page.height().value * width_px as f32) / page.width().value).round() as u32;
-
-            (width_px, height_px)
-        }
+        OutputFormat::Png { size } => pdf_render::dimensions_px(page, size),
     }
 }
 
@@ -227,10 +180,10 @@ fn save_concat_pdf(
         return Ok(None);
     }
 
-    let mut reserved_output = reserve_named_output_file(
+    let mut reserved_output = reserve_named_output_file_with_extension(
         output_dir,
         &format!("{stem}_concat"),
-        OutputFormat::Pdf { concat: true },
+        OutputFormat::Pdf { concat: true }.extension(),
     )?;
     let mut output_document =
         pdfium
@@ -312,11 +265,11 @@ fn save_pdf_page(
     output_context: &OutputContext<'_>,
 ) -> Result<SavedPage> {
     let page_number = output_context.page_number;
-    let mut reserved_output = reserve_output_file(
+    let mut reserved_output = reserve_output_file_with_extension(
         output_context.output_dir,
         output_context.stem,
         page_number,
-        OutputFormat::Pdf { concat: false },
+        OutputFormat::Pdf { concat: false }.extension(),
     )?;
     let mut output_document =
         pdfium
@@ -354,26 +307,18 @@ fn save_png_page(
     source_page: &PdfPage<'_>,
     output_context: &OutputContext<'_>,
 ) -> Result<SavedPage> {
-    let mut reserved_output = reserve_output_file(
+    let mut reserved_output = reserve_output_file_with_extension(
         output_context.output_dir,
         output_context.stem,
         output_context.page_number,
-        output_context.output_format,
+        output_context.output_format.extension(),
     )?;
     let OutputFormat::Png { size } = output_context.output_format else {
         unreachable!("PNG pages must use PNG output format");
     };
-    let bitmap = render_page_to_bitmap(source_page, size)?;
 
-    bitmap
-        .as_image()
-        .map_err(|source| PdfCutterError::RenderPage { source })?
-        .write_to(&mut reserved_output.file, image::ImageFormat::Png)
-        .map_err(|source| PdfCutterError::SaveImage {
-            format: "PNG",
-            path: reserved_output.path.clone(),
-            source,
-        })?;
+    let bitmap = pdf_render::render_page(source_page, size)?;
+    pdf_render::write_png(&bitmap, &mut reserved_output.file, &reserved_output.path)?;
     let size_kb = file_size_kb(&reserved_output.file, &reserved_output.path)?;
 
     Ok(SavedPage {
@@ -381,21 +326,4 @@ fn save_png_page(
         page_count: 1,
         size_kb,
     })
-}
-
-fn render_page_to_bitmap<'page>(
-    page: &'page PdfPage<'page>,
-    size: PngSize,
-) -> Result<PdfBitmap<'page>> {
-    let render_config = match size {
-        PngSize::Scale(scale) => PdfRenderConfig::new().scale_page_by_factor(scale),
-        PngSize::WidthPx(width_px) => PdfRenderConfig::new().set_target_width(
-            i32::try_from(width_px)
-                .expect("invariant: extract_pages validates width <= i32::MAX on entry"),
-        ),
-    }
-    .set_clear_color(PdfColor::WHITE);
-
-    page.render_with_config(&render_config)
-        .map_err(|source| PdfCutterError::RenderPage { source })
 }

@@ -1,0 +1,14 @@
+[package]
+name = "pdf-core"
+description = "Shared primitives: the PDFium runtime, page selection, errors, page plumbing and output naming."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+image.workspace = true
+pdfium-render.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

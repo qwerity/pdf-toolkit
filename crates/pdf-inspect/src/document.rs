@@ -1,10 +1,10 @@
-use crate::error::{PdfCutterError, Result};
-use crate::output::{LlmReason, PageInfo};
-use crate::structured_text_extractor::page_has_complex_tables;
-use crate::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
+use crate::page_info::{LlmReason, PageInfo};
+use pdf_core::error::{PdfCutterError, Result};
+use pdf_core::page::{open_document, page_count_u16, page_dimensions_px, page_index};
+use pdf_core::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
+use pdf_text::page_has_complex_tables;
 use pdfium_render::prelude::{
-    PdfDocument, PdfPage, PdfPageObject, PdfPageObjectCommon, PdfPageObjectsCommon, PdfPages,
-    Pdfium,
+    PdfPage, PdfPageObject, PdfPageObjectCommon, PdfPageObjectsCommon, Pdfium,
 };
 use std::num::NonZeroU16;
 use std::path::Path;
@@ -55,39 +55,7 @@ pub fn inspect_document(pdfium: &Pdfium, pdf_path: &Path) -> Result<DocumentInfo
     })
 }
 
-/// Number of pages addressable by the crate's `u16`-based page model.
-/// Documents beyond `u16::MAX` pages (or negative pdfium error counts)
-/// are rejected instead of silently truncated.
-pub(crate) fn page_count_u16(pages: &PdfPages<'_>) -> Result<u16> {
-    let page_count = pages.len();
-    u16::try_from(page_count)
-        .map_err(|_| PdfCutterError::UnsupportedPageCount { actual: page_count })
-}
-
-/// Converts a one-based page number to a pdfium zero-based page index.
-pub(crate) fn page_index(page_number: NonZeroU16) -> i32 {
-    i32::from(page_number.get()) - 1
-}
-
-/// Converts a zero-based destination index (bounded by the crate's `u16`
-/// page model) to a pdfium page index.
-pub(crate) fn destination_page_index(index: u16) -> i32 {
-    i32::from(index)
-}
-
-pub(crate) fn open_document<'pdfium>(
-    pdfium: &'pdfium Pdfium,
-    pdf_path: &Path,
-) -> Result<PdfDocument<'pdfium>> {
-    pdfium
-        .load_pdf_from_file(pdf_path, None)
-        .map_err(|source| PdfCutterError::OpenPdf {
-            path: pdf_path.to_path_buf(),
-            source,
-        })
-}
-
-pub(crate) fn page_info_for_page(page_number: u16, page: &PdfPage<'_>) -> PageInfo {
+pub fn page_info_for_page(page_number: u16, page: &PdfPage<'_>) -> PageInfo {
     let (width_px, height_px) = page_dimensions_px(page, 1.0);
     let page_area = page.width().value * page.height().value;
     let (image_count, image_area) = collect_image_stats(page.objects().iter(), true, page_area);
@@ -138,17 +106,6 @@ fn llm_reasons(text: &str, image_count: u32, image_coverage: f32) -> Vec<LlmReas
     }
 
     reasons
-}
-
-pub(crate) fn page_dimensions_px(page: &PdfPage<'_>, scale: f32) -> (u32, u32) {
-    (
-        scale_points_to_pixels(page.width().value, scale),
-        scale_points_to_pixels(page.height().value, scale),
-    )
-}
-
-fn scale_points_to_pixels(points: f32, scale: f32) -> u32 {
-    (points * scale).round() as u32
 }
 
 /// Recursively count image objects and accumulate their bounding-box area.

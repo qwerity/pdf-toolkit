@@ -1,7 +1,9 @@
-use crate::structured_text_extractor::StructuredOutputFormat;
-use crate::{OutputFormat, PageSelection, PngSize};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
+use pdf_core::PageSelection;
+use pdf_pages::OutputFormat;
+use pdf_render::PngSize;
+use pdf_text::StructuredOutputFormat;
 use std::path::PathBuf;
 
 const MODE_ERROR: &str = "choose either extraction or cutting: use --extract for text extraction, or use --format for page cutting";
@@ -119,7 +121,7 @@ impl Args {
     /// so the binary crate's tests can share it.
     #[doc(hidden)]
     pub fn try_from_flags(extra: &[&str]) -> std::result::Result<Self, clap::Error> {
-        let mut argv = vec!["pdf_cutter", "--input", "input.pdf"];
+        let mut argv = vec!["pdf-toolkit", "--input", "input.pdf"];
         argv.extend_from_slice(extra);
         Self::try_parse_from(argv)
     }

@@ -59,14 +59,48 @@ pub fn pdfium() -> PdfiumHandle {
     let lock = LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let pdfium = PDFIUM.get_or_init(|| {
-        pdf_cutter::create_pdfium().expect("pdfium runtime must be available (see ./dist)")
-    });
+    let pdfium = PDFIUM.get_or_init(bind_pdfium);
 
     PdfiumHandle {
         _lock: lock,
         pdfium,
     }
+}
+
+/// Binds the native library for an in-process test.
+///
+/// The library ships in the workspace's `dist/`, and cargo runs an integration
+/// test with the working directory set to the *package* root, so the runtime's
+/// own relative lookup cannot see it from here. The workspace path is derived
+/// rather than assumed to be the current directory, which also keeps the tests
+/// working when run from anywhere.
+fn bind_pdfium() -> Pdfium {
+    let library = workspace_root()
+        .join("dist")
+        .join(Pdfium::pdfium_platform_library_name());
+
+    Pdfium::bind_to_library(&library)
+        .map(Pdfium::new)
+        .or_else(|_| pdf_toolkit::create_pdfium().map_err(anyhow_string))
+        .unwrap_or_else(|error| {
+            panic!(
+                "pdfium runtime must be available; tried {} then the runtime's own lookup: {error}",
+                library.display()
+            )
+        })
+}
+
+fn anyhow_string(error: impl std::fmt::Display) -> String {
+    error.to_string()
+}
+
+/// The workspace root, two levels above this crate (`crates/pdf-toolkit`).
+pub fn workspace_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate must live at <workspace>/crates/<name>")
+        .to_path_buf()
 }
 
 /// Writes a fixture PDF with one A4 page per entry in `pages`.

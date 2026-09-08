@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
-use pdf_cutter::cli::Args;
-use pdf_cutter::{
+use pdf_toolkit::cli::Args;
+use pdf_toolkit::{
     DocumentInfo, ExtractionReport, ExtractionWarning, OutputFormat, PageInfo, PngSize,
     StructuredExtractionReport, TextExtractionReport,
 };
@@ -311,7 +311,7 @@ fn print_json(value: Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pdf_cutter::{LlmReason, PageResult, StructuredPage, TextFileResult, TextSpan};
+    use pdf_toolkit::{LlmReason, PageResult, StructuredPage, TextFileResult, TextSpan};
     use std::path::PathBuf;
 
     fn args(extra: &[&str]) -> Args {

@@ -5,7 +5,7 @@
 
 /// Drops control characters (except line breaks and tabs) and trailing
 /// whitespace from raw pdfium page text.
-pub(crate) fn sanitize_extracted_text(text: &str) -> String {
+pub fn sanitize_extracted_text(text: &str) -> String {
     let filtered = text
         .chars()
         .filter(|ch| is_allowed_text_char(*ch))
@@ -21,7 +21,7 @@ fn is_allowed_text_char(ch: char) -> bool {
 /// Returns true when extracted text is statistically likely to be garbage:
 /// enough material to judge, high symbol/digit noise, almost no lowercase,
 /// and almost no vowel-bearing words.
-pub(crate) fn is_probably_unreadable_text(text: &str) -> bool {
+pub fn is_probably_unreadable_text(text: &str) -> bool {
     let metrics = analyze_text_quality(text);
 
     if metrics.visible_char_count() < 80 || metrics.alpha_word_count < 20 {

@@ -6,7 +6,7 @@ usage() {
 Usage: ./build.sh [macos|mac|linux|windows] [--with-artifacts]
 
 Builds a runtime bundle in ./dist that contains only:
-- the pdf_cutter executable
+- the pdf-toolkit executable
 - the matching PDFium native library
 
 Pass --with-artifacts to also write release archives and SHA-256 checksum files to ./artifacts.
@@ -17,9 +17,15 @@ Environment variables:
 EOF
 }
 
+# The root manifest is a virtual workspace, so it carries no [package]. The
+# name comes from the binary crate and the version from [workspace.package],
+# which is where every crate inherits it from.
+readonly BINARY_CRATE="pdf-toolkit"
+
 read_cargo_value() {
     local key="$1"
-    sed -nE "s/^${key} = \"([^\"]+)\"/\1/p" Cargo.toml | head -n 1
+    local manifest="$2"
+    sed -nE "s/^${key} = \"([^\"]+)\"/\1/p" "${manifest}" | head -n 1
 }
 
 detect_platform() {
@@ -240,7 +246,7 @@ run_cargo_pipeline() {
         && cargo check --workspace --all-targets --all-features \
         && cargo clippy --workspace --all-targets --all-features -- -D warnings \
         && cargo test --workspace --all-features \
-        && cargo build --locked --release
+        && cargo build --locked --release --package "${BINARY_CRATE}"
 }
 
 main() {
@@ -248,7 +254,7 @@ main() {
     local crate_name
     local crate_version
     local release_tag
-    local binary_name="pdf_cutter"
+    local binary_name="${BINARY_CRATE}"
     local dist_dir="dist"
     local artifacts_dir="artifacts"
     local create_artifacts
@@ -265,8 +271,8 @@ main() {
     arch="$(detect_arch)"
     create_artifacts="${CREATE_ARTIFACTS}"
 
-    crate_name="$(read_cargo_value "name")"
-    crate_version="$(read_cargo_value "version")"
+    crate_name="$(read_cargo_value "name" "crates/${BINARY_CRATE}/Cargo.toml")"
+    crate_version="$(read_cargo_value "version" "Cargo.toml")"
     release_tag="${RELEASE_TAG:-v${crate_version}}"
 
     if [[ -z "${crate_name}" || -z "${crate_version}" ]]; then

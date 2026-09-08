@@ -1,0 +1,11 @@
+[package]
+name = "pdf-render"
+description = "Rasterises PDF pages to PNG through PDFium."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pdf-core.workspace = true
+image.workspace = true
+pdfium-render.workspace = true

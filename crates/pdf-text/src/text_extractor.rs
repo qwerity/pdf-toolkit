@@ -1,12 +1,12 @@
-use crate::document::{open_document, page_count_u16, page_index};
-use crate::error::{PdfCutterError, Result};
-use crate::extractor::ExtractionWarning;
-use crate::output::{
+use pdf_core::error::{PdfCutterError, Result};
+use pdf_core::naming::{
     OutputReservation, file_size_kb, output_stem, reserve_named_output_file_with_extension,
     reserve_output_file_with_extension, resolve_output_dir,
 };
-use crate::page_selection::PageSelection;
-use crate::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
+use pdf_core::page::{open_document, page_count_u16, page_index};
+use pdf_core::page_selection::PageSelection;
+use pdf_core::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
+use pdf_core::warning::ExtractionWarning;
 use pdfium_render::prelude::{PdfPage, PdfPages, Pdfium, PdfiumError};
 use std::io::Write;
 use std::num::NonZeroU16;

@@ -1,0 +1,11 @@
+[package]
+name = "pdf-inspect"
+description = "Per-page document metadata and the signals that route a page to a vision pass."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pdf-core.workspace = true
+pdf-text.workspace = true
+pdfium-render.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "pdf-pages"
+description = "Cuts pages out of a PDF as single-page PDFs, one concatenated PDF, or rendered PNGs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pdf-core.workspace = true
+pdf-inspect.workspace = true
+pdf-render.workspace = true
+pdfium-render.workspace = true

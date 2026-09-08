@@ -1,17 +1,32 @@
-[package]
-name = "pdf_cutter"
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+# Shared across every crate so the whole workspace moves version and toolchain
+# together. The dependency versions live here for the same reason: two crates
+# resolving different pdfium-render releases would load two sets of bindings
+# against one native library.
+[workspace.package]
 version = "0.7.1"
 edition = "2024"
+rust-version = "1.85"
 
-[dependencies]
+[workspace.dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 pdfium-render = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tempfile = "3"
 thiserror = "2.0"
 
-[dev-dependencies]
-serde_json = "1.0"
-tempfile = "3"
+pdf-core = { path = "crates/pdf-core" }
+pdf-inspect = { path = "crates/pdf-inspect" }
+pdf-pages = { path = "crates/pdf-pages" }
+pdf-render = { path = "crates/pdf-render" }
+pdf-text = { path = "crates/pdf-text" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"

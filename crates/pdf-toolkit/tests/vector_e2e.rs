@@ -128,7 +128,29 @@ const PLACEMENTS: &[(&str, u32, u64, f64, f64)] = &[
     // document's CRS, which licenses a looser tolerance here. Without that
     // second pass this page does not place at all.
     ("10.pdf", 12, 4, 0.3675, 645.0),
+    ("13.pdf", 4, 8, 0.0031, 500.0),
 ];
+
+/// Every dossier in the corpus, in numeric order.
+///
+/// Read from the directory rather than listed, so adding a dossier does not
+/// mean editing a list here. What a new dossier *must* still do is not silently
+/// change the ground truth: if it places a page, `the_corpus_places_exactly_the_
+/// recorded_pages` fails until that placement is written into [`PLACEMENTS`].
+fn corpus_documents() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(corpus_dir())
+        .expect("corpus directory")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".pdf"))
+        .collect();
+    names.sort_by_key(|name| {
+        name.trim_end_matches(".pdf")
+            .parse::<u32>()
+            .unwrap_or(u32::MAX)
+    });
+    names
+}
 
 #[test]
 fn known_placements_reproduce_to_the_millimetre() {
@@ -538,21 +560,24 @@ fn output_writes_the_same_geojson_it_reported() {
 // the corpus as a whole
 // ---------------------------------------------------------------------------
 
-/// Runs every dossier and checks the invariants that must hold for all 264
-/// pages, whatever they contain.
+/// Runs every dossier and checks the invariants that must hold for every page,
+/// whatever it contains.
 #[test]
 fn every_page_of_every_dossier_reports_a_usable_result() {
     if !corpus_available("every_page_of_every_dossier_reports_a_usable_result") {
         return;
     }
 
-    let documents = [
-        "1.pdf", "2.pdf", "3.pdf", "4.pdf", "5.pdf", "6.pdf", "7.pdf", "8.pdf", "9.pdf", "10.pdf",
-    ];
+    let documents = corpus_documents();
+    assert!(
+        documents.len() >= 10,
+        "the corpus looks truncated: {} dossier(s) in {}",
+        documents.len(),
+        corpus_dir().display()
+    );
     let mut total_pages = 0usize;
-    let mut placed = 0usize;
 
-    for name in documents {
+    for name in &documents {
         let out = document(name);
         let pages = out["pages"].as_array().expect("pages");
         assert!(!pages.is_empty(), "{name} produced no pages");
@@ -573,7 +598,6 @@ fn every_page_of_every_dossier_reports_a_usable_result() {
 
             let geo = &page["georeference"];
             if geo["placed"] == Value::Bool(true) {
-                placed += 1;
                 assert_eq!(crs, "EPSG:4326", "{name}: a placed page must be in degrees");
                 assert!(
                     geo["rmse_m"].is_number(),
@@ -589,31 +613,52 @@ fn every_page_of_every_dossier_reports_a_usable_result() {
         }
     }
 
-    assert_eq!(total_pages, 264, "the corpus is 264 pages");
-    assert_eq!(
-        placed,
-        PLACEMENTS.len(),
-        "the corpus places exactly the pages listed in PLACEMENTS"
+    assert!(
+        total_pages > 250,
+        "the corpus looks truncated: {total_pages} pages across {} dossiers",
+        documents.len()
     );
 }
 
-/// Documents 6, 7 and 8 print no turning-point table anywhere, which matches
-/// their drawings. Reporting a placement for one would mean the reader had
-/// invented coordinates.
+/// The corpus places exactly the pages [`PLACEMENTS`] records — no more, no
+/// fewer.
+///
+/// The "no more" half is the one that matters. A page that starts placing
+/// because a threshold moved is a change in what this tool claims about the
+/// world, and it should be looked at and written down rather than absorbed
+/// silently. Adding a dossier that places a page fails here on purpose.
 #[test]
-fn dossiers_without_any_coordinate_table_place_nothing() {
-    if !corpus_available("dossiers_without_any_coordinate_table_place_nothing") {
+fn the_corpus_places_exactly_the_recorded_pages() {
+    if !corpus_available("the_corpus_places_exactly_the_recorded_pages") {
         return;
     }
 
-    for name in ["6.pdf", "7.pdf", "8.pdf"] {
-        let out = document(name);
-        for page in out["pages"].as_array().expect("pages") {
-            assert_eq!(
-                page["georeference"]["placed"], false,
-                "{name} p{} claims a placement it cannot have",
-                page["page_number"]
-            );
+    let mut actual: Vec<(String, u64)> = Vec::new();
+    for name in corpus_documents() {
+        for page in document(&name)["pages"].as_array().expect("pages") {
+            if page["georeference"]["placed"] == Value::Bool(true) {
+                actual.push((
+                    name.clone(),
+                    page["page_number"].as_u64().expect("page number"),
+                ));
+            }
         }
     }
+    actual.sort();
+
+    let mut expected: Vec<(String, u64)> = PLACEMENTS
+        .iter()
+        .map(|(document, page, ..)| ((*document).to_string(), u64::from(*page)))
+        .collect();
+    expected.sort();
+
+    let unexpected: Vec<_> = actual.iter().filter(|p| !expected.contains(p)).collect();
+    let missing: Vec<_> = expected.iter().filter(|p| !actual.contains(p)).collect();
+
+    assert!(
+        unexpected.is_empty() && missing.is_empty(),
+        "the corpus no longer places what PLACEMENTS records.\n  \
+         newly placed (add to PLACEMENTS with its residual): {unexpected:?}\n  \
+         no longer placed (a regression): {missing:?}"
+    );
 }

@@ -416,9 +416,9 @@ that but renders nothing. Each does what the other cannot, so both stay.
 
 ### Test corpus
 
-The `vector` end-to-end tests run against ten real building-permit dossiers,
-264 pages, in `test_assets/samples/`. They are 137 MB and live in a release
-rather than in git:
+The `vector` end-to-end tests run against fourteen real building-permit
+dossiers, 377 pages, in `test_assets/samples/`. They are ~198 MB and live in a
+release rather than in git:
 
 ```bash
 ./scripts/fetch-samples.sh          # install

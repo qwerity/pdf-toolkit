@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 
 use pdf_core::PageSelection;
+use pdf_geo::local::Reference;
 use pdf_pages::OutputFormat;
 use pdf_render::PngSize;
 use pdf_text::StructuredOutputFormat;
@@ -25,7 +26,7 @@ use pdf_text::StructuredOutputFormat;
 #[derive(Parser, Debug)]
 #[command(
     name = "pdf-toolkit",
-    about = "Inspect PDFs, cut pages to PDF or PNG, and extract plain or structured text.",
+    about = "Inspect PDFs, cut pages to PDF or PNG, extract text, and recover CAD geometry as GeoJSON.",
     version,
     author
 )]
@@ -47,6 +48,8 @@ pub enum Command {
     Text(TextArgs),
     /// Extract positioned text spans and a markdown reconstruction, to stdout.
     Structured(StructuredArgs),
+    /// Recover CAD vector geometry, classify each page, and export GeoJSON.
+    Vector(VectorArgs),
 }
 
 /// The source document and the pages wanted from it.
@@ -129,6 +132,57 @@ pub struct StructuredArgs {
     pub structured_format: StructuredFormatArg,
 }
 
+#[derive(ClapArgs, Debug)]
+pub struct VectorArgs {
+    #[command(flatten)]
+    pub source: Source,
+
+    /// A real-world reference, as `local_x,local_y,longitude,latitude`.
+    ///
+    /// Repeat it. Two or more place a drawing that carries no coordinate table
+    /// of its own: the local pair is a point in the drawing's own frame — the
+    /// coordinates an unplaced page's GeoJSON is written in — and the second
+    /// pair is where that point actually is.
+    ///
+    /// Pages that can be placed from their own printed table ignore these; the
+    /// sheet's own figures are checkable against the drawing and a supplied
+    /// pair is not.
+    ///
+    /// `allow_hyphen_values` because a local coordinate is very often negative
+    /// — the frame's origin is the drawing's centre — and without it a leading
+    /// minus makes clap read the value as an unknown flag.
+    #[arg(
+        long = "georeference",
+        short = 'g',
+        value_parser = parse_reference_arg,
+        allow_hyphen_values = true
+    )]
+    pub georeference: Vec<Reference>,
+
+    /// Also write each page's GeoJSON to this directory. The same GeoJSON is
+    /// in the JSON on stdout either way.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+}
+
+impl VectorArgs {
+    /// Rejects a single reference up front.
+    ///
+    /// One reference fixes position but leaves rotation and scale free, so a
+    /// placement built from it would be confidently wrong rather than refused.
+    /// The check lives here so the message names the flag the user typed.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.georeference.len() == 1 {
+            return Err(
+                "--georeference needs at least two references: one fixes position but leaves \
+                 rotation and scale undetermined"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
 impl Command {
     /// The source PDF, whichever command was asked for. Used by the one
     /// check that applies to all of them: that the input exists and is a file.
@@ -139,6 +193,7 @@ impl Command {
             Self::Render(args) => &args.source.input,
             Self::Text(args) => &args.source.input,
             Self::Structured(args) => &args.source.input,
+            Self::Vector(args) => &args.source.input,
         }
     }
 }
@@ -215,6 +270,18 @@ impl PagesArg {
     pub fn selection(&self) -> &PageSelection {
         &self.parsed
     }
+
+    /// The selection as one-based page numbers, or empty for `all`.
+    ///
+    /// `vector` reads pages through a different parser from the rest of the
+    /// toolkit, so it resolves the selection against that document's own page
+    /// count rather than through `PageSelection::resolve`.
+    pub fn page_numbers(&self) -> Vec<usize> {
+        match &self.parsed {
+            PageSelection::All => Vec::new(),
+            PageSelection::Specific(pages) => pages.iter().map(|p| usize::from(p.get())).collect(),
+        }
+    }
 }
 
 impl Cli {
@@ -230,6 +297,10 @@ impl Cli {
 
 fn parse_pages(value: &str) -> std::result::Result<PagesArg, String> {
     PagesArg::parse(value)
+}
+
+fn parse_reference_arg(value: &str) -> std::result::Result<Reference, String> {
+    pdf_vector::parse_reference(value)
 }
 
 fn parse_scale(value: &str) -> std::result::Result<f32, String> {

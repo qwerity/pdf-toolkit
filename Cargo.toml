@@ -21,7 +21,15 @@ serde_json = "1.0"
 tempfile = "3"
 thiserror = "2.0"
 
+geojson = "1.0.0"
+lopdf = { version = "0.44.0", default-features = false, features = ["chrono"] }
+regex = "1.13"
+
+pdf-classify = { path = "crates/pdf-classify" }
 pdf-core = { path = "crates/pdf-core" }
+pdf-geo = { path = "crates/pdf-geo" }
+pdf-geometry = { path = "crates/pdf-geometry" }
+pdf-vector = { path = "crates/pdf-vector" }
 pdf-inspect = { path = "crates/pdf-inspect" }
 pdf-pages = { path = "crates/pdf-pages" }
 pdf-render = { path = "crates/pdf-render" }

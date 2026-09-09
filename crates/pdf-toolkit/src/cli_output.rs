@@ -9,6 +9,20 @@ pub fn print_document_info(document_info: &DocumentInfo) -> Result<()> {
     print_json(document_info_json(document_info))
 }
 
+/// Prints the `vector` result.
+///
+/// The whole document goes out as one document, GeoJSON included, because the
+/// classification and the geometry answer one question together: a caller
+/// deciding what to do with a page needs to know both what it is and where it
+/// is, and splitting them across a file and a stream would make that two reads
+/// that can disagree.
+pub fn print_vector_output(report: &pdf_vector::DocumentVector) -> Result<()> {
+    for warning in &report.warnings {
+        eprintln!("Warning: {warning}");
+    }
+    print_json(serde_json::to_value(report).context("failed to serialize vector output")?)
+}
+
 pub fn print_structured_output(report: &StructuredExtractionReport) -> Result<()> {
     print_warnings(&report.warnings);
 

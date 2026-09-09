@@ -54,6 +54,7 @@ pdf-toolkit <COMMAND> <INPUT> [OPTIONS]
   render      selected pages as PNG images
   text        plain text into .txt files
   structured  positioned spans and a markdown reconstruction, to stdout
+  vector      CAD geometry + classification + georeferenced GeoJSON
 ```
 
 ### inspect
@@ -92,6 +93,51 @@ With neither sizing option, `render` uses scale `2.0`.
 default) or `--concat` is given, and reports it under `concat`. A selection of
 specific pages without `--concat` writes one file per page, reported under
 `pages`.
+
+### vector
+
+Recovers the CAD geometry a drawing is actually made of — by interpreting the
+PDF's content streams, not by tracing a rendering — classifies every page, and
+writes GeoJSON.
+
+```bash
+./dist/pdf-toolkit vector input.pdf
+./dist/pdf-toolkit vector input.pdf --pages 9
+./dist/pdf-toolkit vector input.pdf --output out        # also write .geojson files
+```
+
+A survey sheet usually prints a table of boundary turning-point coordinates,
+and that is enough on its own: the table is read from the text layer, the same
+polygon is found in the drawing, and a transform is fitted between the two. The
+residual comes out in **millimetres**, and that is the number that says the
+placement is right — the fit is scored against the drawing, not against itself.
+
+Where a sheet prints no such table, supply the georeference:
+
+```bash
+./dist/pdf-toolkit vector input.pdf --pages 10 \
+  --georeference -565.87,-399.92,44.5100,40.1500 \
+  --georeference  552.41, 399.92,44.5231,40.5620
+```
+
+Each `--georeference` is `local_x,local_y,longitude,latitude`: a point in the
+drawing's own frame — the coordinates an unplaced page's GeoJSON is written in
+— and where that point actually is. Two settle position, rotation and scale
+together; one is refused, because it would leave rotation and scale free. A
+page that can place itself from its own printed table ignores them.
+
+**Every page yields GeoJSON**, placed or not. `crs` says which frame it is in:
+
+| `crs` | meaning |
+|---|---|
+| `EPSG:4326` | placed; coordinates are longitude/latitude |
+| `local_metres` | not placed, but the sheet's scale was readable, so shapes are metric |
+| `page_units` | not placed and no scale found; shapes are right, size is not |
+
+Placement is a **document-level** result, not a per-page one. A page that fits
+to centimetres establishes which coordinate system the dossier is drawn in, and
+its siblings are then retried against that system with a looser tolerance — so
+running a whole document places pages that asking for one page alone does not.
 
 ### structured
 
@@ -345,11 +391,40 @@ the same job.
 | crate | owns |
 |---|---|
 | `pdf-core` | PDFium runtime, page addressing, output naming, errors, warnings, text-quality heuristics |
+| `pdf-geometry` | the content-stream interpreter: real vector paths and text runs |
+| `pdf-classify` | which pages carry a map-placeable drawing |
+| `pdf-geo` | coordinate tables, transform fitting, projection, GeoJSON export |
+| `pdf-vector` | ties those three together for the `vector` command |
 | `pdf-render` | `PngSize` and rasterising a page to PNG |
 | `pdf-text` | plain and structured text extraction |
 | `pdf-inspect` | per-page metadata and the vision-pass routing signals |
 | `pdf-pages` | cutting and concatenation |
 | `pdf-toolkit` | the CLI, plus the facade that re-exports all of the above |
 
-Nothing in `pdf-core` depends on another workspace crate. The rest form a
-single chain: `core -> {render, text} -> inspect -> pages -> toolkit`.
+Nothing in `pdf-core` depends on another workspace crate. The rest form two
+chains meeting at the CLI:
+
+```
+core -> {render, text} -> inspect -> pages ----+
+geometry -> geo -> classify -> vector ---------+--> toolkit
+```
+
+**Two PDF parsers, deliberately.** `pdf-core` binds PDFium, which renders and
+gives a good text layer but will not tell you what path a drawing is made of.
+`pdf-geometry` interprets content streams with `lopdf`, which recovers exactly
+that but renders nothing. Each does what the other cannot, so both stay.
+
+### Test corpus
+
+The `vector` end-to-end tests run against ten real building-permit dossiers,
+264 pages, in `test_assets/samples/`. They are 137 MB and live in a release
+rather than in git:
+
+```bash
+./scripts/fetch-samples.sh          # install
+./scripts/fetch-samples.sh --check  # report only, exits non-zero when missing
+```
+
+Without them `cargo test` still passes and the corpus tests print `SKIP`. In CI
+set `PDF_TOOLKIT_REQUIRE_CORPUS=1`, which turns that skip into a failure — a
+silent skip would hide exactly the regression the corpus exists to catch.

@@ -1,0 +1,13 @@
+[package]
+name = "pdf-geo"
+description = "Georeferencing: reads a survey sheet's turning-point table, fits a transform from page space to the ground, and exports GeoJSON in WGS 84."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pdf-geometry.workspace = true
+geojson.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true

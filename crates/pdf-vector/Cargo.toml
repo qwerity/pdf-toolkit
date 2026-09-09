@@ -1,0 +1,19 @@
+[package]
+name = "pdf-vector"
+description = "Extracts a PDF's CAD geometry, classifies each page, and georeferences the mappable ones into GeoJSON."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pdf-classify.workspace = true
+pdf-core.workspace = true
+pdf-geo.workspace = true
+pdf-geometry.workspace = true
+anyhow.workspace = true
+geojson.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

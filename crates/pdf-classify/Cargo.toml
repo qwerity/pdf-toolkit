@@ -1,0 +1,12 @@
+[package]
+name = "pdf-classify"
+description = "Decides which pages carry a map-placeable CAD drawing, from cheap structural features."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pdf-geo.workspace = true
+pdf-geometry.workspace = true
+regex.workspace = true
+serde.workspace = true

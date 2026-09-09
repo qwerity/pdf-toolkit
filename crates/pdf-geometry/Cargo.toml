@@ -1,0 +1,11 @@
+[package]
+name = "pdf-geometry"
+description = "Recovers the real vector geometry and text runs a CAD exporter wrote, by interpreting PDF content streams."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+lopdf.workspace = true
+serde.workspace = true

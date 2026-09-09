@@ -273,7 +273,11 @@ main() {
 
     crate_name="$(read_cargo_value "name" "crates/${BINARY_CRATE}/Cargo.toml")"
     crate_version="$(read_cargo_value "version" "Cargo.toml")"
-    release_tag="${RELEASE_TAG:-v${crate_version}}"
+    # No "v" prefix. Callers construct the asset name as
+    # <name>-<version>-<platform>.tar.gz from a bare version, so a tag of
+    # "v0.8.0" produces an archive name they cannot construct.
+    # Tags in this repository are bare versions; the default matches.
+    release_tag="${RELEASE_TAG:-${crate_version}}"
 
     if [[ -z "${crate_name}" || -z "${crate_version}" ]]; then
         echo "Could not read package metadata from Cargo.toml." >&2
@@ -326,6 +330,12 @@ main() {
         mkdir -p "${package_dir}"
         cp "${dist_dir}/${binary_name}" "${package_dir}/${binary_name}"
         cp "${dist_library_path}" "${package_dir}/${library_name}"
+        # The reference ships beside the binary. Consumers fetch this archive
+        # and unpack it into their own tools/ directory, where the JSON contract
+        # is the thing they actually need and cannot otherwise see.
+        cp "README.md" "${package_dir}/README.md"
+        mkdir -p "${package_dir}/docs"
+        cp "docs/json-api.md" "${package_dir}/docs/json-api.md"
 
         archive_path="$(create_archive "${artifacts_dir}" "${package_root}" "${package_dir_name}" "${PLATFORM}")"
         checksum_path="$(write_checksum "${archive_path}")"

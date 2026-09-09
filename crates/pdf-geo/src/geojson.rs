@@ -323,8 +323,8 @@ pub fn export_local(
     meta.insert(
         "warning".into(),
         JsonValue::from(
-            "Coordinates are in this drawing's own frame, not WGS 84. Supply two or more \
-real-world references with --georeference to place it.",
+            "Coordinates are in this drawing's own frame, not WGS 84. Pass two or more \
+--georeference local_x,local_y,longitude,latitude to place it on the ground.",
         ),
     );
     let mut wrapper = JsonObject::new();

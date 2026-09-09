@@ -1,10 +1,16 @@
 # pdf-toolkit
 
-CLI tool for inspecting PDFs, extracting pages as single-page PDFs or PNGs, and extracting text.
+CLI tool for inspecting PDFs, extracting pages as single-page PDFs or PNGs,
+extracting text, and recovering CAD geometry as georeferenced GeoJSON.
 
 Built as a quicker alternative to [Docling](https://github.com/docling-project/docling)
 for turning PDFs into text and structured markdown: a single native binary over
 PDFium, with no Python runtime to install.
+
+Every command prints one JSON document on stdout.
+**[`docs/json-api.md`](docs/json-api.md) is the contract** — field by field,
+with the enums to branch on and when a field is absent. Read that if you are
+wiring this into a service; the examples below are a tour, not a reference.
 
 ## Build
 
@@ -177,6 +183,10 @@ running a whole document places pages that asking for one page alone does not.
 
 ## Output Examples
 
+A tour of the common shapes. **[`docs/json-api.md`](docs/json-api.md) is the
+full contract** — every field, every enum value, and which fields are absent
+rather than defaulted. `vector`'s result shape is documented there only.
+
 Page inspection with `inspect`:
 
 ```json
@@ -348,7 +358,10 @@ Structured text extraction with `--structured-format markdown` (no spans):
 }
 ```
 
-If requested pages are skipped or fail, the JSON includes an `errors` object keyed by page number.
+If requested pages are skipped or fail, the JSON includes an `errors` object
+keyed by page number — the run still exits `0`. A *failed* run is different: it
+exits non-zero and prints no JSON at all. See
+[`docs/json-api.md`](docs/json-api.md#errors-and-partial-results).
 
 ## Library Usage
 

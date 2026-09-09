@@ -16,7 +16,9 @@ pub mod page;
 pub mod page_selection;
 pub mod pdfium_runtime;
 pub mod text_quality;
-pub mod utils;
+/// Not part of the crate's surface: only `naming` uses it, and it was widened
+/// to `pub` during the workspace split on the assumption it crossed a boundary.
+pub(crate) mod utils;
 pub mod warning;
 
 /// The native runtime handle, re-exported so callers need not depend on

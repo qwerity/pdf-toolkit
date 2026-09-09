@@ -7,13 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 pdf-classify.workspace = true
-pdf-core.workspace = true
 pdf-geo.workspace = true
 pdf-geometry.workspace = true
 anyhow.workspace = true
 geojson.workspace = true
 serde.workspace = true
-serde_json.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true

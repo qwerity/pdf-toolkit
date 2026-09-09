@@ -957,12 +957,9 @@ dependencies = [
  "anyhow",
  "geojson",
  "pdf-classify",
- "pdf-core",
  "pdf-geo",
  "pdf-geometry",
  "serde",
- "serde_json",
- "tempfile",
 ]
 
 [[package]]

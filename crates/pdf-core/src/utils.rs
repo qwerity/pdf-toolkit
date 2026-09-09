@@ -1,6 +1,6 @@
 use std::ffi::OsStr;
 
-pub fn sanitize_filename_component(stem: Option<&OsStr>) -> String {
+pub(crate) fn sanitize_filename_component(stem: Option<&OsStr>) -> String {
     let raw_stem = stem.and_then(OsStr::to_str).unwrap_or_default();
     let mut sanitized = String::with_capacity(raw_stem.len());
     let mut last_was_replacement = false;

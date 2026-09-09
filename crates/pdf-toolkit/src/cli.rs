@@ -389,6 +389,8 @@ mod tests {
         rejects(&["structured", "a.pdf", "--concat"]);
         rejects(&["structured", "a.pdf", "--output", "out"]);
         rejects(&["inspect", "a.pdf", "--pages", "1"]);
+        rejects(&["cut", "a.pdf", "--structured-format", "markdown"]);
+        rejects(&["text", "a.pdf", "--structured-format", "markdown"]);
     }
 
     #[test]

@@ -430,7 +430,7 @@ that but renders nothing. Each does what the other cannot, so both stay.
 ### Test corpus
 
 The `vector` end-to-end tests run against real building-permit dossiers in
-`test_assets/samples/`.
+`test_assets/plan/`.
 
 **Those dossiers are private data.** They are not committed, published or
 fetched from anywhere, and `test_assets/` is gitignored in full. They exist only
@@ -442,7 +442,7 @@ the corpus, set `PDF_TOOLKIT_REQUIRE_CORPUS=1` — that turns a skip into a
 failure, so the only tests that check the georeferencing is right cannot be
 silently dropped.
 
-To enable them, copy the dossiers to `test_assets/samples/` as `1.pdf`, `2.pdf`
+To enable them, copy the dossiers to `test_assets/plan/` as `1.pdf`, `2.pdf`
 and so on. The tests read the directory rather than a fixed list, so adding one
 needs no code change — but a dossier that places a page fails
 `the_corpus_places_exactly_the_recorded_pages` until that placement is recorded

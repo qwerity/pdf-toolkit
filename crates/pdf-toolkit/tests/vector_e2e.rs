@@ -1,6 +1,6 @@
 //! End-to-end tests for `vector`, against the real dossier corpus.
 //!
-//! These run the binary over `test_assets/samples/` — Armenian building-permit
+//! These run the binary over `test_assets/plan/` — Armenian building-permit
 //! dossiers — because the thing being tested is not that the code runs but that
 //! it gets the right answer on real CAD exports. A synthetic fixture cannot
 //! exercise a Gauss-Krüger datum shift or a coordinate table that a CAD
@@ -31,7 +31,7 @@ fn sample(name: &str) -> PathBuf {
 }
 
 fn corpus_dir() -> PathBuf {
-    common::workspace_root().join("test_assets").join("samples")
+    common::workspace_root().join("test_assets").join("plan")
 }
 
 /// Whether the corpus is present, and what to do when it is not.

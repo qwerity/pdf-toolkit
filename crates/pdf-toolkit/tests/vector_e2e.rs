@@ -1,17 +1,20 @@
 //! End-to-end tests for `vector`, against the real dossier corpus.
 //!
-//! These run the binary over `test_assets/samples/` — ten Armenian building-
-//! permit dossiers, 264 pages — because the thing being tested is not that the
-//! code runs but that it gets the right answer on real CAD exports. A synthetic
-//! fixture cannot exercise a Gauss-Krüger datum shift or a coordinate table
-//! that a CAD exporter turned into glyph outlines.
+//! These run the binary over `test_assets/samples/` — Armenian building-permit
+//! dossiers — because the thing being tested is not that the code runs but that
+//! it gets the right answer on real CAD exports. A synthetic fixture cannot
+//! exercise a Gauss-Krüger datum shift or a coordinate table that a CAD
+//! exporter turned into glyph outlines.
+//!
+//! **The dossiers are private data.** They are not committed, published or
+//! fetched, and `test_assets/` is gitignored in full. Everything here skips
+//! itself when they are absent — see [`corpus_available`].
 //!
 //! The centrepiece is [`known_placements_reproduce_to_the_millimetre`], which
-//! pins every page the corpus can place and the residual it places to. Those
-//! figures are the published ground truth for this pipeline, and a residual is
-//! the one number that says a placement is *correct* rather than merely
-//! produced: the transform is fitted to the table's own coordinates, so a
-//! misread digit moves the residual even when the fit "succeeds".
+//! pins every page the corpus can place and the residual it places to. A
+//! residual is the one number that says a placement is *correct* rather than
+//! merely produced: the transform is fitted to the table's own coordinates, so
+//! a misread digit moves the residual even when the fit "succeeds".
 
 mod cli;
 mod common;
@@ -33,11 +36,14 @@ fn corpus_dir() -> PathBuf {
 
 /// Whether the corpus is present, and what to do when it is not.
 ///
-/// The dossiers are 137 MB and live in a release rather than in git, so a
-/// developer who has not fetched them still gets a passing `cargo test` — with
-/// a loud line saying what was skipped. That is wrong for CI, where a silent
-/// skip would hide the regression the corpus exists to catch, so
-/// `PDF_TOOLKIT_REQUIRE_CORPUS=1` turns the skip into a failure.
+/// The dossiers are real building-permit submissions — private data. They are
+/// never committed, published or fetched; they exist only on machines that
+/// already hold them, and `test_assets/` is gitignored in full.
+///
+/// So a clone without them still gets a passing `cargo test`, with a loud line
+/// naming what was skipped. On a machine that *does* hold the corpus, a skip
+/// would silently drop the only tests that check the georeferencing is right,
+/// so `PDF_TOOLKIT_REQUIRE_CORPUS=1` turns the skip into a failure there.
 ///
 /// Returns false when the caller should return without asserting.
 #[must_use]
@@ -47,13 +53,14 @@ fn corpus_available(test: &str) -> bool {
     }
     assert!(
         std::env::var_os("PDF_TOOLKIT_REQUIRE_CORPUS").is_none(),
-        "{test}: the dossier corpus is required here but missing from {} - \
-         run ./scripts/fetch-samples.sh",
+        "{test}: PDF_TOOLKIT_REQUIRE_CORPUS is set but the dossier corpus is \
+         missing from {}",
         corpus_dir().display()
     );
     eprintln!(
         "SKIP {test}: dossier corpus not present in {}. \
-         Run ./scripts/fetch-samples.sh to enable it.",
+         It is private data and is not distributed; copy the dossiers there to \
+         enable these tests.",
         corpus_dir().display()
     );
     false

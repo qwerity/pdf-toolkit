@@ -8,6 +8,3 @@
 .DS_Store
 *.png
 /artifacts
-
-# Built on demand by scripts/fetch-samples.sh --package, for the corpus release.
-/pdf-toolkit-samples.tar.gz*

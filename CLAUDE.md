@@ -91,7 +91,6 @@ dependency graph acyclic; the two chains are in `README.md`.
 
 ```sh
 cargo test --workspace                      # 294 tests
-./scripts/fetch-samples.sh                  # the 14-dossier corpus, ~198 MB
 PDF_TOOLKIT_REQUIRE_CORPUS=1 cargo test     # corpus tests must run, not skip
 ./build.sh                                  # dist/ bundle; runs the full gate
 ```
@@ -103,9 +102,15 @@ test would otherwise poison the global lock. The harness binds
 with the working directory at the *package* root, where the runtime's own
 relative `./dist/` lookup cannot see it.
 
-The corpus tests skip themselves when the dossiers are absent, so `cargo test`
-passes on a fresh clone. Set `PDF_TOOLKIT_REQUIRE_CORPUS=1` in CI — a silent
-skip there would hide exactly the regression the corpus exists to catch.
+**The dossier corpus in `test_assets/samples/` is private data.** It is not
+committed, published or fetched from anywhere, and `test_assets/` is gitignored
+in full — do not add a way to distribute it.
+
+The corpus tests skip themselves when it is absent, so `cargo test` passes on a
+fresh clone. On a machine that holds the dossiers, run with
+`PDF_TOOLKIT_REQUIRE_CORPUS=1`: a silent skip there would drop the only tests
+that check the georeferencing is right. CI cannot hold the corpus, so CI cannot
+set it — those tests are verified where the data lives.
 
 ## Releasing
 

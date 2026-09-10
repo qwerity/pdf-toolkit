@@ -102,8 +102,8 @@ test would otherwise poison the global lock. The harness binds
 with the working directory at the *package* root, where the runtime's own
 relative `./dist/` lookup cannot see it.
 
-**The dossier corpus in `test_assets/plan/` is private data.** It is not
-committed, published or fetched from anywhere, and `test_assets/` is gitignored
+**The dossier corpus in `data/plan/` is private data.** It is not
+committed, published or fetched from anywhere, and `data/` is gitignored
 in full — do not add a way to distribute it.
 
 The corpus tests skip themselves when it is absent, so `cargo test` passes on a

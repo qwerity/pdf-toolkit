@@ -297,7 +297,7 @@ classifies each page, and georeferences what it can.
 ```json
 {
   "document": "3",
-  "source": "test_assets/plan/3.pdf",
+  "source": "data/plan/3.pdf",
   "page_count": 34,
   "pages": [ { "…": "one entry per selected page" } ]
 }

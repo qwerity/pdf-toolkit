@@ -1,13 +1,13 @@
 //! End-to-end tests for `vector`, against the real dossier corpus.
 //!
-//! These run the binary over `test_assets/plan/` — Armenian building-permit
+//! These run the binary over `data/plan/` — Armenian building-permit
 //! dossiers — because the thing being tested is not that the code runs but that
 //! it gets the right answer on real CAD exports. A synthetic fixture cannot
 //! exercise a Gauss-Krüger datum shift or a coordinate table that a CAD
 //! exporter turned into glyph outlines.
 //!
 //! **The dossiers are private data.** They are not committed, published or
-//! fetched, and `test_assets/` is gitignored in full. Everything here skips
+//! fetched, and `data/` is gitignored in full. Everything here skips
 //! itself when they are absent — see [`corpus_available`].
 //!
 //! The centrepiece is [`known_placements_reproduce_to_the_millimetre`], which
@@ -31,14 +31,14 @@ fn sample(name: &str) -> PathBuf {
 }
 
 fn corpus_dir() -> PathBuf {
-    common::workspace_root().join("test_assets").join("plan")
+    common::workspace_root().join("data").join("plan")
 }
 
 /// Whether the corpus is present, and what to do when it is not.
 ///
 /// The dossiers are real building-permit submissions — private data. They are
 /// never committed, published or fetched; they exist only on machines that
-/// already hold them, and `test_assets/` is gitignored in full.
+/// already hold them, and `data/` is gitignored in full.
 ///
 /// So a clone without them still gets a passing `cargo test`, with a loud line
 /// naming what was skipped. On a machine that *does* hold the corpus, a skip

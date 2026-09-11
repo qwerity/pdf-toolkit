@@ -2,7 +2,8 @@
 
 CLI tool for inspecting PDFs, extracting pages as single-page PDFs or PNGs,
 extracting text, recovering CAD geometry as georeferenced GeoJSON, and
-annotating whole building-permit dossiers.
+annotating whole building-permit dossiers — with experimental hosted-model
+passes that refine the CAD and reconstruct the building's 3D massing.
 
 Built as a quicker alternative to [Docling](https://github.com/docling-project/docling)
 for turning PDFs into text and structured markdown: a single native binary over
@@ -63,6 +64,8 @@ pdf-toolkit <COMMAND> <INPUT> [OPTIONS]
   structured  positioned spans and a markdown reconstruction, to stdout
   vector      CAD geometry + classification + georeferenced GeoJSON
   dossier     whole-dossier annotation: labels, routing, QR, entities, graph
+  cadfix      model-proposed CAD refinement of one page   (experimental, networked)
+  building    3D building massing from the drawings       (experimental, networked)
 ```
 
 ### inspect
@@ -166,12 +169,49 @@ work order instead of a guess; a second run merges what that pass returned.
 Bare `--vlm` uses `gemini-3.8-flash`, the corpus benchmark's winner
 (`docs/annotation-findings.md`). It needs an API key in the environment
 (`GEMINI_API_KEY` for `gemini-*` specs, `OPENROUTER_API_KEY` for
-`vendor/model` specs; a `.env` is honoured) and sends the flagged pages'
-images to that provider — the only networked path in the toolkit, and always
-opt-in.
+`vendor/model` specs, `OPENAI_API_KEY` for `gpt-*`; a `.env` is honoured —
+see `.env.sample`) and sends the flagged pages' images to that provider.
+Like `cadfix` and `building`, it is networked and always opt-in; nothing
+else in the toolkit touches the network.
 
 The output shape is `docs/annotation-schema.md`; the command contract is the
 `dossier` section of `docs/json-api.md`.
+
+### cadfix and building (experimental)
+
+Both drive a hosted model — `gpt-6-astra` by default (`--model` takes any
+spec `--vlm` takes; `OPENAI_API_KEY` for `gpt-*`, see `.env.sample`) — and
+both keep the toolkit's discipline: **the model proposes, extracted geometry
+decides**. Coordinates never come from a model.
+
+```bash
+./dist/pdf-toolkit cadfix input.pdf --page 11 -o out      # layers, noise, ring closing
+./dist/pdf-toolkit building input.pdf --answers a.json -o out
+```
+
+`cadfix` shows the model the rendered sheet beside an inventory of the
+extracted vector features; the model answers with parallel tool calls —
+assign layers, drop plotting noise, close nearly-closed rings — and the
+operations are applied deterministically to the exact geometry.
+
+`building` reads the set's visualization section — development scheme,
+facades with level marks, roof plan, indicator table, the 3D renders at the
+end — and reconstructs every built structure: one part per house block of a
+development, the perimeter fence as a thin wall ring, pitched roofs as
+stepped insets, facade colours off the renders, plus a `facts` block with
+the printed indicator numbers. Footprints are exact extracted rings from
+the anchor sheet (georeferenced where it was placed; a printed scale like
+`Մ 1:500` converts page units to metres). The result is map-native
+extruded GeoJSON — `height`/`base`/`color` properties that Mapbox or
+MapLibre `fill-extrusion` renders directly. Footprints are always
+exact extracted CAD rings; when a floor plan draws a richer *closed*
+exterior outline, the model names that sheet (`outline_page`) and the
+toolkit extrudes the exact drawn outline, aligned onto the site position —
+loose CAD polylines are stitched first, and an outline that fails the area
+or alignment guard falls back to the site ring with a warning. Both commands are
+networked and opt-in, like `--vlm`, and every hosted call logs its token
+usage and estimated cost on stderr, priced from
+`crates/llm-providers/models.json`.
 
 ### structured
 
@@ -184,11 +224,14 @@ The output shape is `docs/annotation-schema.md`; the command contract is the
 ## CLI Notes
 
 - `--pages` / `-p` (alias `--page`): page list or inclusive ranges like
-  `1-3,5,9-10`, or `all` (the default). Accepted by every command except
-  `inspect` and `dossier`, which always work on the whole document.
+  `1-3,5,9-10`, or `all` (the default). Accepted by `cut`, `render`, `text`,
+  `structured` and `vector`; the other commands always work on the whole
+  document (`cadfix` names its single page with `--page`).
 - `--output` / `-o`: output directory. `cut`, `render` and `text` default to
-  the current directory; `vector` and `dossier` write their `.geojson` files
-  only when it is given.
+  the current directory; `vector`, `dossier`, `cadfix` and `building` write
+  their `.geojson` files only when it is given.
+- `--model`: `cadfix` and `building` only; the hosted model spec, default
+  `gpt-6-astra`. `--page`: `cadfix` only; the one page to refine.
 - `--concat` / `-c`: `cut` merges the selection into one PDF; `text` merges it
   into one `.txt` file. `text` also merges when the selection is `all`, which is
   the default — so only an explicit page selection yields per-page files.
@@ -449,7 +492,8 @@ depended on without it.
 | `pdf-inspect` | per-page metadata and the vision-pass routing signals |
 | `pdf-pages` | cutting and concatenation |
 | `pdf-dossier` | the whole-dossier annotation for the `dossier` command |
-| `pdf-vlm` | the opt-in hosted-vision pass answering what `pdf-dossier` flags |
+| `pdf-vlm` | the opt-in hosted-vision passes: page annotation, CAD refinement, building massing |
+| `llm-providers` | hosted-model transport: Gemini / OpenAI / OpenRouter, vision input, parallel tool calls |
 | `pdf-toolkit` | the CLI, plus the facade that re-exports all of the above |
 
 Nothing in `pdf-core` depends on another workspace crate. The rest form two
@@ -459,8 +503,11 @@ chains meeting at the CLI:
 core -> {render, text} -> inspect -> pages ----+
 geometry -> geo -> classify -> vector ---------+--> toolkit
 {core, render, inspect, vector} -> dossier ----+
-dossier -> vlm --------------------------------+
+{dossier, vector, llm-providers} -> vlm -------+
 ```
+
+`llm-providers` depends on no other workspace crate: it is transport, and
+the only crate that opens a network connection.
 
 **Two PDF parsers, deliberately.** `pdf-core` binds PDFium, which renders and
 gives a good text layer but will not tell you what path a drawing is made of.

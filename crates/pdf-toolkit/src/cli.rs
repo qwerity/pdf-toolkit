@@ -54,6 +54,14 @@ pub enum Command {
     /// entities, groups and a document graph, with VLM work orders for what
     /// deterministic extraction cannot read.
     Dossier(DossierArgs),
+    /// Refine one page's recovered CAD geometry with a hosted model
+    /// (experimental): layers, noise removal, ring closing — proposed by the
+    /// model, applied deterministically.
+    Cadfix(CadfixArgs),
+    /// Reconstruct the building's 3D massing from the dossier's drawings with
+    /// a hosted model (experimental): footprints from extracted geometry,
+    /// heights read off the elevations, extruded GeoJSON for a map.
+    Building(BuildingArgs),
 }
 
 /// The source document and the pages wanted from it.
@@ -154,9 +162,10 @@ pub struct DossierArgs {
     /// shape picks the provider: `gemini-*` uses the Gemini API
     /// (`GEMINI_API_KEY`), a `vendor/model` id like
     /// `qwen/qwen2.5-vl-72b-instruct` uses OpenRouter
-    /// (`OPENROUTER_API_KEY`). **This sends page images to that provider** —
-    /// the only networked path in the toolkit, and only ever opt-in. Pages
-    /// covered by `--answers` are not re-asked.
+    /// (`OPENROUTER_API_KEY`), and `gpt-*` ids like `gpt-6-astra` use the
+    /// OpenAI API (`OPENAI_API_KEY`). **This sends page images to that
+    /// provider** — networked and only ever opt-in, like `cadfix` and
+    /// `building`. Pages covered by `--answers` are not re-asked.
     #[arg(
         long,
         value_name = "MODEL",
@@ -168,6 +177,49 @@ pub struct DossierArgs {
     /// Also write each drawing page's GeoJSON under
     /// `<dir>/geojson/<document>/`, the layout the annotation's `cad.geojson`
     /// paths reference. The same annotation JSON is on stdout either way.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct CadfixArgs {
+    /// Source PDF.
+    pub input: PathBuf,
+
+    /// The page holding the drawing to refine.
+    #[arg(long, value_parser = parse_page_number)]
+    pub page: usize,
+
+    /// Hosted model; the spec's shape picks the provider, as with `--vlm`.
+    /// **This sends the page image to that provider.**
+    #[arg(long, default_value = pdf_vlm::ASTRA_MODEL)]
+    pub model: String,
+
+    /// Also write the refined collection as
+    /// `<dir>/<document>_pNN.fixed.geojson`. The same JSON is on stdout
+    /// either way.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct BuildingArgs {
+    /// Source PDF.
+    pub input: PathBuf,
+
+    /// Reviewed or vision-pass answers (`docs/annotation-schema.md`); their
+    /// labels sharpen which sheets are shown to the model.
+    #[arg(long)]
+    pub answers: Option<PathBuf>,
+
+    /// Hosted model; the spec's shape picks the provider, as with `--vlm`.
+    /// **This sends the selected drawing sheets to that provider.**
+    #[arg(long, default_value = pdf_vlm::ASTRA_MODEL)]
+    pub model: String,
+
+    /// Also write the extruded collection as
+    /// `<dir>/building/<document>.geojson`. The same JSON is on stdout
+    /// either way.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 }
@@ -235,6 +287,8 @@ impl Command {
             Self::Structured(args) => &args.source.input,
             Self::Vector(args) => &args.source.input,
             Self::Dossier(args) => &args.input,
+            Self::Cadfix(args) => &args.input,
+            Self::Building(args) => &args.input,
         }
     }
 }
@@ -344,6 +398,13 @@ fn parse_reference_arg(value: &str) -> std::result::Result<Reference, String> {
     pdf_vector::parse_reference(value)
 }
 
+fn parse_page_number(raw: &str) -> Result<usize, String> {
+    raw.parse::<usize>()
+        .ok()
+        .filter(|n| *n >= 1)
+        .ok_or_else(|| format!("'{raw}' is not a one-based page number"))
+}
+
 fn parse_scale(value: &str) -> std::result::Result<f32, String> {
     let scale = value.parse::<f32>().map_err(|error| error.to_string())?;
 
@@ -390,6 +451,8 @@ mod tests {
             vec!["text", "a.pdf"],
             vec!["structured", "a.pdf"],
             vec!["dossier", "a.pdf"],
+            vec!["cadfix", "a.pdf", "--page", "9"],
+            vec!["building", "a.pdf"],
         ];
 
         for args in cases {
@@ -508,6 +571,10 @@ mod tests {
         rejects(&["dossier", "a.pdf", "--concat"]);
         rejects(&["vector", "a.pdf", "--answers", "x.json"]);
         rejects(&["vector", "a.pdf", "--vlm", "gemini-3.8-flash"]);
+        rejects(&["cadfix", "a.pdf", "--page", "9", "--pages", "1-3"]);
+        rejects(&["cadfix", "a.pdf", "--page", "9", "--answers", "x.json"]);
+        rejects(&["building", "a.pdf", "--page", "9"]);
+        rejects(&["dossier", "a.pdf", "--model", "gpt-6-astra"]);
     }
 
     #[test]
@@ -550,6 +617,49 @@ mod tests {
             panic!("expected dossier");
         };
         assert!(args.vlm.is_none(), "no flag means no network at all");
+    }
+
+    #[test]
+    fn cadfix_needs_a_page_and_defaults_to_astra() {
+        rejects(&["cadfix", "a.pdf"]);
+        rejects(&["cadfix", "a.pdf", "--page", "0"]);
+        rejects(&["cadfix", "a.pdf", "--page", "nine"]);
+
+        let Command::Cadfix(args) = parse(&["cadfix", "a.pdf", "--page", "9"]).command else {
+            panic!("expected cadfix");
+        };
+        assert_eq!(args.page, 9);
+        assert_eq!(args.model, pdf_vlm::ASTRA_MODEL);
+        assert!(args.output.is_none());
+    }
+
+    #[test]
+    fn building_takes_answers_and_a_model_override() {
+        let Command::Building(args) = parse(&[
+            "building",
+            "a.pdf",
+            "--answers",
+            "a.json",
+            "--model",
+            "gemini-3.8-flash",
+            "-o",
+            "out",
+        ])
+        .command
+        else {
+            panic!("expected building");
+        };
+        assert_eq!(
+            args.answers.as_deref(),
+            Some(std::path::Path::new("a.json"))
+        );
+        assert_eq!(args.model, "gemini-3.8-flash");
+        assert_eq!(args.output.as_deref(), Some(std::path::Path::new("out")));
+
+        let Command::Building(args) = parse(&["building", "a.pdf"]).command else {
+            panic!("expected building");
+        };
+        assert_eq!(args.model, pdf_vlm::ASTRA_MODEL, "astra is the default");
     }
 
     #[test]

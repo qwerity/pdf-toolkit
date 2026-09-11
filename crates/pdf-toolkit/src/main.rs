@@ -7,8 +7,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use pdf_toolkit::cli::{
-    Cli, Command, CutArgs, DossierArgs, InspectArgs, RenderArgs, Source, StructuredArgs, TextArgs,
-    VectorArgs,
+    BuildingArgs, CadfixArgs, Cli, Command, CutArgs, DossierArgs, InspectArgs, RenderArgs, Source,
+    StructuredArgs, TextArgs, VectorArgs,
 };
 use pdf_toolkit::error::{PdfError, Result as LibraryResult};
 use pdf_toolkit::{
@@ -17,8 +17,8 @@ use pdf_toolkit::{
 };
 
 use crate::cli_output::{
-    print_document_info, print_dossier_output, print_page_output, print_structured_output,
-    print_text_output, print_vector_output,
+    print_building_output, print_cadfix_output, print_document_info, print_dossier_output,
+    print_page_output, print_structured_output, print_text_output, print_vector_output,
 };
 
 fn main() -> ExitCode {
@@ -42,6 +42,8 @@ fn run(cli: Cli) -> Result<()> {
         Command::Structured(args) => structured(&args),
         Command::Vector(args) => vector(&args),
         Command::Dossier(args) => dossier(&args),
+        Command::Cadfix(args) => cadfix(&args),
+        Command::Building(args) => building(&args),
     }
 }
 
@@ -204,6 +206,37 @@ fn dossier(args: &DossierArgs) -> Result<()> {
     }
 
     print_dossier_output(&report)
+}
+
+fn cadfix(args: &CadfixArgs) -> Result<()> {
+    let client = llm_providers::Client::from_env(&args.model)?;
+    let pdfium = pdfium()?;
+    let report = pdf_vlm::cad::fix_page(
+        &client,
+        &pdfium,
+        &args.input,
+        args.page,
+        args.output.as_deref(),
+    )?;
+    print_cadfix_output(&report)
+}
+
+fn building(args: &BuildingArgs) -> Result<()> {
+    let answers = args
+        .answers
+        .as_deref()
+        .map(pdf_dossier::Answers::load)
+        .transpose()?;
+    let client = llm_providers::Client::from_env(&args.model)?;
+    let pdfium = pdfium()?;
+    let report = pdf_vlm::building::reconstruct(
+        &client,
+        &pdfium,
+        &args.input,
+        answers.as_ref(),
+        args.output.as_deref(),
+    )?;
+    print_building_output(&report)
 }
 
 /// Writes one `<document>_p<NN>.geojson` per page, beside the JSON on stdout.

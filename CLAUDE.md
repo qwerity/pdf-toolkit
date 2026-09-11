@@ -49,11 +49,14 @@ The serialisable types are all in one place, which makes this easy to check:
 | Errors and per-page warnings | `crates/pdf-core/src/{error,warning}.rs` |
 | `dossier` output | `crates/pdf-dossier/src/report.rs` |
 | `dossier --answers` input | `crates/pdf-dossier/src/answers.rs` |
+| `cadfix` output | `crates/pdf-vlm/src/cad.rs` |
+| `building` output | `crates/pdf-vlm/src/building.rs` |
 
 ## What this tool is
 
-Seven commands over one PDF: `inspect`, `cut`, `render`, `text`, `structured`,
-`vector`, `dossier`. `README.md` explains the pipeline and the crate layout;
+Nine commands over one PDF: `inspect`, `cut`, `render`, `text`, `structured`,
+`vector`, `dossier`, and the experimental hosted-model pair `cadfix` and
+`building`. `README.md` explains the pipeline and the crate layout;
 `docs/json-api.md` is the output contract, and `docs/annotation-schema.md` is
 the field reference for the `dossier` annotation.
 
@@ -80,7 +83,10 @@ checking for one. When adding an option, put it on the command it applies to
 rather than adding a validation.
 
 **`pdf-core` depends on no other workspace crate.** That rule is what keeps the
-dependency graph acyclic; the two chains are in `README.md`.
+dependency graph acyclic; the two chains are in `README.md`. `llm-providers`
+is likewise leaf-free and is the only crate that opens a network connection —
+every networked surface (`--vlm`, `cadfix`, `building`) is opt-in per
+invocation and routes through it.
 
 ## Conventions
 

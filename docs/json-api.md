@@ -36,20 +36,24 @@ pdf-toolkit <command> <input.pdf> [options]
 | `structured` | Positioned spans and a markdown reconstruction | no |
 | `vector` | CAD geometry, classification and georeferenced GeoJSON | with `--output` |
 | `dossier` | Whole-dossier annotation: labels, routing, QR payloads, entities, groups, graph | with `--output` |
+| `cadfix` | *(experimental, networked)* Model-proposed CAD refinement of one page's vector geometry | with `--output` |
+| `building` | *(experimental, networked)* 3D building massing read from the drawings, as extruded GeoJSON | with `--output` |
 
 ### Options
 
 | Option | Commands | Meaning |
 |---|---|---|
-| `--pages`, `-p` (alias `--page`) | all but `inspect` and `dossier` | `all` (default), or a list/range like `1,3,5-7` |
-| `--output`, `-o` | `cut`, `render`, `text`, `vector`, `dossier` | Output directory. Defaults to the working directory (`dossier`: no files unless given). |
+| `--pages`, `-p` (alias `--page`) | `cut`, `render`, `text`, `structured`, `vector` | `all` (default), or a list/range like `1,3,5-7` |
+| `--output`, `-o` | `cut`, `render`, `text`, `vector`, `dossier`, `cadfix`, `building` | Output directory. Defaults to the working directory (`dossier`, `cadfix`, `building`: no files unless given). |
 | `--concat`, `-c` | `cut`, `text` | Merge the selection into one file |
 | `--scale`, `-s` | `render` | Scale factor. Default `2.0`. |
 | `--scale-width-px` | `render` | Exact output width in pixels; preserves aspect ratio |
 | `--structured-format` | `structured` | `full` (default) or `markdown` |
 | `--georeference`, `-g` | `vector` | `local_x,local_y,longitude,latitude`; repeatable |
-| `--answers` | `dossier` | Vision-pass answers file to merge; see below |
+| `--answers` | `dossier`, `building` | Vision-pass answers file (`dossier`: merged; `building`: labels sharpen sheet selection) |
 | `--vlm` | `dossier` | In-process vision pass. Bare `--vlm` uses `gemini-3.8-flash`; see below |
+| `--page` | `cadfix` | The one page holding the drawing to refine |
+| `--model` | `cadfix`, `building` | Hosted model; defaults to `gpt-6-astra`. Same spec grammar as `--vlm`. |
 
 An option that does not apply to a command does not exist on it, and using it is
 a usage error rather than a silently ignored flag.
@@ -531,15 +535,21 @@ The command is deterministic and offline, and it runs in **two phases**:
 The vision pass can also run **in-process**: `--vlm [model]` renders each
 flagged page and asks a hosted vision model, then merges exactly as an
 answers file would. Bare `--vlm` uses the corpus benchmark's winner,
-`gemini-3.8-flash` (`annotation-findings.md`). The spec's shape picks the
-provider — `gemini-*` goes to the Gemini API (`GEMINI_API_KEY`, with
-`GOOGLE_API_KEY` accepted as a fallback), a `vendor/model` id such as
-`qwen/qwen2.5-vl-72b-instruct` goes to OpenRouter (`OPENROUTER_API_KEY`); a
-`.env` in the working directory is honoured. `--answers` and `--vlm` combine:
-pages the file answers are not re-asked. **`--vlm` is the toolkit's only
-networked path** — it sends page images (in this domain: identity documents)
-to the configured provider, so it is opt-in per invocation and never a
-default. Model quality on this task is compared in
+`gemini-3.8-flash` (`annotation-findings.md`); a `.env` in the working
+directory is honoured. `--answers` and `--vlm` combine:
+pages the file answers are not re-asked. **The hosted-model surfaces —
+`--vlm` here, and the `cadfix` and `building` commands — are the toolkit's
+only networked paths.** Each sends page images (in this domain: identity
+documents) to the configured provider, so each is opt-in per invocation and
+never happens as a side effect of another command. The model spec's shape
+picks the provider: `gemini-*` uses the Gemini API (`GEMINI_API_KEY`, with
+`GOOGLE_API_KEY` accepted as a fallback), `gpt-*` uses the OpenAI API
+(`OPENAI_API_KEY`), and a `vendor/model` id uses OpenRouter
+(`OPENROUTER_API_KEY`); `.env.sample` at the repo root names them all.
+Every hosted call logs its token usage and estimated cost to stderr
+(`llm: <model>: N in (M cached) + K out ≈ $x`), priced from
+`crates/llm-providers/models.json` — update that file when a provider
+changes its rates. Model quality on the annotation task is compared in
 `annotation-findings.md`.
 
 ```json
@@ -633,6 +643,172 @@ appear only when they have content.
 
 ---
 
+## `cadfix` *(experimental)*
+
+Model-proposed refinement of one page's recovered CAD geometry. The page is
+rendered and extracted (`vector`'s pipeline), and the configured model — one
+of the **networked, opt-in** surfaces above — proposes operations against an
+inventory of the extracted features through parallel tool calls: assign
+features to semantic layers, drop plotting noise, close nearly-closed rings.
+The operations are applied deterministically; **geometry never comes from
+the model**, and a proposal referencing a feature that does not exist
+degrades to a `Warning:` stderr line and a `warnings` entry, not a change.
+
+```
+pdf-toolkit cadfix input.pdf --page 11 [--model gpt-6-astra] [-o dir]
+```
+
+Copied from a real run (`jq 'del(.geojson)'` — the `geojson` field carries
+the full refined FeatureCollection inline, `vector`-style):
+
+```json
+{
+  "closed": 0,
+  "crs": "EPSG:4326",
+  "document": "2",
+  "dropped": 0,
+  "features_after": 99,
+  "features_before": 99,
+  "geojson_file": "2_p11.fixed.geojson",
+  "layers": {
+    "building": 47,
+    "parcel_boundary": 47
+  },
+  "model": "gpt-6-astra",
+  "page": 11,
+  "placed": true,
+  "source": "data/plan/2.pdf"
+}
+```
+
+| Field | Notes |
+|---|---|
+| `crs` / `placed` | Verbatim from `vector` for that page |
+| `features_before` / `features_after` | Counts around the applied drops |
+| `layers` | Features assigned a `properties.layer`, per layer name |
+| `closed` / `dropped` | Rings closed, features removed |
+| `warnings` | Proposals that could not be applied; absent when none |
+| `geojson_file` | Present with `--output`: `<document>_pNN.fixed.geojson`, relative to that directory |
+| `geojson` | The refined FeatureCollection, inline |
+
+## `building` *(experimental)*
+
+Reconstructs, as map-native extruded GeoJSON, what the permit
+says the finished site must look like — every house block of a development,
+the perimeter fence, roof forms, facade colours. The drawing set's
+**visualization section** (development scheme, facades and sections with
+level marks, roof plan, indicator table, 3D renders — usually the last
+sheets) is what the model reads; the **anchor sheet** — the placed page
+where one exists, else the plan-view sheet richest in closed outlines —
+supplies footprint candidates as exact extracted geometry. One request,
+parallel tool calls: `add_part` per structure, `set_facts` once for the
+printed indicator numbers. The model reads numbers and colours; it never
+draws.
+
+```
+pdf-toolkit building input.pdf [--answers a.json] [--model gpt-6-astra] [-o dir]
+```
+
+`--answers` labels (`elevation_or_section`, `floor_plan`, `general_plan`,
+`photo_montage`, `3d_view`, …) sharpen which sheets are shown; without them
+the `vector` classification chooses, and the document's last pages stand in
+for the render sheets. Copied from a real run (`jq 'del(.geojson)'` — the
+`geojson` field carries the full extruded FeatureCollection inline):
+
+```json
+{
+  "anchor_page": 11,
+  "crs": "local_metres",
+  "document": "1",
+  "facts": {
+    "anchor_scale_denominator": 500,
+    "buildings": 3,
+    "floors": 2,
+    "footprint_area_m2": 0,
+    "height_m": 7.6,
+    "notes": "Three proposed identical houses A1–A3. Areas are printed per typical house, not development totals: first floor 62.15 m², second floor 57.58 m², total 119.73 m²; roof 66.76 m². No footprint-area indicator is printed in the supplied sheets; footprint_area_m2=0 denotes unavailable, not a stated zero area. Individual facades mark the parapet +7.600 relative to +0.000; overall site elevations additionally dimension 8000 mm from grade, including the 400 mm plinth offset. Perimeter wall is dimensioned 2400 mm. Flat parapet roofs and light warm-grey finishes follow the renders. Existing neighbouring buildings are outside the proposed development.",
+    "roof_area_m2": 66.76,
+    "total_area_m2": 119.73
+  },
+  "geojson_file": "building/1.geojson",
+  "model": "gpt-6-astra",
+  "pages_used": [
+    11,
+    14,
+    15,
+    16,
+    12,
+    13,
+    18
+  ],
+  "parts": [
+    {
+      "base_m": 0.0,
+      "color": "#d8d4d0",
+      "floors": 2,
+      "footprint_area": 64.3,
+      "footprint_candidate": 24,
+      "height_m": 7.6,
+      "kind": "block",
+      "name": "house A1"
+    },
+    {
+      "base_m": 0.0,
+      "color": "#d8d4d0",
+      "floors": 2,
+      "footprint_area": 64.3,
+      "footprint_candidate": 20,
+      "height_m": 7.6,
+      "kind": "block",
+      "name": "house A2"
+    },
+    {
+      "base_m": 0.0,
+      "color": "#d8d4d0",
+      "floors": 2,
+      "footprint_area": 64.3,
+      "footprint_candidate": 16,
+      "height_m": 7.6,
+      "kind": "block",
+      "name": "house A3"
+    },
+    {
+      "base_m": 0.0,
+      "color": "#d8d4d0",
+      "floors": 0,
+      "footprint_area": 549.0,
+      "footprint_candidate": 0,
+      "height_m": 2.4,
+      "kind": "fence",
+      "name": "perimeter yard wall"
+    }
+  ],
+  "placed": false,
+  "source": "data/plan/1.pdf"
+}
+```
+
+| Field | Notes |
+|---|---|
+| `placed` / `crs` | Whether the anchor sheet is georeferenced; the frame the footprints are in. A `page_units` anchor whose printed scale the model reported (`facts.anchor_scale_denominator`) is converted to `local_metres` arithmetically. |
+| `anchor_page` / `pages_used` | The footprint sheet, and every sheet the model saw |
+| `parts[]` | One entry per structure. `kind` — `block` (a building volume) or `fence` (a thin wall ring along its candidate). `height_m` top of walls (eaves for pitched roofs), `base_m` bottom, both metres above ground. |
+| `parts[].roof` / `ridge_m` | `gabled` \| `hipped` \| `shed` and the ridge top; flat/parapet roofs omit both. Pitched roofs also appear in `geojson` as two stepped inset features (`role: "roof"`). |
+| `parts[].color` | Facade colour read off the 3D renders, normalised `#rrggbb` |
+| `parts[].footprint_candidate` / `footprint_area` | Which extracted ring the part stands on, and the extruded footprint's area (m² when the frame is metric) |
+| `parts[].outline_page` | Present when the part extrudes the **exact outline drawn on that sheet** (a floor plan), scaled by its printed scale and rigidly aligned onto the candidate's position — instead of the site plan's block. Guarded by area ratio and alignment residual; a failed guard falls back to the candidate ring with a `warnings` entry. |
+| `facts` | The printed indicator numbers, verbatim: `height_m`, `floors`, `buildings`, areas, `anchor_scale_denominator`, `notes`. Absent when none were reported. |
+| `warnings` | Proposals that could not be applied; absent when none |
+| `geojson_file` | Present with `--output`: `building/<document>.geojson`, relative to that directory |
+| `geojson` | The extruded FeatureCollection: `height`/`base`/`color` per feature, fences as outer-ring + inset-hole polygons — ready for a Mapbox/MapLibre `fill-extrusion` layer |
+
+A run on a dossier with no drawing pages, no closed outline usable as a
+candidate, or a model that (correctly) declines to match a structure to a
+candidate fails with the reason on stderr — an invented building would be
+worse than none.
+
+---
+
 ## Integration notes
 
 - **Check the exit code before parsing.** Failure prints no JSON.
@@ -646,8 +822,9 @@ appear only when they have content.
 - **Page keys are strings** in `inspect`, `cut`, `render` and `text`. `structured`
   and `vector` use arrays with a numeric `page`/`page_number` instead.
 - **File paths in `cut`, `render` and `text` results are absolute.** `source`
-  echoes the input path exactly as typed, and `dossier`'s `pages[].cad.geojson`
-  is relative to the `--output` directory — the annotation and its GeoJSON tree
-  are meant to move together.
+  echoes the input path exactly as typed; `dossier`'s `pages[].cad.geojson`
+  and the `geojson_file` of `cadfix` / `building` are relative to the
+  `--output` directory — the report and its GeoJSON tree are meant to move
+  together.
 - `vector` is the only command that does not load PDFium; it needs no native
   library and spawns no subprocess.

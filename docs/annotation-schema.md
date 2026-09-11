@@ -82,7 +82,7 @@ certificate), `cadastral_reference` (ՏԵՂԵԿԱՆՔ), `passport`, `id_card`,
 
 **Drawing types** — `cad_drawing`, plus the `vector` classes where they apply:
 `site_plan`, `topographic_survey`, `cadastral_plan`, `floor_plan`,
-`elevation_or_section`, `technical_detail`; and `roof_plan`, `general_plan`,
+`elevation_or_section`, `technical_detail`, `3d_view`; and `roof_plan`, `general_plan`,
 `scanned_drawing`
 
 **Modifiers** — `handwritten`, `signature`, `e_signature`, `stamp`, `qr`,

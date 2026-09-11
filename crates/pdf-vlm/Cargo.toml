@@ -1,19 +1,19 @@
 [package]
 name = "pdf-vlm"
-description = "Vision-model page annotation for the dossier pipeline: renders a flagged page, asks a configured hosted model, and returns the answer in the dossier answers format."
+description = "Hosted-vision passes over dossier pages: page annotation for the dossier merge, CAD refinement, and building-massing reconstruction."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+llm-providers.workspace = true
+pdf-classify.workspace = true
 pdf-core.workspace = true
 pdf-dossier.workspace = true
 pdf-render.workspace = true
+pdf-vector.workspace = true
 pdfium-render.workspace = true
 anyhow.workspace = true
-base64.workspace = true
 indexmap.workspace = true
-dotenvy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-ureq.workspace = true

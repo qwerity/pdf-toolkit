@@ -149,6 +149,13 @@ Placement is a **document-level** result, not a per-page one. A page that fits
 to centimetres establishes which coordinate system the dossier is drawn in, and
 its siblings are then retried against that system with a looser tolerance — so
 running a whole document places pages that asking for one page alone does not.
+The survey sheet's coordinates then reach further still: sheets that print no
+table of their own — general plans, cadastral extracts, situation maps — draw
+the *same parcel*, and matching that outline by shape against the placed
+table's world polygon places them too (`georeference.source:
+"document_table"`). On the corpus this turns 9 placed pages into 30; a sheet
+that does not show the parcel finds no consistent transform and honestly
+stays local.
 
 ### dossier
 

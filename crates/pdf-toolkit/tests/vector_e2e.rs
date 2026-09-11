@@ -92,24 +92,53 @@ fn f64_at(value: &Value, key: &str) -> f64 {
 
 /// Every page the corpus places from its own printed table, and to what.
 ///
-/// `(document, page, control points, residual in metres, fitted scale)`.
+/// `(document, page, control points, residual in metres, fitted scale,
+/// placement source)`.
 /// Residuals are compared with a tolerance far tighter than the difference
 /// between a correct fit and a wrong one, so this catches a regression in the
 /// projection, the table reader, or the RANSAC consensus without being brittle
 /// about the last digit.
-const PLACEMENTS: &[(&str, u32, u64, f64, f64)] = &[
-    ("2.pdf", 11, 10, 0.0041, 500.0),
-    ("3.pdf", 9, 5, 0.0030, 500.0),
-    ("3.pdf", 18, 5, 0.0082, 499.0),
-    ("4.pdf", 3, 9, 0.0031, 500.0),
-    ("5.pdf", 9, 5, 0.0041, 714.0),
-    ("9.pdf", 6, 7, 0.0046, 500.0),
-    ("10.pdf", 4, 6, 0.0038, 500.0),
+const PLACEMENTS: &[(&str, u32, u64, f64, f64, &str)] = &[
+    // Placed from the sheet's own printed coordinate table.
+    ("2.pdf", 11, 10, 0.0041, 500.0, "text_layer"),
+    ("3.pdf", 9, 5, 0.0030, 500.0, "text_layer"),
+    ("3.pdf", 18, 5, 0.0082, 499.0, "text_layer"),
+    ("4.pdf", 3, 9, 0.0031, 500.0, "text_layer"),
+    ("5.pdf", 9, 5, 0.0041, 714.0, "text_layer"),
+    ("9.pdf", 6, 7, 0.0046, 500.0, "text_layer"),
+    ("10.pdf", 4, 6, 0.0038, 500.0, "text_layer"),
     // Placed only because a sibling page fitted to centimetres and fixed the
     // document's CRS, which licenses a looser tolerance here. Without that
     // second pass this page does not place at all.
-    ("10.pdf", 12, 4, 0.3675, 645.0),
-    ("13.pdf", 4, 8, 0.0031, 500.0),
+    ("10.pdf", 12, 4, 0.3675, 645.0, "text_layer"),
+    ("13.pdf", 4, 8, 0.0031, 500.0, "text_layer"),
+    // Placed by a table lent from the document's survey sheet
+    // (georeference.source "document_table"): the sheet draws the same
+    // parcel and matched it by shape, under the borrowed-fit credibility
+    // gate (five-plus inliers, or a complete small parcel at confident
+    // residual). General plans, situation maps and album site sheets — the
+    // fitted scales are each sheet's own.
+    ("2.pdf", 2, 10, 0.0069, 500.0, "document_table"),
+    ("2.pdf", 10, 10, 0.0140, 2000.0, "document_table"),
+    ("2.pdf", 24, 10, 0.0254, 2000.0, "document_table"),
+    ("2.pdf", 25, 10, 0.0069, 500.0, "document_table"),
+    ("3.pdf", 8, 5, 0.0118, 2000.0, "document_table"),
+    ("3.pdf", 17, 5, 0.0223, 1995.0, "document_table"),
+    ("3.pdf", 19, 5, 0.0041, 199.5, "document_table"),
+    ("4.pdf", 2, 5, 0.1178, 2261.0, "document_table"),
+    ("4.pdf", 4, 9, 0.0142, 2001.0, "document_table"),
+    ("4.pdf", 10, 8, 0.0070, 500.0, "document_table"),
+    ("4.pdf", 11, 5, 0.0799, 151.0, "document_table"),
+    ("4.pdf", 12, 8, 0.0071, 200.0, "document_table"),
+    ("5.pdf", 8, 6, 0.0113, 2858.0, "document_table"),
+    ("5.pdf", 10, 5, 0.0318, 2504.0, "document_table"),
+    ("5.pdf", 11, 5, 0.0311, 556.0, "document_table"),
+    ("9.pdf", 5, 7, 0.0158, 2000.0, "document_table"),
+    ("9.pdf", 9, 7, 0.0351, 2052.0, "document_table"),
+    ("9.pdf", 12, 7, 0.0015, 100.0, "document_table"),
+    ("9.pdf", 13, 7, 0.0015, 100.0, "document_table"),
+    ("10.pdf", 5, 6, 0.0116, 2000.0, "document_table"),
+    ("13.pdf", 3, 8, 0.0181, 2000.0, "document_table"),
 ];
 
 /// Every dossier in the corpus, in numeric order.
@@ -139,7 +168,7 @@ fn known_placements_reproduce_to_the_millimetre() {
         return;
     }
 
-    for &(document, number, points, rmse, scale) in PLACEMENTS {
+    for &(document, number, points, rmse, scale, source) in PLACEMENTS {
         let page = page(document, number);
         let geo = &page["georeference"];
 
@@ -147,7 +176,7 @@ fn known_placements_reproduce_to_the_millimetre() {
             geo["placed"], true,
             "{document} p{number} must place; got {geo}"
         );
-        assert_eq!(geo["source"], "text_layer", "{document} p{number}");
+        assert_eq!(geo["source"], source, "{document} p{number}");
         assert_eq!(
             geo["control_points_used"], points,
             "{document} p{number} control points"
@@ -176,7 +205,7 @@ fn fitted_scales_land_on_plausible_drawing_scales() {
         return;
     }
 
-    for &(document, number, _, _, _) in PLACEMENTS {
+    for &(document, number, _, _, _, _) in PLACEMENTS {
         let geo = page(document, number)["georeference"].clone();
         let fitted = f64_at(&geo, "fitted_scale_denominator");
         assert!(

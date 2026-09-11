@@ -30,6 +30,9 @@ pub struct GeoreferenceResult {
     pub georeference: Georeference,
     pub table: ControlTable,
     pub fit: Fit,
+    /// True when the table was read on another sheet of the same document
+    /// and this page was placed by matching its drawn parcel to it.
+    pub borrowed_table: bool,
 }
 
 /// Attempts to place a page in world coordinates using every supplied control
@@ -92,6 +95,7 @@ pub fn georeference_page(
             georeference,
             table: table.clone(),
             fit: fit.clone(),
+            borrowed_table: false,
         };
         let better = match &best {
             None => true,
@@ -200,6 +204,78 @@ pub fn enforce_document_crs(
     }
 }
 
+/// Lends the document's placed coordinate tables to the sheets that have
+/// none of their own.
+///
+/// The survey sheet prints the parcel's coordinates once; the general plan,
+/// the cadastral extract and the situation map draw the *same parcel* with
+/// no table. Matching a sheet's drawn outline to a confidently placed
+/// table's world polygon is [`shape_correspondences`]' existing job, so a
+/// sibling that really shows the parcel fits it under every existing guard
+/// — RANSAC consensus, scale bounds, spread ratio — and a sheet that does
+/// not show the parcel simply finds no consistent transform and stays
+/// local. Geometry decides, never proximity.
+///
+/// The borrowed table is stripped of what the donor sheet printed but this
+/// one does not: its page-space `bbox` (meaningless on another sheet) and
+/// its `printed_distances` (so `printed_dimensions` does not claim a check
+/// this sheet never carried).
+pub fn propagate_document_tables(
+    pages: &[PageContent],
+    results: &mut [Result<GeoreferenceResult, GeoreferenceFailure>],
+    constraints: FitConstraints,
+) {
+    let mut donors: Vec<ControlTable> = Vec::new();
+    for result in results.iter().filter_map(|r| r.as_ref().ok()) {
+        if result.fit.rmse > CONFIDENT_RMSE_M {
+            continue;
+        }
+        let mut table = result.table.clone();
+        table.bbox = None;
+        table.printed_distances = vec![None; table.rows.len()];
+        if !donors
+            .iter()
+            .any(|d| d.crs == table.crs && d.rows.len() == table.rows.len())
+        {
+            donors.push(table);
+        }
+    }
+    if donors.is_empty() {
+        return;
+    }
+
+    let relaxed = FitConstraints {
+        tolerance: RELAXED_TOLERANCE_M,
+        ..constraints
+    };
+    for (index, result) in results.iter_mut().enumerate() {
+        if result.is_ok() {
+            continue;
+        }
+        if let Ok(mut placed) = georeference_page(&pages[index], &donors, constraints)
+            .or_else(|_| georeference_page(&pages[index], &donors, relaxed))
+            && borrowed_fit_is_credible(&placed)
+        {
+            placed.borrowed_table = true;
+            *result = Ok(placed);
+        }
+    }
+}
+
+/// The extra evidence a borrowed-table placement must show.
+///
+/// Four points nearly-affinely match a great many rectangles — window
+/// frames, title blocks — so a four-inlier subset of a larger parcel at
+/// decimetre residual is exactly the false positive this pass must not
+/// produce. Five or more correspondences over an irregular outline are
+/// exponentially unlikely by chance; a *complete* match of a small parcel
+/// is accepted only at the residual a correct plot actually shows.
+fn borrowed_fit_is_credible(result: &GeoreferenceResult) -> bool {
+    let inliers = result.fit.inliers.len();
+    let parcel_corners = crate::control::world_polygon(&result.table).len();
+    inliers >= 5 || (inliers >= parcel_corners && result.fit.rmse <= CONFIDENT_RMSE_M)
+}
+
 /// Georeferences every page of a document from its own text layer.
 pub fn georeference_document(
     pages: &[PageContent],
@@ -213,6 +289,7 @@ pub fn georeference_document(
         .map(|(page, t)| georeference_page(page, t, constraints))
         .collect();
     enforce_document_crs(pages, &tables, &mut results, constraints);
+    propagate_document_tables(pages, &mut results, constraints);
     results
 }
 
@@ -273,4 +350,148 @@ pub fn control_page_bbox(page: &PageContent, table: &ControlTable) -> BBox {
         bbox.extend(Point::new(c.page.x, c.page.y));
     }
     bbox
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control::{ControlRow, TableSource};
+    use crate::crs::Projected;
+    use pdf_geometry::model::{PaintMode, Rgb, SubPath, VectorPath};
+
+    /// An irregular six-corner parcel in Gauss-Krüger zone 8, metres.
+    fn parcel_world() -> Vec<(f64, f64)> {
+        vec![
+            (8_458_288.80, 4_440_484.10),
+            (8_458_308.86, 4_440_494.82),
+            (8_458_321.20, 4_440_486.30),
+            (8_458_316.40, 4_440_470.75),
+            (8_458_299.10, 4_440_463.20),
+            (8_458_285.55, 4_440_472.40),
+        ]
+    }
+
+    fn table() -> ControlTable {
+        let rows = parcel_world()
+            .iter()
+            .enumerate()
+            .map(|(i, &(e, n))| ControlRow {
+                label: (i + 1).to_string(),
+                projected: Projected {
+                    northing: n,
+                    easting: e,
+                },
+            })
+            .collect();
+        ControlTable::from_rows(rows, TableSource::TextLayer, None)
+    }
+
+    /// A page whose only content is the parcel outline, drawn under the
+    /// given similarity (world → page units).
+    fn sheet_with_parcel(scale: f64, angle_deg: f64, tx: f64, ty: f64) -> PageContent {
+        let angle = angle_deg.to_radians();
+        let (cos, sin) = (angle.cos(), angle.sin());
+        let (e0, n0) = parcel_world()[0];
+        let mut points: Vec<Point> = parcel_world()
+            .iter()
+            .map(|&(e, n)| {
+                let (x, y) = (e - e0, n - n0);
+                Point::new(
+                    (x * cos - y * sin) * scale + tx,
+                    (x * sin + y * cos) * scale + ty,
+                )
+            })
+            .collect();
+        points.push(points[0]);
+        PageContent {
+            page_number: 1,
+            media_box: BBox {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 842.0,
+                max_y: 595.0,
+            },
+            paths: vec![VectorPath {
+                subpaths: vec![SubPath {
+                    points,
+                    closed: true,
+                }],
+                mode: PaintMode::Stroke,
+                stroke: Rgb::BLACK,
+                fill: Rgb::BLACK,
+                width: 0.5,
+                layer: None,
+            }],
+            texts: Vec::new(),
+            image_count: 0,
+            image_coverage: 0.0,
+        }
+    }
+
+    #[test]
+    fn a_placed_table_propagates_to_a_tableless_sheet_showing_the_parcel() {
+        // Donor at 1:500, sibling redrawn at 1:1000, rotated, elsewhere on
+        // its sheet; a third sheet shows unrelated geometry.
+        let donor = sheet_with_parcel(1.0 / 0.1764, 0.0, 200.0, 150.0);
+        let sibling = sheet_with_parcel(1.0 / 0.3528, 30.0, 420.0, 300.0);
+        // Same vertex count, different shape: an L-shaped outline. Shape,
+        // not translation, is what must fail the match.
+        let unrelated = {
+            let mut page = sheet_with_parcel(1.0, 0.0, 0.0, 0.0);
+            let l_shape = [
+                (100.0, 100.0),
+                (300.0, 100.0),
+                (300.0, 200.0),
+                (200.0, 200.0),
+                (200.0, 320.0),
+                (100.0, 320.0),
+                (100.0, 100.0),
+            ];
+            page.paths[0].subpaths[0].points =
+                l_shape.iter().map(|&(x, y)| Point::new(x, y)).collect();
+            page
+        };
+        let constraints = FitConstraints::default();
+
+        let donor_fit =
+            georeference_page(&donor, &[table()], constraints).expect("the donor places");
+        assert!(
+            donor_fit.fit.rmse <= CONFIDENT_RMSE_M,
+            "rmse {}",
+            donor_fit.fit.rmse
+        );
+        assert!(!donor_fit.borrowed_table);
+
+        let pages = [donor, sibling, unrelated];
+        let mut results = vec![
+            Ok(donor_fit),
+            Err(GeoreferenceFailure::NoControlTable),
+            Err(GeoreferenceFailure::NoControlTable),
+        ];
+        propagate_document_tables(&pages, &mut results, constraints);
+
+        let placed = results[1].as_ref().expect("the sibling places");
+        assert!(
+            placed.borrowed_table,
+            "the source must say the table was lent"
+        );
+        assert!(
+            placed.fit.rmse < 0.5,
+            "the parcel matches to sub-metre: {}",
+            placed.fit.rmse
+        );
+        assert!(
+            (placed.georeference.fitted_scale_denominator - 1000.0).abs() < 50.0,
+            "the sibling's own scale is recovered: {}",
+            placed.georeference.fitted_scale_denominator
+        );
+        assert!(
+            placed.georeference.dimension_check.is_none(),
+            "a lent table must not claim the donor's printed side lengths"
+        );
+        assert!(
+            results[2].is_err(),
+            "a sheet without the parcel stays honestly unplaced"
+        );
+    }
 }

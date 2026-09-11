@@ -43,7 +43,9 @@ use pdf_geo::fit::FitConstraints;
 use pdf_geo::geojson::{ExportOptions, export_local, export_page};
 use pdf_geo::local::{LocalFrame, Reference, ScaleSource, place};
 use pdf_geo::pipeline::georeference_page;
-use pdf_geo::pipeline::{GeoreferenceFailure, GeoreferenceResult, enforce_document_crs};
+use pdf_geo::pipeline::{
+    GeoreferenceFailure, GeoreferenceResult, enforce_document_crs, propagate_document_tables,
+};
 use pdf_geometry::PdfDocument;
 use pdf_geometry::model::{BBox, PageContent};
 
@@ -70,6 +72,9 @@ pub struct VectorOptions {
 pub enum PlacementSource {
     /// A turning-point table printed on the sheet and readable as text.
     TextLayer,
+    /// A turning-point table printed on another sheet of the same document,
+    /// matched to this sheet's drawn parcel outline by shape.
+    DocumentTable,
     /// References supplied by the caller.
     References,
 }
@@ -124,6 +129,10 @@ pub fn extract_document(
         .map(|(page, candidates)| georeference_page(page, candidates, constraints))
         .collect();
     enforce_document_crs(&contents, &tables, &mut fits, constraints);
+    // The survey sheet's coordinates are a statement about the whole
+    // dossier: sheets that draw the same parcel but print no table of
+    // their own are placed by matching that shape.
+    propagate_document_tables(&contents, &mut fits, constraints);
 
     let pages = contents
         .iter()
@@ -181,7 +190,11 @@ fn export(
                 page_number: page.page_number,
                 classification,
                 georeference: Some(GeoreferenceReport::placed(
-                    PlacementSource::TextLayer,
+                    if result.borrowed_table {
+                        PlacementSource::DocumentTable
+                    } else {
+                        PlacementSource::TextLayer
+                    },
                     &result,
                 )),
                 crs: "EPSG:4326".into(),

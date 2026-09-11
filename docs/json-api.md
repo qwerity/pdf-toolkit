@@ -417,7 +417,7 @@ Not placed:
 | Field | Type | Notes |
 |---|---|---|
 | `placed` | bool | The only field always present. Branch on it first. |
-| `source` | enum | `text_layer` or `references`. Absent when not placed. |
+| `source` | enum | `text_layer`, `document_table` or `references`. Absent when not placed. |
 | `failure.reason` | enum | Absent when placed. See below. |
 | `crs` | string | The CRS the **fit** was made in — the exported coordinates are WGS 84 either way. Absent if it could not be identified. |
 | `rmse_m` | float | RMS residual over the control points, in metres |
@@ -427,6 +427,16 @@ Not placed:
 | `declared_scale_denominator` | float | Scale printed on the sheet, when readable. Often absent. |
 | `rotation_degrees` | float | Rotation to true north, CCW. Only for a reference placement. |
 | `center` | `[lon, lat]` | Centre of the placed geometry. Absent if the CRS could not be converted. |
+
+`document_table` says the sheet printed no coordinates of its own: a
+confidently placed sibling sheet's table was lent to it, and this sheet's
+drawn parcel outline matched that table's world polygon by shape — under
+the same RANSAC consensus, scale bounds and spread guards as any fit,
+plus a stricter evidence gate (five or more matched corners, or a
+complete small parcel at confident residual). The `rmse_m` is this
+sheet's own fit; the `fitted_scale_denominator` is this sheet's own
+drawing scale. `printed_dimensions` never appears with a lent table —
+this sheet did not print the side lengths.
 
 **`rmse_m` is the number that says a placement is right.** A survey sheet is
 plotted from the same coordinates its table lists, so a correct fit agrees to

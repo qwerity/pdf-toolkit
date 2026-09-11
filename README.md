@@ -1,7 +1,8 @@
 # pdf-toolkit
 
 CLI tool for inspecting PDFs, extracting pages as single-page PDFs or PNGs,
-extracting text, and recovering CAD geometry as georeferenced GeoJSON.
+extracting text, recovering CAD geometry as georeferenced GeoJSON, and
+annotating whole building-permit dossiers.
 
 Built as a quicker alternative to [Docling](https://github.com/docling-project/docling)
 for turning PDFs into text and structured markdown: a single native binary over
@@ -61,6 +62,7 @@ pdf-toolkit <COMMAND> <INPUT> [OPTIONS]
   text        plain text into .txt files
   structured  positioned spans and a markdown reconstruction, to stdout
   vector      CAD geometry + classification + georeferenced GeoJSON
+  dossier     whole-dossier annotation: labels, routing, QR, entities, graph
 ```
 
 ### inspect
@@ -145,6 +147,32 @@ to centimetres establishes which coordinate system the dossier is drawn in, and
 its siblings are then retried against that system with a looser tolerance — so
 running a whole document places pages that asking for one page alone does not.
 
+### dossier
+
+Assembles the whole-dossier annotation: per-page labels, text-extraction
+routing, decoded QR payloads, entities, groups and a derived document graph,
+with the `vector` classification and georeferencing folded in. Pages a binary
+cannot read — scans, handwriting, mis-encoded text layers — carry a vision-model
+work order instead of a guess; a second run merges what that pass returned.
+
+```bash
+./dist/pdf-toolkit dossier input.pdf                          # deterministic pass
+./dist/pdf-toolkit dossier input.pdf --answers answers.json   # merge a reviewed vision pass
+./dist/pdf-toolkit dossier input.pdf --vlm                    # vision pass, default model
+./dist/pdf-toolkit dossier input.pdf --vlm openai/gpt-4o      # …or any other hosted model
+./dist/pdf-toolkit dossier input.pdf --answers a.json -o out  # also write .geojson files
+```
+
+Bare `--vlm` uses `gemini-3.8-flash`, the corpus benchmark's winner
+(`docs/annotation-findings.md`). It needs an API key in the environment
+(`GEMINI_API_KEY` for `gemini-*` specs, `OPENROUTER_API_KEY` for
+`vendor/model` specs; a `.env` is honoured) and sends the flagged pages'
+images to that provider — the only networked path in the toolkit, and always
+opt-in.
+
+The output shape is `docs/annotation-schema.md`; the command contract is the
+`dossier` section of `docs/json-api.md`.
+
 ### structured
 
 ```bash
@@ -157,9 +185,10 @@ running a whole document places pages that asking for one page alone does not.
 
 - `--pages` / `-p` (alias `--page`): page list or inclusive ranges like
   `1-3,5,9-10`, or `all` (the default). Accepted by every command except
-  `inspect`, which always reports the whole document.
-- `--output` / `-o`: output directory, for the commands that write files
-  (`cut`, `render`, `text`). Defaults to the current directory.
+  `inspect` and `dossier`, which always work on the whole document.
+- `--output` / `-o`: output directory. `cut`, `render` and `text` default to
+  the current directory; `vector` and `dossier` write their `.geojson` files
+  only when it is given.
 - `--concat` / `-c`: `cut` merges the selection into one PDF; `text` merges it
   into one `.txt` file. `text` also merges when the selection is `all`, which is
   the default — so only an explicit page selection yields per-page files.
@@ -185,7 +214,8 @@ running a whole document places pages that asking for one page alone does not.
 
 A tour of the common shapes. **[`docs/json-api.md`](docs/json-api.md) is the
 full contract** — every field, every enum value, and which fields are absent
-rather than defaulted. `vector`'s result shape is documented there only.
+rather than defaulted. `vector`'s result shape is documented there only, and `dossier`'s there and
+in [`docs/annotation-schema.md`](docs/annotation-schema.md).
 
 Page inspection with `inspect`:
 
@@ -394,12 +424,18 @@ let report = extract_structured_text(
 
 Run `cargo doc --open` for the full API documentation. `create_pdfium()` binds the native PDFium library from the executable's directory, the system, `./`, or `./dist/` (in that order).
 
+The dossier pipeline is a library too: `pdf_dossier::analyze` reads a
+document once (text, routing signals, QR, vector geometry) and
+`pdf_dossier::assemble` turns that analysis plus options — an answers file,
+an output directory — into the annotation, any number of times.
+`pdf_vlm::VlmClient` renders and annotates the flagged pages against a hosted
+model; `pages_awaiting_vision` / `seed_vision_reasons` are the seams the CLI
+itself uses.
+
 ### Crate layout
 
 The workspace is split so that the parts with reach beyond this CLI can be
-depended on without it. `pdf-render` in particular exists to be consumed by
-other Rust code that would otherwise shell out to Poppler's `pdftoppm` for
-the same job.
+depended on without it.
 
 | crate | owns |
 |---|---|
@@ -412,6 +448,8 @@ the same job.
 | `pdf-text` | plain and structured text extraction |
 | `pdf-inspect` | per-page metadata and the vision-pass routing signals |
 | `pdf-pages` | cutting and concatenation |
+| `pdf-dossier` | the whole-dossier annotation for the `dossier` command |
+| `pdf-vlm` | the opt-in hosted-vision pass answering what `pdf-dossier` flags |
 | `pdf-toolkit` | the CLI, plus the facade that re-exports all of the above |
 
 Nothing in `pdf-core` depends on another workspace crate. The rest form two
@@ -420,6 +458,8 @@ chains meeting at the CLI:
 ```
 core -> {render, text} -> inspect -> pages ----+
 geometry -> geo -> classify -> vector ---------+--> toolkit
+{core, render, inspect, vector} -> dossier ----+
+dossier -> vlm --------------------------------+
 ```
 
 **Two PDF parsers, deliberately.** `pdf-core` binds PDFium, which renders and
@@ -429,8 +469,11 @@ that but renders nothing. Each does what the other cannot, so both stay.
 
 ### Test corpus
 
-The `vector` end-to-end tests run against real building-permit dossiers in
-`data/plan/`.
+The `vector` and `dossier` end-to-end tests run against real building-permit
+dossiers in `data/plan/`. The `dossier` tests additionally replay the reviewed
+annotations and vision-pass answers beside them (`data/annotations/`,
+`data/annotations/answers/`), and require the command to reproduce the
+annotations exactly.
 
 **Those dossiers are private data.** They are not committed, published or
 fetched from anywhere, and `data/` is gitignored in full. They exist only
@@ -443,8 +486,11 @@ failure, so the only tests that check the georeferencing is right cannot be
 silently dropped.
 
 To enable them, copy the dossiers to `data/plan/` as `1.pdf`, `2.pdf`
-and so on. The tests read the directory rather than a fixed list, so adding one
-needs no code change — but a dossier that places a page fails
+and so on. The `vector` tests read the directory rather than a fixed list, so
+adding a dossier needs no code change — but one that places a page fails
 `the_corpus_places_exactly_the_recorded_pages` until that placement is recorded
 in `PLACEMENTS`, which is deliberate: a new placement is a new claim about the
-world and should be written down.
+world and should be written down. The `dossier` parity tests are stricter
+still: they replay the fourteen reviewed annotations by number, so a new
+dossier joins them only once its annotation is reviewed into
+`data/annotations/`.

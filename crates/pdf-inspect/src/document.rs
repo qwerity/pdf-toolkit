@@ -55,6 +55,15 @@ pub fn inspect_document(pdfium: &Pdfium, pdf_path: &Path) -> Result<DocumentInfo
 }
 
 pub fn page_info_for_page(page_number: u16, page: &PdfPage<'_>) -> PageInfo {
+    page_info_and_text(page_number, page).0
+}
+
+/// [`page_info_for_page`], also returning the sanitized text it judged.
+///
+/// The routing signals are computed *from* the page's text, so a caller that
+/// needs both — the dossier pipeline does — should not pay for a second
+/// pdfium extraction of the same layer.
+pub fn page_info_and_text(page_number: u16, page: &PdfPage<'_>) -> (PageInfo, String) {
     let (width_px, height_px) = page_dimensions_px(page, 1.0);
     let page_area = page.width().value * page.height().value;
     let (image_count, image_area) = collect_image_stats(page.objects().iter(), true, page_area);
@@ -77,7 +86,7 @@ pub fn page_info_for_page(page_number: u16, page: &PdfPage<'_>) -> PageInfo {
         llm_reasons.push(LlmReason::ComplexTable);
     }
 
-    PageInfo {
+    let info = PageInfo {
         page_number,
         width_px,
         height_px,
@@ -85,7 +94,8 @@ pub fn page_info_for_page(page_number: u16, page: &PdfPage<'_>) -> PageInfo {
         image_count,
         image_coverage,
         llm_reasons,
-    }
+    };
+    (info, text)
 }
 
 /// Determines why (if at all) a vision-LLM/OCR pass would recover content

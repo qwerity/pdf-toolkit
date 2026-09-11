@@ -63,10 +63,10 @@ impl ToUnicode {
         for section in Self::sections(text, "beginbfchar", "endbfchar") {
             let tokens = Self::hex_tokens(section);
             for pair in tokens.chunks(2) {
-                if let [src, dst] = pair {
-                    if let Some(code) = Self::hex_to_code(src) {
-                        self.single.insert(code, Self::hex_to_string(dst));
-                    }
+                if let [src, dst] = pair
+                    && let Some(code) = Self::hex_to_code(src)
+                {
+                    self.single.insert(code, Self::hex_to_string(dst));
                 }
             }
         }

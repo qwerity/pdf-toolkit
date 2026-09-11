@@ -1,0 +1,20 @@
+[package]
+name = "pdf-dossier"
+description = "Assembles a whole-dossier annotation: routing, labels, QR payloads, entities, groups and a document graph, with VLM tasks for what deterministic extraction cannot read."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pdf-classify.workspace = true
+pdf-core.workspace = true
+pdf-inspect.workspace = true
+pdf-render.workspace = true
+pdf-vector.workspace = true
+pdfium-render.workspace = true
+anyhow.workspace = true
+indexmap.workspace = true
+regex.workspace = true
+rxing.workspace = true
+serde.workspace = true
+serde_json.workspace = true

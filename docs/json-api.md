@@ -6,7 +6,7 @@ document on stdout and nothing else**, so it can be driven from another program.
 This file is the contract. It is the reference for integrating the tool; if you
 are wiring it into a service, this is all you need.
 
-- Version described here: **0.8.0** (matches the package version)
+- Version described here: **0.9.0** (matches the package version)
 - Warnings and progress go to **stderr**; stdout is only ever the JSON document
 - Files written under `--output` are the same whether or not you parse stdout
 - Exit code is `0` on success and non-zero on failure. **A failed run prints no
@@ -35,18 +35,21 @@ pdf-toolkit <command> <input.pdf> [options]
 | `text` | Plain text into `.txt` files | yes |
 | `structured` | Positioned spans and a markdown reconstruction | no |
 | `vector` | CAD geometry, classification and georeferenced GeoJSON | with `--output` |
+| `dossier` | Whole-dossier annotation: labels, routing, QR payloads, entities, groups, graph | with `--output` |
 
 ### Options
 
 | Option | Commands | Meaning |
 |---|---|---|
-| `--pages`, `-p` (alias `--page`) | all but `inspect` | `all` (default), or a list/range like `1,3,5-7` |
-| `--output`, `-o` | `cut`, `render`, `text`, `vector` | Output directory. Defaults to the working directory. |
+| `--pages`, `-p` (alias `--page`) | all but `inspect` and `dossier` | `all` (default), or a list/range like `1,3,5-7` |
+| `--output`, `-o` | `cut`, `render`, `text`, `vector`, `dossier` | Output directory. Defaults to the working directory (`dossier`: no files unless given). |
 | `--concat`, `-c` | `cut`, `text` | Merge the selection into one file |
 | `--scale`, `-s` | `render` | Scale factor. Default `2.0`. |
 | `--scale-width-px` | `render` | Exact output width in pixels; preserves aspect ratio |
 | `--structured-format` | `structured` | `full` (default) or `markdown` |
 | `--georeference`, `-g` | `vector` | `local_x,local_y,longitude,latitude`; repeatable |
+| `--answers` | `dossier` | Vision-pass answers file to merge; see below |
+| `--vlm` | `dossier` | In-process vision pass. Bare `--vlm` uses `gemini-3.8-flash`; see below |
 
 An option that does not apply to a command does not exist on it, and using it is
 a usage error rather than a silently ignored flag.
@@ -502,6 +505,134 @@ Sheets that print no side lengths report nothing rather than a vacuous pass.
 
 ---
 
+## `dossier`
+
+Assembles the **whole-dossier annotation**: one JSON describing every page's
+labels, text-extraction routing, decoded QR payloads, entities, group
+membership, per-page georeferencing (verbatim from `vector`), and a graph
+derived from those facts. The full field reference is
+[`annotation-schema.md`](annotation-schema.md); this section is the command's
+contract.
+
+The command is deterministic and offline, and it runs in **two phases**:
+
+1. `dossier input.pdf` — the deterministic pass. Pages a binary cannot read
+   (scans, handwriting, mis-encoded text layers) are *routed*, not guessed:
+   each carries `extraction.vlm` — `{"required": true, "reasons": [...]}` — as
+   a work order for a vision model. Which pages, and why, is the point:
+   deterministic extraction is exact and free, a vision model is neither.
+2. `dossier input.pdf --answers answers.json` — the same run, with the vision
+   pass's answers merged. An answered page's semantic fields (labels, title,
+   entities, groups, handwriting, …) are taken from the answer wholesale; the
+   deterministic fields (text, routing signals, QR, georeferencing) are
+   recomputed identically. The answers file format is in
+   `annotation-schema.md` (`crates/pdf-dossier/src/answers.rs` is the parser).
+
+The vision pass can also run **in-process**: `--vlm [model]` renders each
+flagged page and asks a hosted vision model, then merges exactly as an
+answers file would. Bare `--vlm` uses the corpus benchmark's winner,
+`gemini-3.8-flash` (`annotation-findings.md`). The spec's shape picks the
+provider — `gemini-*` goes to the Gemini API (`GEMINI_API_KEY`, with
+`GOOGLE_API_KEY` accepted as a fallback), a `vendor/model` id such as
+`qwen/qwen2.5-vl-72b-instruct` goes to OpenRouter (`OPENROUTER_API_KEY`); a
+`.env` in the working directory is honoured. `--answers` and `--vlm` combine:
+pages the file answers are not re-asked. **`--vlm` is the toolkit's only
+networked path** — it sends page images (in this domain: identity documents)
+to the configured provider, so it is opt-in per invocation and never a
+default. Model quality on this task is compared in
+`annotation-findings.md`.
+
+```json
+{
+  "document": "letter",
+  "entities": [],
+  "generated_by": "pdf-toolkit 0.9.0 dossier: deterministic extraction (pdfium text, templates, rxing QR, vector classification and georeferencing); vision-pass answers pending",
+  "graph": {
+    "edges": []
+  },
+  "groups": [],
+  "page_count": 1,
+  "pages": [
+    {
+      "classification": {
+        "class": "unknown",
+        "confidence": "ambiguous",
+        "is_drawing": false,
+        "is_mappable": false
+      },
+      "content_kind": "digital",
+      "extraction": {
+        "chars": 62,
+        "engine": "pdfium",
+        "route": "embedded_text",
+        "text": "A short letter about nothing in particular, set in plain type."
+      },
+      "labels": [
+        "text_document"
+      ],
+      "languages": [
+        "en"
+      ],
+      "page_number": 1
+    }
+  ],
+  "schema_version": "0.2.0",
+  "source": "letter.pdf",
+  "stats": {
+    "embedded_text": 1,
+    "handwriting_pages": 0,
+    "none": 0,
+    "placed_pages": 0,
+    "qr_pages": 0,
+    "vlm": 0,
+    "vlm_flagged": 0
+  }
+}
+```
+
+| Field | Notes |
+|---|---|
+| `schema_version` | Version of the annotation schema, independent of the tool version |
+| `document` / `source` / `page_count` | As in `vector` |
+| `generated_by` | Names the passes; says whether answers were merged or are pending |
+| `stats` | Per-dossier counts: route totals, `vlm_flagged`, `qr_pages`, `handwriting_pages`, `placed_pages` |
+| `pages` | Array, one entry per page — field tables in `annotation-schema.md` |
+| `groups` / `entities` / `graph` | Document sections, the identifier registry, and the derived edges |
+
+Branch on these enums, not on prose:
+
+- `pages[].extraction.route` — `embedded_text` \| `vlm` \| `none`
+- `pages[].extraction.encoding_issue` — present (and `true`) only when a text
+  layer exists but is wrong: a legacy 8-bit font encoding, CID glyph outlines,
+  or a custom glyph mapping. Such pages keep `route: "embedded_text"` (the raw
+  layer may still be mapped deterministically) but are VLM-flagged with reason
+  `legacy_encoding`. A CID-garbled layer that extraction refused has no `text`
+  and routes `vlm`.
+- `pages[].qr_codes[].data` — the payload, or `null` with a `note` when a code
+  is visible (per the vision pass) but undecodable. QR decoding is two-tier:
+  a 1400 px pass over every page, and a 3000 px retry only for scans and
+  pages whose text names e-cadastre.
+- `pages[].extraction.vlm.reasons` — an **open** list
+  (`scanned_or_unreadable_text`, `legacy_encoding`, `handwritten_fields`, …);
+  treat unknown values as "needs a vision pass", never as an error.
+- `groups[].georeference.status` — `applied` \| `same_site_unverified` \|
+  `none`. `applied` only where a placed fit is in that group's own drawing
+  frame; a floor plan of the same building is `same_site_unverified` —
+  geometry decides, never proximity.
+
+Internal-consistency problems (a dangling group or entity reference, an
+out-of-range related page) are reported as `Warning:` lines on stderr, per
+the toolkit-wide rule; the JSON on stdout is emitted either way.
+
+With `--output`, each drawing page's GeoJSON is written under
+`<dir>/geojson/<document>/<document>_pNN.geojson` and referenced from
+`pages[].cad.geojson` by that relative path; without it, `cad` still reports
+`crs` and `features` but no path. An absent field is not a false one, here as
+everywhere: `qr_codes`, `handwriting`, `georeference`, `entities`, `groups`
+appear only when they have content.
+
+---
+
 ## Integration notes
 
 - **Check the exit code before parsing.** Failure prints no JSON.
@@ -514,6 +645,9 @@ Sheets that print no side lengths report nothing rather than a vacuous pass.
   that passed.
 - **Page keys are strings** in `inspect`, `cut`, `render` and `text`. `structured`
   and `vector` use arrays with a numeric `page`/`page_number` instead.
-- **Paths in results are absolute.**
+- **File paths in `cut`, `render` and `text` results are absolute.** `source`
+  echoes the input path exactly as typed, and `dossier`'s `pages[].cad.geojson`
+  is relative to the `--output` directory — the annotation and its GeoJSON tree
+  are meant to move together.
 - `vector` is the only command that does not load PDFium; it needs no native
   library and spawns no subprocess.

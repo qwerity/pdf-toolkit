@@ -70,10 +70,10 @@ impl PageFeatures {
                     colors.push(hex);
                 }
             }
-            if let Some(layer) = path.layer.as_deref() {
-                if !layers.contains(&layer) {
-                    layers.push(layer);
-                }
+            if let Some(layer) = path.layer.as_deref()
+                && !layers.contains(&layer)
+            {
+                layers.push(layer);
             }
         }
 

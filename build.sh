@@ -336,6 +336,7 @@ main() {
         cp "README.md" "${package_dir}/README.md"
         mkdir -p "${package_dir}/docs"
         cp "docs/json-api.md" "${package_dir}/docs/json-api.md"
+        cp "docs/annotation-schema.md" "${package_dir}/docs/annotation-schema.md"
 
         archive_path="$(create_archive "${artifacts_dir}" "${package_root}" "${package_dir_name}" "${PLATFORM}")"
         checksum_path="$(write_checksum "${archive_path}")"

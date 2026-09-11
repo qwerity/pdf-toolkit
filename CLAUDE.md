@@ -16,7 +16,8 @@ same commit. That means any of:
 - a change to when a field is present, since an absent field is meaningful
 - a new value for an enum a caller branches on — `llm_reasons[].reason`,
   `classification.class`, `confidence`, `georeference.source`,
-  `failure.reason`, `crs`
+  `failure.reason`, `crs`, `extraction.route`, `groups[].georeference.status`,
+  `related_pages[].relation`, `graph.edges[].type`, `sources[].via`
 - a new subcommand, or a flag that changes the output
 - a change to `errors` / `warnings`, or to exit-code behaviour
 
@@ -46,12 +47,15 @@ The serialisable types are all in one place, which makes this easy to check:
 | `PageClass`, `Confidence` | `crates/pdf-classify/src/heuristic.rs` |
 | `GeoreferenceFailure` | `crates/pdf-geo/src/pipeline.rs` |
 | Errors and per-page warnings | `crates/pdf-core/src/{error,warning}.rs` |
+| `dossier` output | `crates/pdf-dossier/src/report.rs` |
+| `dossier --answers` input | `crates/pdf-dossier/src/answers.rs` |
 
 ## What this tool is
 
-Six commands over one PDF: `inspect`, `cut`, `render`, `text`, `structured`,
-`vector`. `README.md` explains the pipeline and the crate layout;
-`docs/json-api.md` is the output contract.
+Seven commands over one PDF: `inspect`, `cut`, `render`, `text`, `structured`,
+`vector`, `dossier`. `README.md` explains the pipeline and the crate layout;
+`docs/json-api.md` is the output contract, and `docs/annotation-schema.md` is
+the field reference for the `dossier` annotation.
 
 ## Principles worth keeping
 
@@ -90,7 +94,7 @@ dependency graph acyclic; the two chains are in `README.md`.
 ## Running things
 
 ```sh
-cargo test --workspace                      # 294 tests
+cargo test --workspace                      # 325 tests
 PDF_TOOLKIT_REQUIRE_CORPUS=1 cargo test     # corpus tests must run, not skip
 ./build.sh                                  # dist/ bundle; runs the full gate
 ```
@@ -102,7 +106,10 @@ test would otherwise poison the global lock. The harness binds
 with the working directory at the *package* root, where the runtime's own
 relative `./dist/` lookup cannot see it.
 
-**The dossier corpus in `data/plan/` is private data.** It is not
+**The dossier corpus in `data/plan/` is private data**, and so are the
+reviewed annotations and vision-pass answers beside it
+(`data/annotations/`, `data/annotations/answers/`) that the `dossier`
+corpus tests replay. It is not
 committed, published or fetched from anywhere, and `data/` is gitignored
 in full — do not add a way to distribute it.
 

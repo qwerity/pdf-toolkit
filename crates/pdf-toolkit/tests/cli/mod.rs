@@ -149,6 +149,24 @@ pub mod argv {
         ]
     }
 
+    /// Whole-dossier annotation, deterministic passes only.
+    pub fn dossier(input: &str) -> Vec<String> {
+        vec!["dossier".into(), input.into()]
+    }
+
+    /// Whole-dossier annotation with vision-pass answers merged and GeoJSON
+    /// written under `out`.
+    pub fn dossier_merged(input: &str, answers: &str, out: &str) -> Vec<String> {
+        vec![
+            "dossier".into(),
+            input.into(),
+            "--answers".into(),
+            answers.into(),
+            "--output".into(),
+            out.into(),
+        ]
+    }
+
     /// Extract plain text into `.txt` files.
     pub fn text(input: &str, pages: &str, out: &str) -> Vec<String> {
         vec![

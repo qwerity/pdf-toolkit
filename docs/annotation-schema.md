@@ -1,15 +1,16 @@
-# Dossier annotation schema — draft 0.2.0
+# Dossier annotation schema — 0.2.0
 
-One JSON per dossier: `data/annotations/<n>.json`, describing the matching
-`data/plan/<n>.pdf`. These are **ground truth**, produced by machine passes
-(pdf-toolkit `inspect`/`text`/`vector`, OpenCV QR decoding) plus a
-human/vision-model pass over every rendered page. The goal: a future
-`pdf-toolkit` command reproduces this file.
+The output of `pdf-toolkit dossier` (command contract: the `dossier` section
+of `json-api.md`). One JSON per document: every page's labels, extraction
+routing, QR payloads, entities and groups, plus a graph derived from those
+facts.
 
-The data itself lives under gitignored `data/` — the annotations quote private
-content (names, passport numbers) and must never be committed. This schema and
-`annotation-findings.md` are the committable record of the format and of what
-the corpus taught us.
+The command runs deterministically; pages only a vision model can read carry
+an `extraction.vlm` work order. Running again with `--answers <file>` merges
+the vision pass's results — the answers file format is at the end of this
+document. The reviewed reference corpus lives in gitignored `data/`
+(`data/plan/` + `data/annotations/`, private data), and the corpus test
+requires `dossier --answers` to reproduce those annotations exactly.
 
 ## Top level
 
@@ -55,14 +56,14 @@ the corpus taught us.
 | `chars` | Length of `text` |
 | `engine` | `pdfium` (route `embedded_text` only) |
 | `encoding_issue` | `true` when a text layer exists but is wrong: legacy 8-bit font encodings (ArmSCII mojibake), glyph-outline CID fonts, custom phonetic-glyph fonts. Such pages are additionally VLM-flagged |
-| `vlm` | `{"required": true, "reasons": [...], "extracted": {...}}` — `extracted` holds what the visual pass itself recovered; it is what the production VLM stage is expected to return |
+| `vlm` | `{"required": true, "reasons": [...], "extracted": {...}}` — `required` is invariantly `true` (the block's presence is the fact); `extracted` holds what the visual pass itself recovered; it is what the production VLM stage is expected to return |
 
-Routing policy the ground truth encodes: embedded text when the layer is
-present and not garbled (~0 ms); **everything else that carries information is
-routed to the VLM** — scans, handwriting, photos of documents, unreadable or
-mis-encoded text layers. Local OCR was evaluated on this corpus and dropped by
-decision: see `annotation-findings.md` for the measurements. Pages that are
-pure imagery (3D renders, photo sheets) are `none`.
+Routing policy: embedded text when the layer is present and not garbled
+(~0 ms); **everything else that carries information is routed to the VLM** —
+scans, handwriting, photos of documents, unreadable or mis-encoded text
+layers. Local OCR was evaluated on the corpus and dropped by decision: see
+`annotation-findings.md` for the measurements. Pages that are pure imagery
+(3D renders, photo sheets) are `none`.
 
 `vlm.reasons` values seen in the ground truth: `scanned_or_unreadable_text`,
 `legacy_encoding`, `handwritten_fields`, `handwritten_full_page`,
@@ -91,7 +92,12 @@ certificate), `cadastral_reference` (ՏԵՂԵԿԱՆՔ), `passport`, `id_card`,
 
 `{"id", "kind", "title", "pages", "entities"}` — `kind` one of `identity`,
 `ownership`, `application`, `administrative`, `financial`, `drawings`,
-`technical`. A dossier can hold several `drawings` groups (e.g. cadastre
+`technical`. A deterministic-only run (no answers) derives structural groups
+with fixed ids — `application`, `certificate:<number>` (one per ownership
+certificate, `ownership` when its parcel matches the application form's,
+`administrative` otherwise), `cadastre_references`, `drawings` — and
+generated English titles; answered pages carry whatever groups their answers
+name instead. A dossier can hold several `drawings` groups (e.g. cadastre
 extracts vs. the design album vs. a demolition part); georeference application
 respects that boundary:
 
@@ -122,3 +128,48 @@ Id convention: `<type>:<normalized-value>`, e.g.
 `via`), `about` (group→cadastral-code entity), `continues` / `duplicate_of`
 (page→page), `georeference_source` (page→group). Derived; a reviewer should
 check the inline facts, the edges follow.
+
+## The answers file (`dossier --answers`)
+
+What the vision pass (or a human reviewer) returns; parsed by
+`crates/pdf-dossier/src/answers.rs`. An answered page's semantic fields
+replace the deterministic guess wholesale — the answer came from something
+that looked at the page.
+
+```json
+{
+  "pages": {
+    "6": {
+      "labels": ["cadastral_certificate", "id_card", "qr", "stamp"],
+      "kind": "scan",
+      "lang": ["hy", "en"],
+      "title": "one-line description of the page",
+      "notes": "anything the reviewer should see",
+      "entities": ["cadastral_code:01-011-0388-0007", "person:example-name"],
+      "groups": ["ownership", "identity"],
+      "related": [{"page": 7, "relation": "continues"}],
+      "handwriting": {"extent": "fields", "script": ["hy"]},
+      "vlm": ["id_card_fields"],
+      "declared_scale": 500,
+      "sheet": "ԷՋ-03",
+      "encoding_issue": false
+    }
+  },
+  "groups": {
+    "ownership": {"kind": "ownership", "title": "…"},
+    "identity": {"kind": "identity", "title": "…"}
+  },
+  "people": {
+    "person:example-name": {"value": "printed name", "roles": ["owner"]}
+  },
+  "georef_note": "optional document-level note",
+  "note": "optional document-level note"
+}
+```
+
+Every field but `labels` is optional. `groups` metadata is keyed by the ids
+pages reference, in the order the final report should list them; `people`
+supplies display values and roles for person/org entity ids. Pages without an
+answer keep their deterministic facts, so a partial answers file is a valid
+merge. Closed vocabularies are validated at load: an unknown `relation` value
+is a parse error naming the field, never a new edge type in the graph.

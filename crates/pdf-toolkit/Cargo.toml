@@ -11,8 +11,10 @@ path = "src/main.rs"
 
 [dependencies]
 pdf-core.workspace = true
+pdf-dossier.workspace = true
 pdf-geo.workspace = true
 pdf-vector.workspace = true
+pdf-vlm.workspace = true
 pdf-inspect.workspace = true
 pdf-pages.workspace = true
 pdf-render.workspace = true

@@ -31,39 +31,13 @@ fn sample(name: &str) -> PathBuf {
 }
 
 fn corpus_dir() -> PathBuf {
-    common::workspace_root().join("data").join("plan")
+    common::data_dir().join("plan")
 }
 
-/// Whether the corpus is present, and what to do when it is not.
-///
-/// The dossiers are real building-permit submissions — private data. They are
-/// never committed, published or fetched; they exist only on machines that
-/// already hold them, and `data/` is gitignored in full.
-///
-/// So a clone without them still gets a passing `cargo test`, with a loud line
-/// naming what was skipped. On a machine that *does* hold the corpus, a skip
-/// would silently drop the only tests that check the georeferencing is right,
-/// so `PDF_TOOLKIT_REQUIRE_CORPUS=1` turns the skip into a failure there.
-///
-/// Returns false when the caller should return without asserting.
+/// See `common::corpus_available`; these tests need only the corpus PDFs.
 #[must_use]
 fn corpus_available(test: &str) -> bool {
-    if sample("3.pdf").is_file() {
-        return true;
-    }
-    assert!(
-        std::env::var_os("PDF_TOOLKIT_REQUIRE_CORPUS").is_none(),
-        "{test}: PDF_TOOLKIT_REQUIRE_CORPUS is set but the dossier corpus is \
-         missing from {}",
-        corpus_dir().display()
-    );
-    eprintln!(
-        "SKIP {test}: dossier corpus not present in {}. \
-         It is private data and is not distributed; copy the dossiers there to \
-         enable these tests.",
-        corpus_dir().display()
-    );
-    false
+    common::corpus_available(test, &[sample("3.pdf")])
 }
 
 fn vector(args: &[&str]) -> Value {

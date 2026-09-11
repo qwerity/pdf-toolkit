@@ -50,6 +50,10 @@ pub enum Command {
     Structured(StructuredArgs),
     /// Recover CAD vector geometry, classify each page, and export GeoJSON.
     Vector(VectorArgs),
+    /// Assemble the whole-dossier annotation: labels, routing, QR payloads,
+    /// entities, groups and a document graph, with VLM work orders for what
+    /// deterministic extraction cannot read.
+    Dossier(DossierArgs),
 }
 
 /// The source document and the pages wanted from it.
@@ -133,6 +137,42 @@ pub struct StructuredArgs {
 }
 
 #[derive(ClapArgs, Debug)]
+pub struct DossierArgs {
+    /// Source PDF.
+    pub input: PathBuf,
+
+    /// Vision-pass answers to merge (`docs/annotation-schema.md`). Without
+    /// them the annotation carries VLM work orders instead of the answered
+    /// semantic layer.
+    #[arg(long)]
+    pub answers: Option<PathBuf>,
+
+    /// Annotate the flagged pages with a hosted vision model, in-process.
+    ///
+    /// Bare `--vlm` uses the corpus benchmark's winner
+    /// (`gemini-3.8-flash`); pass a spec to pick another model. The spec's
+    /// shape picks the provider: `gemini-*` uses the Gemini API
+    /// (`GEMINI_API_KEY`), a `vendor/model` id like
+    /// `qwen/qwen2.5-vl-72b-instruct` uses OpenRouter
+    /// (`OPENROUTER_API_KEY`). **This sends page images to that provider** —
+    /// the only networked path in the toolkit, and only ever opt-in. Pages
+    /// covered by `--answers` are not re-asked.
+    #[arg(
+        long,
+        value_name = "MODEL",
+        num_args = 0..=1,
+        default_missing_value = pdf_vlm::DEFAULT_MODEL
+    )]
+    pub vlm: Option<String>,
+
+    /// Also write each drawing page's GeoJSON under
+    /// `<dir>/geojson/<document>/`, the layout the annotation's `cad.geojson`
+    /// paths reference. The same annotation JSON is on stdout either way.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+}
+
+#[derive(ClapArgs, Debug)]
 pub struct VectorArgs {
     #[command(flatten)]
     pub source: Source,
@@ -194,6 +234,7 @@ impl Command {
             Self::Text(args) => &args.source.input,
             Self::Structured(args) => &args.source.input,
             Self::Vector(args) => &args.source.input,
+            Self::Dossier(args) => &args.input,
         }
     }
 }
@@ -348,6 +389,7 @@ mod tests {
             vec!["render", "a.pdf"],
             vec!["text", "a.pdf"],
             vec!["structured", "a.pdf"],
+            vec!["dossier", "a.pdf"],
         ];
 
         for args in cases {
@@ -367,7 +409,7 @@ mod tests {
 
     #[test]
     fn an_input_is_required() {
-        for command in ["inspect", "cut", "render", "text", "structured"] {
+        for command in ["inspect", "cut", "render", "text", "structured", "dossier"] {
             rejects(&[command]);
         }
     }
@@ -462,6 +504,52 @@ mod tests {
         rejects(&["inspect", "a.pdf", "--pages", "1"]);
         rejects(&["cut", "a.pdf", "--structured-format", "markdown"]);
         rejects(&["text", "a.pdf", "--structured-format", "markdown"]);
+        rejects(&["dossier", "a.pdf", "--pages", "1"]);
+        rejects(&["dossier", "a.pdf", "--concat"]);
+        rejects(&["vector", "a.pdf", "--answers", "x.json"]);
+        rejects(&["vector", "a.pdf", "--vlm", "gemini-3.8-flash"]);
+    }
+
+    #[test]
+    fn dossier_takes_optional_answers_and_output() {
+        let Command::Dossier(args) = parse(&["dossier", "a.pdf"]).command else {
+            panic!("expected dossier");
+        };
+        assert!(args.answers.is_none() && args.output.is_none());
+
+        let Command::Dossier(args) =
+            parse(&["dossier", "a.pdf", "--answers", "vlm.json", "-o", "out"]).command
+        else {
+            panic!("expected dossier");
+        };
+        assert_eq!(
+            args.answers.as_deref(),
+            Some(std::path::Path::new("vlm.json"))
+        );
+        assert_eq!(args.output.as_deref(), Some(std::path::Path::new("out")));
+
+        let Command::Dossier(args) =
+            parse(&["dossier", "a.pdf", "--vlm", "qwen/qwen2.5-vl-72b-instruct"]).command
+        else {
+            panic!("expected dossier");
+        };
+        assert_eq!(args.vlm.as_deref(), Some("qwen/qwen2.5-vl-72b-instruct"));
+    }
+
+    /// `--vlm` without a value means "the benchmark's winner", so a caller
+    /// opts into the vision pass without having to know model ids.
+    #[test]
+    fn bare_vlm_defaults_to_the_benchmark_winner() {
+        let Command::Dossier(args) = parse(&["dossier", "a.pdf", "--vlm"]).command else {
+            panic!("expected dossier");
+        };
+        assert_eq!(args.vlm.as_deref(), Some(pdf_vlm::DEFAULT_MODEL));
+        assert_eq!(args.vlm.as_deref(), Some("gemini-3.8-flash"));
+
+        let Command::Dossier(args) = parse(&["dossier", "a.pdf"]).command else {
+            panic!("expected dossier");
+        };
+        assert!(args.vlm.is_none(), "no flag means no network at all");
     }
 
     #[test]

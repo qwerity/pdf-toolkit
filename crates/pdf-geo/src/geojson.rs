@@ -286,10 +286,10 @@ pub fn export_local(
             let geometry = if as_polygon {
                 summary.polygons += 1;
                 let mut ring = coordinates;
-                if ring.first() != ring.last() {
-                    if let Some(first) = ring.first().cloned() {
-                        ring.push(first);
-                    }
+                if ring.first() != ring.last()
+                    && let Some(first) = ring.first().cloned()
+                {
+                    ring.push(first);
                 }
                 Geometry::new(GeometryValue::Polygon {
                     coordinates: vec![ring],
@@ -371,10 +371,10 @@ pub fn export_survey_parcel(
     if coordinates.len() < 3 {
         return None;
     }
-    if coordinates.first() != coordinates.last() {
-        if let Some(first) = coordinates.first().cloned() {
-            coordinates.push(first);
-        }
+    if coordinates.first() != coordinates.last()
+        && let Some(first) = coordinates.first().cloned()
+    {
+        coordinates.push(first);
     }
 
     let mut props = JsonObject::new();
@@ -611,10 +611,10 @@ fn ring_to_wgs84(points: &[Point], georeference: &Georeference) -> Vec<Position>
         .iter()
         .filter_map(|p| to_position(*p, georeference))
         .collect();
-    if ring.first() != ring.last() {
-        if let Some(first) = ring.first().cloned() {
-            ring.push(first);
-        }
+    if ring.first() != ring.last()
+        && let Some(first) = ring.first().cloned()
+    {
+        ring.push(first);
     }
     ring
 }

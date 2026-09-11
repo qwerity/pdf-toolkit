@@ -495,10 +495,10 @@ impl<'a> Interpreter<'a> {
         let fonts = resolve_dict(self.doc, resources, b"Font")?;
         let entry = fonts.get(name).ok()?;
         let id = entry.as_reference().ok();
-        if let Some(id) = id {
-            if let Some(cached) = self.font_cache.get(&id) {
-                return Some(cached.clone());
-            }
+        if let Some(id) = id
+            && let Some(cached) = self.font_cache.get(&id)
+        {
+            return Some(cached.clone());
         }
         let dict = match entry {
             Object::Reference(r) => self.doc.get_object(*r).ok()?.as_dict().ok()?,

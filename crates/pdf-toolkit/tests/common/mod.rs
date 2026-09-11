@@ -85,6 +85,44 @@ fn bind_pdfium() -> Pdfium {
     })
 }
 
+/// The private test corpus root (`data/`): real building-permit
+/// submissions, gitignored in full, present only on machines that already
+/// hold them.
+pub fn data_dir() -> std::path::PathBuf {
+    workspace_root().join("data")
+}
+
+/// Whether the private corpus files a test needs are present, and what to do
+/// when they are not.
+///
+/// A clone without them still gets a passing `cargo test`, with a loud SKIP
+/// line naming what was skipped. On a machine that *does* hold the corpus,
+/// a silent skip would drop the only tests that check real-corpus behaviour,
+/// so `PDF_TOOLKIT_REQUIRE_CORPUS=1` turns the skip into a failure there.
+///
+/// Returns false when the caller should return without asserting.
+#[must_use]
+pub fn corpus_available(test: &str, required: &[std::path::PathBuf]) -> bool {
+    let missing: Vec<String> = required
+        .iter()
+        .filter(|path| !path.is_file())
+        .map(|path| path.display().to_string())
+        .collect();
+    if missing.is_empty() {
+        return true;
+    }
+    assert!(
+        std::env::var_os("PDF_TOOLKIT_REQUIRE_CORPUS").is_none(),
+        "{test}: PDF_TOOLKIT_REQUIRE_CORPUS is set but the corpus is missing: {}",
+        missing.join(", ")
+    );
+    eprintln!(
+        "SKIP {test}: private corpus not present ({}). It is not distributed;          copy the data there to enable this test.",
+        missing.join(", ")
+    );
+    false
+}
+
 /// The workspace root, two levels above this crate (`crates/pdf-toolkit`).
 ///
 /// Shared with the CLI harness, which spawns the binary with this as its

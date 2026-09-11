@@ -18,5 +18,7 @@
 pub mod document;
 pub mod page_info;
 
-pub use document::{DocumentInfo, document_page_count, inspect_document, page_info_for_page};
+pub use document::{
+    DocumentInfo, document_page_count, inspect_document, page_info_and_text, page_info_for_page,
+};
 pub use page_info::{LlmReason, PageInfo};

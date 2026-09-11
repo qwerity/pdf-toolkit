@@ -9,11 +9,11 @@ resolver = "3"
 [workspace.package]
 version = "0.8.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.98"
 
 [workspace.dependencies]
 anyhow = "1.0"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 pdfium-render = "0.9"
 serde = { version = "1.0", features = ["derive"] }
@@ -22,14 +22,21 @@ tempfile = "3"
 thiserror = "2.0"
 
 geojson = "1.0.0"
-lopdf = { version = "0.44.0", default-features = false, features = ["chrono"] }
+base64 = "0.23"
+dotenvy = "0.15"
+indexmap = { version = "2", features = ["serde"] }
+lopdf = { version = "0.45.0", default-features = false, features = ["chrono"] }
 regex = "1.13"
+rxing = { version = "0.9", default-features = false, features = ["encoding_rs", "decoders", "multi_barcode_readers", "qrcode"] }
+ureq = { version = "3.4", features = ["json"] }
 
 pdf-classify = { path = "crates/pdf-classify" }
 pdf-core = { path = "crates/pdf-core" }
+pdf-dossier = { path = "crates/pdf-dossier" }
 pdf-geo = { path = "crates/pdf-geo" }
 pdf-geometry = { path = "crates/pdf-geometry" }
 pdf-vector = { path = "crates/pdf-vector" }
+pdf-vlm = { path = "crates/pdf-vlm" }
 pdf-inspect = { path = "crates/pdf-inspect" }
 pdf-pages = { path = "crates/pdf-pages" }
 pdf-render = { path = "crates/pdf-render" }
@@ -38,3 +45,11 @@ pdf-text = { path = "crates/pdf-text" }
 [profile.release]
 opt-level = 3
 lto = "thin"
+
+# The dossier corpus tests decode QR codes over full-page renders; unoptimized
+# rxing and image turn a seconds-long pass into minutes.
+[profile.dev.package.rxing]
+opt-level = 3
+
+[profile.dev.package.image]
+opt-level = 3

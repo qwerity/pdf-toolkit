@@ -291,3 +291,23 @@ pub(crate) fn centre(bounds: &BBox) -> [f64; 2] {
     let c = bounds.center();
     [round(c.x, 7), round(c.y, 7)]
 }
+
+/// File name one page's GeoJSON is written under, shared by `vector
+/// --output` and `dossier --output` so the same page gets the same name
+/// whichever command exported it.
+pub fn page_geojson_file_name(document: &str, page_number: usize) -> String {
+    format!("{document}_p{page_number:02}.geojson")
+}
+
+/// Writes a page's `FeatureCollection` as pretty-printed GeoJSON, streaming
+/// rather than buffering — a dense CAD sheet's collection runs to tens of
+/// megabytes.
+pub fn write_page_geojson(
+    path: &std::path::Path,
+    geojson: &geojson::FeatureCollection,
+) -> Result<()> {
+    let file = std::fs::File::create(path)
+        .with_context(|| format!("cannot write '{}'", path.display()))?;
+    serde_json::to_writer_pretty(std::io::BufWriter::new(file), geojson)
+        .with_context(|| format!("failed to serialize GeoJSON for '{}'", path.display()))
+}

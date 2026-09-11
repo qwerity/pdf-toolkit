@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use pdf_toolkit::cli::{
-    Cli, Command, CutArgs, InspectArgs, RenderArgs, Source, StructuredArgs, TextArgs, VectorArgs,
+    Cli, Command, CutArgs, DossierArgs, InspectArgs, RenderArgs, Source, StructuredArgs, TextArgs,
+    VectorArgs,
 };
 use pdf_toolkit::error::{PdfError, Result as LibraryResult};
 use pdf_toolkit::{
@@ -16,8 +17,8 @@ use pdf_toolkit::{
 };
 
 use crate::cli_output::{
-    print_document_info, print_page_output, print_structured_output, print_text_output,
-    print_vector_output,
+    print_document_info, print_dossier_output, print_page_output, print_structured_output,
+    print_text_output, print_vector_output,
 };
 
 fn main() -> ExitCode {
@@ -40,6 +41,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Text(args) => text(&args),
         Command::Structured(args) => structured(&args),
         Command::Vector(args) => vector(&args),
+        Command::Dossier(args) => dossier(&args),
     }
 }
 
@@ -165,20 +167,56 @@ fn vector(args: &VectorArgs) -> Result<()> {
     print_vector_output(&report)
 }
 
+/// Assembles the whole-dossier annotation, merging vision-pass answers when
+/// they are supplied.
+fn dossier(args: &DossierArgs) -> Result<()> {
+    let answers = args
+        .answers
+        .as_deref()
+        .map(pdf_dossier::Answers::load)
+        .transpose()?;
+    let mut options = pdf_dossier::DossierOptions {
+        answers,
+        output_dir: args.output.clone(),
+    };
+
+    let pdfium = pdfium()?;
+    // The document is read once; a vision-pass merge re-assembles over the
+    // same analysis rather than re-extracting and re-rendering every page.
+    let analysis = pdf_dossier::analyze(&pdfium, &args.input)?;
+    let mut report = pdf_dossier::assemble(&analysis, &options)?;
+
+    // The live vision pass answers what the deterministic run flagged and the
+    // answers file left open, then the report is re-assembled on the combined
+    // answers — the same merge path a reviewed file takes.
+    if let Some(model) = args.vlm.as_deref() {
+        let client = pdf_vlm::VlmClient::from_env(model)?;
+        let flagged = pdf_dossier::pages_awaiting_vision(&report, options.answers.as_ref());
+
+        if !flagged.is_empty() {
+            let mut live = client.annotate_pages(&pdfium, &args.input, &flagged)?;
+            pdf_dossier::seed_vision_reasons(&report, &mut live);
+            let mut combined = options.answers.take().unwrap_or_default();
+            combined.absorb(live);
+            options.answers = Some(combined);
+            report = pdf_dossier::assemble(&analysis, &options)?;
+        }
+    }
+
+    print_dossier_output(&report)
+}
+
 /// Writes one `<document>_p<NN>.geojson` per page, beside the JSON on stdout.
 fn write_geojson(dir: &Path, report: &pdf_vector::DocumentVector) -> Result<()> {
     std::fs::create_dir_all(dir)
         .with_context(|| format!("cannot create output directory '{}'", dir.display()))?;
 
     for page in &report.pages {
-        let path = dir.join(format!(
-            "{}_p{:02}.geojson",
-            report.document, page.page_number
+        let path = dir.join(pdf_vector::page_geojson_file_name(
+            &report.document,
+            page.page_number,
         ));
-        let body =
-            serde_json::to_string_pretty(&page.geojson).context("failed to serialize GeoJSON")?;
-        std::fs::write(&path, body)
-            .with_context(|| format!("cannot write '{}'", path.display()))?;
+        pdf_vector::write_page_geojson(&path, &page.geojson)?;
     }
     Ok(())
 }

@@ -1029,6 +1029,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
+name = "llm-providers"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "dotenvy",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1352,6 +1363,7 @@ dependencies = [
  "anyhow",
  "clap",
  "image",
+ "llm-providers",
  "pdf-core",
  "pdf-dossier",
  "pdf-geo",
@@ -1384,16 +1396,16 @@ name = "pdf-vlm"
 version = "0.9.0"
 dependencies = [
  "anyhow",
- "base64",
- "dotenvy",
  "indexmap",
+ "llm-providers",
+ "pdf-classify",
  "pdf-core",
  "pdf-dossier",
  "pdf-render",
+ "pdf-vector",
  "pdfium-render",
  "serde",
  "serde_json",
- "ureq",
 ]
 
 [[package]]

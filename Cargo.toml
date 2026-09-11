@@ -7,7 +7,7 @@ resolver = "3"
 # resolving different pdfium-render releases would load two sets of bindings
 # against one native library.
 [workspace.package]
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.98"
 
@@ -37,6 +37,7 @@ pdf-geo = { path = "crates/pdf-geo" }
 pdf-geometry = { path = "crates/pdf-geometry" }
 pdf-vector = { path = "crates/pdf-vector" }
 pdf-vlm = { path = "crates/pdf-vlm" }
+llm-providers = { path = "crates/llm-providers" }
 pdf-inspect = { path = "crates/pdf-inspect" }
 pdf-pages = { path = "crates/pdf-pages" }
 pdf-render = { path = "crates/pdf-render" }

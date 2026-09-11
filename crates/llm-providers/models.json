@@ -1,0 +1,17 @@
+{
+  "currency": "USD",
+  "per_tokens": 1000000,
+  "updated": "2026-09-11",
+  "note": "Providers' listed rates on the update date; cached_input is the cache-read rate. gemini-3.8-flash is the introductory rate through 2026-12-31 — Google lists 1.50/7.50 from 2027-01-01. gemini-pro-latest resolves to Gemini 3.1 Pro (rates for prompts up to 200K tokens). OpenRouter rates come from its public /api/v1/models listing.",
+  "models": {
+    "gpt-6-astra": { "input": 10.0, "output": 50.0, "cached_input": 1.0 },
+    "gpt-4o": { "input": 2.5, "output": 10.0, "cached_input": 1.25 },
+    "gemini-3.8-flash": { "input": 0.75, "output": 3.75, "cached_input": 0.075 },
+    "gemini-pro-latest": { "input": 2.0, "output": 12.0, "cached_input": 0.2 },
+    "openai/gpt-4o": { "input": 2.5, "output": 10.0, "cached_input": 1.25 },
+    "anthropic/claude-sonnet-4.6": { "input": 3.0, "output": 15.0, "cached_input": 0.3 },
+    "qwen/qwen3-vl-8b-instruct": { "input": 0.117, "output": 0.455, "cached_input": 0.0 },
+    "qwen/qwen3-vl-235b-a22b-instruct": { "input": 0.21, "output": 1.9, "cached_input": 0.1 },
+    "qwen/qwen2.5-vl-72b-instruct": { "input": 0.8, "output": 1.0, "cached_input": 0.4 }
+  }
+}

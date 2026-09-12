@@ -36,13 +36,17 @@ fn found(entity_type: &str, value: &str) -> Found {
 pub fn entity_id(entity_type: &str, value: &str) -> String {
     match entity_type {
         "person" | "org" => {
-            let slug = value
+            // Armenian documents alternate name order — a certificate
+            // prints given-surname, a passport surname-given — so the two
+            // words are sorted: the same person always lands on one node
+            // whichever document named them.
+            let mut words: Vec<String> = value
                 .split_whitespace()
                 .take(2)
                 .map(transliterate)
-                .collect::<Vec<_>>()
-                .join("-");
-            format!("{entity_type}:{slug}")
+                .collect();
+            words.sort();
+            format!("{entity_type}:{}", words.join("-"))
         }
         _ => format!("{entity_type}:{value}"),
     }
@@ -169,18 +173,12 @@ pub fn certificate_owners(text: &str) -> Vec<Found> {
             if words.len() < 2 || !name.chars().any(|c| ('Ա'..='Ֆ').contains(&c)) {
                 return None;
             }
-            let slug = person_slug(words[0], words[1]);
             Some(Found {
-                id: format!("person:{slug}"),
+                id: entity_id("person", name),
                 value: name.to_string(),
             })
         })
         .collect()
-}
-
-/// `first-last` in Latin letters, for a stable person entity id.
-fn person_slug(first: &str, last: &str) -> String {
-    format!("{}-{}", transliterate(first), transliterate(last))
 }
 
 /// Armenian-to-Latin romanization, lowercased. Only used for ids; the
@@ -325,7 +323,7 @@ mod tests {
     fn entity_ids_slug_people_and_keep_identifiers_verbatim() {
         assert_eq!(
             entity_id("person", "Մկրտչյան Արամ Սամվելի"),
-            "person:mkrtchyan-aram"
+            "person:aram-mkrtchyan"
         );
         assert_eq!(
             entity_id("cadastral_code", "10-001-0123-0789"),

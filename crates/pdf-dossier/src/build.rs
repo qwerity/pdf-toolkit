@@ -286,17 +286,23 @@ fn resolve_route(
         }
         return Route::EmbeddedText;
     }
-    if !vlm_reasons.is_empty() || answer.is_some_and(|a| a.handwriting.is_some()) {
-        return Route::Vlm;
-    }
+    // An answer whose labels say pure imagery settles the route before any
+    // flag reasons do: a live pass seeds the phase-1 reasons into its
+    // answers, and the same answer replayed from a file must not produce a
+    // different route. Handwriting still wins — a photo with handwritten
+    // notes has something to read.
     let pure_imagery = answer.is_some_and(|a| {
         !a.labels.is_empty()
             && a.labels
                 .iter()
                 .all(|l| PURE_IMAGE_LABELS.contains(&l.as_str()))
     });
-    if pure_imagery {
+    if pure_imagery && !answer.is_some_and(|a| a.handwriting.is_some()) {
+        vlm_reasons.clear();
         return Route::None;
+    }
+    if !vlm_reasons.is_empty() || answer.is_some_and(|a| a.handwriting.is_some()) {
+        return Route::Vlm;
     }
     if input.scan_signal() || answer.is_some_and(|a| a.kind.as_deref() == Some("scan")) {
         vlm_reasons.push("scanned_or_unreadable_text".to_string());
@@ -438,9 +444,11 @@ fn deterministic_content_kind(embedded: bool, image_coverage: f32) -> String {
 ///
 /// Grouping is where single pages become a dossier: an application, one group
 /// per certificate (its continuation pages chained with `continues`), the
-/// cadastre references, and the drawings. Answered pages keep the groups
-/// their answers name, and a merged run's relations come from the answers,
-/// so chaining applies to deterministic-only runs.
+/// cadastre references, and the drawings. An answer that names groups is
+/// authoritative; one that names none — every live vision answer, since
+/// the pass never asks for groups — gets the same derivation an unanswered
+/// page gets. Chaining likewise applies wherever the source page's answer
+/// did not supply relations itself.
 fn derive_groups(
     facts: &mut [PageFacts],
     inputs: &[PageInputs],
@@ -448,14 +456,15 @@ fn derive_groups(
     certificate_numbers: &[Option<String>],
 ) {
     for (index, fact) in facts.iter_mut().enumerate() {
-        if answers.is_some_and(|a| a.page(inputs[index].number).is_some()) {
+        let answered_groups = answers
+            .and_then(|a| a.page(inputs[index].number))
+            .is_some_and(|a| !a.groups.is_empty());
+        if answered_groups {
             continue;
         }
         fact.groups = deterministic_groups_for(fact, certificate_numbers[index].as_deref());
     }
-    if answers.is_none() {
-        chain_certificate_pages(facts, inputs, certificate_numbers);
-    }
+    chain_certificate_pages(facts, inputs, certificate_numbers, answers);
 }
 
 fn deterministic_groups_for(fact: &PageFacts, certificate: Option<&str>) -> Vec<String> {
@@ -492,8 +501,14 @@ fn chain_certificate_pages(
     facts: &mut [PageFacts],
     inputs: &[PageInputs],
     certificate_numbers: &[Option<String>],
+    answers: Option<&Answers>,
 ) {
     for index in 0..facts.len().saturating_sub(1) {
+        // A page whose answer exists supplies its own relations; the chain
+        // fills in only for pages no reviewer or vision pass touched.
+        if answers.and_then(|a| a.page(inputs[index].number)).is_some() {
+            continue;
+        }
         let Some(current) = &certificate_numbers[index] else {
             continue;
         };
@@ -674,11 +689,10 @@ fn emit_report(
             stats.handwriting_pages += 1;
         }
 
-        let via = if fact.route == Route::Vlm || !fact.vlm_reasons.is_empty() {
-            Via::Vlm
-        } else {
-            Via::from(fact.route)
-        };
+        // How the values on this page were actually obtained: the route.
+        // A legacy-encoded page is VLM-flagged for a future pass, but its
+        // regex-read identifiers came from the embedded layer all the same.
+        let via = Via::from(fact.route);
         for (id, value) in &fact.entities {
             let entry = entity_registry.entry(id.clone()).or_default();
             entry.value.get_or_insert_with(|| value.clone());

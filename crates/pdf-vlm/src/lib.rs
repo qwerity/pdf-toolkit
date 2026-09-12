@@ -284,10 +284,10 @@ mod tests {
         assert_eq!(answer.kind.as_deref(), Some("scan"));
         assert_eq!(
             answer.entities,
-            ["passport_number:AB1234567", "person:mkrtchyan-aram"]
+            ["passport_number:AB1234567", "person:aram-mkrtchyan"]
         );
         assert!(answer.handwriting.is_none(), "absent when not present");
-        assert_eq!(people["person:mkrtchyan-aram"].value, "Մկրտչյան Արամ");
+        assert_eq!(people["person:aram-mkrtchyan"].value, "Մկրտչյան Արամ");
     }
 
     #[test]

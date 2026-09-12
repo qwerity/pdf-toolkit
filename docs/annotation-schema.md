@@ -126,7 +126,11 @@ Treat the list as closed but branch defensively; `mentions` edges carry the
 same values.
 
 Id convention: `<type>:<normalized-value>`, e.g.
-`cadastral_code:07-013-0166-0029`.
+`cadastral_code:07-013-0166-0029`. A person/org id is the value's first two
+words transliterated to Latin and then **sorted** — Armenian documents
+alternate name order (a certificate prints given-surname, a passport
+surname-given), and sorting makes the same person land on one node
+whichever document named them.
 
 ## `graph.edges[]`
 

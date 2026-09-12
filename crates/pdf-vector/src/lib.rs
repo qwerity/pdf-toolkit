@@ -321,6 +321,11 @@ pub fn write_page_geojson(
 ) -> Result<()> {
     let file = std::fs::File::create(path)
         .with_context(|| format!("cannot write '{}'", path.display()))?;
-    serde_json::to_writer_pretty(std::io::BufWriter::new(file), geojson)
-        .with_context(|| format!("failed to serialize GeoJSON for '{}'", path.display()))
+    let mut writer = std::io::BufWriter::new(file);
+    serde_json::to_writer_pretty(&mut writer, geojson)
+        .with_context(|| format!("failed to serialize GeoJSON for '{}'", path.display()))?;
+    // An owned BufWriter flushes in Drop, where an ENOSPC on the final
+    // chunk would vanish and a truncated file would be reported written.
+    std::io::Write::flush(&mut writer)
+        .with_context(|| format!("failed to flush '{}'", path.display()))
 }

@@ -196,7 +196,10 @@ fn dossier(args: &DossierArgs) -> Result<()> {
         let flagged = pdf_dossier::pages_awaiting_vision(&report, options.answers.as_ref());
 
         if !flagged.is_empty() {
-            let mut live = client.annotate_pages(&pdfium, &args.input, &flagged)?;
+            let (mut live, vlm_warnings) = client.annotate_pages(&pdfium, &args.input, &flagged)?;
+            for warning in &vlm_warnings {
+                eprintln!("Warning: {warning}");
+            }
             pdf_dossier::seed_vision_reasons(&report, &mut live);
             let mut combined = options.answers.take().unwrap_or_default();
             combined.absorb(live);

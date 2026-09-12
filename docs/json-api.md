@@ -547,7 +547,11 @@ flagged page and asks a hosted vision model, then merges exactly as an
 answers file would. Bare `--vlm` uses the corpus benchmark's winner,
 `gemini-3.8-flash` (`annotation-findings.md`); a `.env` in the working
 directory is honoured. `--answers` and `--vlm` combine:
-pages the file answers are not re-asked. **The hosted-model surfaces —
+pages the file answers are not re-asked. A page whose vision call fails —
+an unparseable reply, an exhausted retry — degrades to its deterministic
+facts with a `Warning:` line and keeps its standing `vlm` work order;
+already-answered pages are kept, and the run still prints its JSON.
+**The hosted-model surfaces —
 `--vlm` here, and the `cadfix` and `building` commands — are the toolkit's
 only networked paths.** Each sends page images (in this domain: identity
 documents) to the configured provider, so each is opt-in per invocation and
@@ -618,6 +622,7 @@ changes its rates. Model quality on the annotation task is compared in
 | `stats` | Per-dossier counts: route totals, `vlm_flagged`, `qr_pages`, `handwriting_pages`, `placed_pages` |
 | `pages` | Array, one entry per page — field tables in `annotation-schema.md` |
 | `groups` / `entities` / `graph` | Document sections, the identifier registry, and the derived edges |
+| `warnings` | Pages whose geometry extraction failed, verbatim from the vector pass; also printed as `Warning:` stderr lines. Absent when none — a page listed here has no classification/`cad`, and this is what says why. |
 
 Branch on these enums, not on prose:
 
@@ -721,8 +726,9 @@ pdf-toolkit building input.pdf [--answers a.json] [--model gpt-6-astra] [-o dir]
 
 `--answers` labels (`elevation_or_section`, `floor_plan`, `general_plan`,
 `photo_montage`, `3d_view`, …) sharpen which sheets are shown; without them
-the `vector` classification chooses, and the document's last pages stand in
-for the render sheets. Copied from a real run (`jq 'del(.geojson)'` — the
+the `vector` classification chooses and the render sheets are simply left
+out with a `warnings` entry — pages are never uploaded on a guess, because
+dossiers routinely end in identity-document scans. Copied from a real run (`jq 'del(.geojson)'` — the
 `geojson` field carries the full extruded FeatureCollection inline):
 
 ```json

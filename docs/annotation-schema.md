@@ -22,6 +22,8 @@ requires `dossier --answers` to reproduce those annotations exactly.
 | `pages` | Array, one entry per page, in page order |
 | `groups` | Document sections: pages that belong together |
 | `entities` | Deduplicated real-world identifiers found anywhere in the dossier |
+| `warnings` | Pages whose geometry extraction failed outright, verbatim from the vector pass — such a page has no classification/`cad`/georeference, and this records why. Absent when none. |
+| `georeference_note` / `note` | Document-level free-text notes carried over from the answers file (`georef_note` / `note`); absent unless the reviewer wrote them |
 | `graph` | Edges connecting pages ↔ groups ↔ entities. **Derived** mechanically from the inline facts in `pages`/`groups`/`entities`; it repeats no independent information |
 
 ## `pages[]`
@@ -38,13 +40,14 @@ requires `dossier --answers` to reproduce those annotations exactly.
 | `declared_scale_denominator` | Scale printed on the sheet, when one is |
 | `extraction` | How text was/should be recovered — see below |
 | `qr_codes` | Present only when the page carries QR codes. `data` null when detected/visible but undecodable |
-| `handwriting` | Present only when handwriting is on the page: `extent` = `signatures` \| `fields` (form blanks filled by hand) \| `notes` \| `full_page`, plus `script` |
+| `handwriting` | Present only when handwriting is on the page: `present` (always `true` — the block's presence is the fact), `extent` = `signatures` \| `fields` (form blanks filled by hand) \| `notes` \| `full_page`, plus `script` |
 | `entities` | Ids into top-level `entities` that this page mentions/depicts |
 | `groups` | Ids into top-level `groups` |
 | `related_pages` | Non-group relations: `{"page": N, "relation": "continues" \| "duplicate_of"}` |
 | `georeference` | Verbatim from `vector` **when placed**; absent otherwise |
 | `cad` | Present on drawing pages: `{"geojson": "<relative path>", "crs", "features"}` — the geometry extraction lives in the GeoJSON file, georeferenced when the page placed |
 | `anomaly` | Free-form flag for things a reviewer must see (e.g. a title block naming a different project) |
+| `notes` | Reviewer's free-text page note, carried over from the answers file; absent unless written |
 
 ### `pages[].extraction`
 
@@ -56,7 +59,7 @@ requires `dossier --answers` to reproduce those annotations exactly.
 | `chars` | Length of `text` |
 | `engine` | `pdfium` (route `embedded_text` only) |
 | `encoding_issue` | `true` when a text layer exists but is wrong: legacy 8-bit font encodings (ArmSCII mojibake), glyph-outline CID fonts, custom phonetic-glyph fonts. Such pages are additionally VLM-flagged |
-| `vlm` | `{"required": true, "reasons": [...], "extracted": {...}}` — `required` is invariantly `true` (the block's presence is the fact); `extracted` holds what the visual pass itself recovered; it is what the production VLM stage is expected to return |
+| `vlm` | `{"required": true, "reasons": [...], "extracted": {...}}` — `required` is invariantly `true` (the block's presence is the fact); `extracted` holds what the visual pass itself recovered (`summary` and/or `notes`, free text) and appears only when an answer carried one; it is what the production VLM stage is expected to return |
 
 Routing policy: embedded text when the layer is present and not garbled
 (~0 ms); **everything else that carries information is routed to the VLM** —
@@ -115,8 +118,12 @@ Placing it needs its own references, per the toolkit's geometry-decides rule.
 number), `address`, `application_number`, `certificate_number`,
 `reference_number`, `permit_number`, `decision_number`, `conclusion_number`,
 `license_number`, `date`, `phone`, `email`, `url`. `sources` =
-`[{"page": N, "via": "embedded_text" | "qr" | "vlm"}]` — `via: "vlm"` marks
-values only a vision pass could read.
+`[{"page": N, "via": "embedded_text" | "qr" | "vlm" | "none"}]` — `via:
+"vlm"` marks values a vision pass (or the reviewer looking at the page) had
+to read; `via: "none"` appears when an answer names an entity on a page
+whose route is `none` (pure imagery — the reviewer saw it, no machine did).
+Treat the list as closed but branch defensively; `mentions` edges carry the
+same values.
 
 Id convention: `<type>:<normalized-value>`, e.g.
 `cadastral_code:07-013-0166-0029`.

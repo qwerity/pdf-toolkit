@@ -89,7 +89,8 @@ pub fn fix_page(
         .ask(&request)
         .with_context(|| format!("CAD refinement request to '{}' failed", client.model()))?;
 
-    let outcome = apply_calls(&mut collection, &reply.tool_calls);
+    let mut outcome = apply_calls(&mut collection, &reply.tool_calls);
+    outcome.warnings.extend(vector.warnings.iter().cloned());
     let placed = page.georeference.as_ref().is_some_and(|g| g.placed);
     let geojson_file = output_dir
         .map(|dir| write_fixed(dir, &vector.document, page_number, &collection))
@@ -177,13 +178,18 @@ fn inventory(collection: &Value) -> String {
     for (id, feature) in features.iter().take(INVENTORY_LIMIT).enumerate() {
         let geometry = &feature["geometry"];
         let kind = geometry["type"].as_str().unwrap_or("?");
-        let points = geometry["coordinates"]
-            .as_array()
-            .map_or(0, |ring| ring.len());
-        let closed = geometry["coordinates"]
-            .as_array()
-            .and_then(|ring| Some((ring.first()?, ring.last()?)))
-            .is_some_and(|(first, last)| first == last && points > 3);
+        // A Polygon's coordinates are its RINGS; counting them as points
+        // would describe every closed boundary as "1 points, closed=false"
+        // — the exact profile the prompt says to drop as noise.
+        let ring = match kind {
+            "Polygon" => geometry["coordinates"][0].as_array(),
+            _ => geometry["coordinates"].as_array(),
+        };
+        let points = ring.map_or(0, Vec::len);
+        let closed = kind == "Polygon"
+            || ring
+                .and_then(|ring| Some((ring.first()?, ring.last()?)))
+                .is_some_and(|(first, last)| first == last && points > 3);
         let length = feature["properties"]["length_m"]
             .as_f64()
             .map(|m| format!(", length {m} m"))
@@ -217,7 +223,10 @@ fn apply_calls(collection: &mut Value, calls: &[ToolCall]) -> FixOutcome {
     let mut to_close: BTreeSet<usize> = BTreeSet::new();
     let mut to_drop: BTreeSet<usize> = BTreeSet::new();
     let mut warnings = Vec::new();
-    let count = features_of_ref(collection).len();
+    // Only what the inventory actually described is actionable: features
+    // past the cap were promised to be left alone, so an id in that range
+    // is a hallucination, not an instruction.
+    let count = features_of_ref(collection).len().min(INVENTORY_LIMIT);
 
     for call in calls {
         let ids: Vec<usize> = call.arguments["ids"]
@@ -403,6 +412,47 @@ mod tests {
         );
         assert!(text.contains("id 1:"));
         assert!(!text.contains("further features"));
+    }
+
+    #[test]
+    fn a_polygon_is_inventoried_by_its_outer_ring_and_reads_closed() {
+        let c = json!({"type": "FeatureCollection", "features": [
+            {"type": "Feature",
+             "geometry": {"type": "Polygon",
+                          "coordinates": [[[0.0, 0.0], [4.0, 0.0], [4.0, 3.0], [0.0, 0.0]]]},
+             "properties": {"stroke": "#000000"}},
+        ]});
+        let text = inventory(&c);
+        assert!(
+            text.contains("id 0: Polygon, 4 points, closed=true"),
+            "a parcel boundary must not read as '1 points, closed=false': {text}"
+        );
+    }
+
+    #[test]
+    fn ids_past_the_inventory_cap_are_hallucinations_not_instructions() {
+        let features: Vec<Value> = (0..INVENTORY_LIMIT + 50)
+            .map(|_| {
+                json!({"type": "Feature",
+                       "geometry": {"type": "LineString",
+                                    "coordinates": [[0.0, 0.0], [1.0, 1.0]]},
+                       "properties": {}})
+            })
+            .collect();
+        let mut c = json!({"type": "FeatureCollection", "features": features});
+        let outcome = apply_calls(
+            &mut c,
+            &[call(
+                "drop_features",
+                json!({"ids": [INVENTORY_LIMIT + 10]}),
+            )],
+        );
+        assert_eq!(outcome.dropped, 0, "uninventoried geometry stays untouched");
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            c["features"].as_array().unwrap().len(),
+            INVENTORY_LIMIT + 50
+        );
     }
 
     #[test]

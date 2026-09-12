@@ -115,6 +115,12 @@ pub struct DossierReport {
     pub georeference_note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Pages whose geometry extraction failed outright, verbatim from the
+    /// vector pass. A page listed here has no classification, no `cad`, no
+    /// georeference — and this is the record that says why, so a check
+    /// that could not run does not look like a check that passed.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub warnings: Vec<String>,
 }
 
 /// Per-dossier counts, so a caller can see the shape of the work at a glance.
@@ -290,7 +296,7 @@ pub struct GroupGeoreference {
 /// A real-world identifier seen somewhere in the dossier.
 #[derive(Debug, Serialize)]
 pub struct Entity {
-    /// `<type>:<value>`, e.g. `cadastral_code:01-011-0388-0007`.
+    /// `<type>:<value>`, e.g. `cadastral_code:10-001-0123-0789`.
     pub id: String,
     #[serde(rename = "type")]
     pub entity_type: String,
@@ -436,6 +442,7 @@ mod tests {
             graph: Graph { edges: Vec::new() },
             georeference_note: None,
             note: None,
+            warnings: Vec::new(),
         }
     }
 

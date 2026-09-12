@@ -87,15 +87,21 @@ impl VlmClient {
     /// Renders and annotates the given pages of a document, assembling the
     /// result as an [`Answers`] set ready for the dossier merge. Progress
     /// goes to stderr; stdout stays reserved for the JSON contract.
+    ///
+    /// A page that fails does not fail the run: an unrenderable page, an
+    /// exhausted retry or an unparseable reply is returned as a warning,
+    /// the page keeps its deterministic facts and its standing `vlm` work
+    /// order, and every already-paid answer is kept.
     pub fn annotate_pages(
         &self,
         pdfium: &Pdfium,
         pdf_path: &Path,
         page_numbers: &[usize],
-    ) -> Result<Answers> {
+    ) -> Result<(Answers, Vec<String>)> {
         let document = open_document(pdfium, pdf_path).map_err(anyhow::Error::from)?;
         let pages = document.pages();
         let mut answers = Answers::default();
+        let mut warnings = Vec::new();
 
         for (done, &number) in page_numbers.iter().enumerate() {
             eprintln!(
@@ -104,17 +110,21 @@ impl VlmClient {
                 page_numbers.len(),
                 self.model()
             );
-            let png = render_page_png(pages, number, RENDER_WIDTH_PX)?;
-
-            let (answer, people) = self
-                .annotate_page(&png)
-                .with_context(|| format!("page {number}"))?;
-            answers.pages.insert(number, answer);
-            for (id, meta) in people {
-                answers.people.entry(id).or_insert(meta);
+            let annotated = render_page_png(pages, number, RENDER_WIDTH_PX)
+                .and_then(|png| self.annotate_page(&png));
+            match annotated {
+                Ok((answer, people)) => {
+                    answers.pages.insert(number, answer);
+                    for (id, meta) in people {
+                        answers.people.entry(id).or_insert(meta);
+                    }
+                }
+                Err(error) => warnings.push(format!(
+                    "vision pass failed on page {number}; its work order stands: {error:#}"
+                )),
             }
         }
-        Ok(answers)
+        Ok((answers, warnings))
     }
 }
 
@@ -265,8 +275,8 @@ mod tests {
             \"title\": \"Անձնագիր\",
             \"handwriting\": {\"present\": false},
             \"entities\": [
-                {\"type\": \"passport_number\", \"value\": \"AC7654321\"},
-                {\"type\": \"person\", \"value\": \"Բադալյան Սուրեն\"}
+                {\"type\": \"passport_number\", \"value\": \"AB1234567\"},
+                {\"type\": \"person\", \"value\": \"Մկրտչյան Արամ\"}
             ]
         }\n```";
         let (answer, people) = parse_reply(reply).expect("parses");
@@ -274,10 +284,10 @@ mod tests {
         assert_eq!(answer.kind.as_deref(), Some("scan"));
         assert_eq!(
             answer.entities,
-            ["passport_number:AC7654321", "person:badalyan-suren"]
+            ["passport_number:AB1234567", "person:mkrtchyan-aram"]
         );
         assert!(answer.handwriting.is_none(), "absent when not present");
-        assert_eq!(people["person:badalyan-suren"].value, "Բադալյան Սուրեն");
+        assert_eq!(people["person:mkrtchyan-aram"].value, "Մկրտչյան Արամ");
     }
 
     #[test]
@@ -286,8 +296,8 @@ mod tests {
             "labels": ["consent_statement", "handwritten"],
             "handwriting": {"present": true},
             "entities": [
-                {"type": "cadastral_code", "value": "01-011-0519-0062"},
-                {"type": "cadastral_code", "value": "01-011-0519-0062"}
+                {"type": "cadastral_code", "value": "10-001-0456-0123"},
+                {"type": "cadastral_code", "value": "10-001-0456-0123"}
             ]
         }"#;
         let (answer, _) = parse_reply(reply).expect("parses");
@@ -295,7 +305,7 @@ mod tests {
             answer.handwriting.as_ref().expect("present").extent,
             "fields"
         );
-        assert_eq!(answer.entities, ["cadastral_code:01-011-0519-0062"]);
+        assert_eq!(answer.entities, ["cadastral_code:10-001-0456-0123"]);
     }
 
     #[test]

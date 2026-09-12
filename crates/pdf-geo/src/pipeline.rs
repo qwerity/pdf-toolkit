@@ -233,10 +233,18 @@ pub fn propagate_document_tables(
         let mut table = result.table.clone();
         table.bbox = None;
         table.printed_distances = vec![None; table.rows.len()];
-        if !donors
-            .iter()
-            .any(|d| d.crs == table.crs && d.rows.len() == table.rows.len())
-        {
+        // Dedup by the coordinates themselves: two parcels of one dossier
+        // can share a corner count, and dropping the second would leave its
+        // sibling sheets matched only against the wrong polygon.
+        let duplicate = donors.iter().any(|d| {
+            d.crs == table.crs
+                && d.rows.len() == table.rows.len()
+                && d.rows.iter().zip(&table.rows).all(|(a, b)| {
+                    (a.projected.easting - b.projected.easting).abs() < 0.01
+                        && (a.projected.northing - b.projected.northing).abs() < 0.01
+                })
+        });
+        if !duplicate {
             donors.push(table);
         }
     }
@@ -272,8 +280,34 @@ pub fn propagate_document_tables(
 /// is accepted only at the residual a correct plot actually shows.
 fn borrowed_fit_is_credible(result: &GeoreferenceResult) -> bool {
     let inliers = result.fit.inliers.len();
-    let parcel_corners = crate::control::world_polygon(&result.table).len();
-    inliers >= 5 || (inliers >= parcel_corners && result.fit.rmse <= CONFIDENT_RMSE_M)
+    let polygon = crate::control::world_polygon(&result.table);
+    // A complete match of a small parcel is accepted only when the parcel
+    // could not be mistaken for sheet furniture: a similarity transform
+    // maps ANY aspect-matching rectangle onto a rectangular quad with zero
+    // residual, so a rectangular four-corner parcel proves nothing.
+    inliers >= 5
+        || (inliers >= polygon.len()
+            && result.fit.rmse <= CONFIDENT_RMSE_M
+            && !ring_is_rectangular(&polygon))
+}
+
+/// Whether every corner of a quad sits within a few degrees of a right
+/// angle — the shape of every title block, frame cell and room outline.
+fn ring_is_rectangular(polygon: &[Point]) -> bool {
+    if polygon.len() != 4 {
+        return false;
+    }
+    (0..4).all(|i| {
+        let previous = polygon[(i + 3) % 4];
+        let corner = polygon[i];
+        let next = polygon[(i + 1) % 4];
+        let a = (previous.x - corner.x, previous.y - corner.y);
+        let b = (next.x - corner.x, next.y - corner.y);
+        let dot = a.0 * b.0 + a.1 * b.1;
+        let norms = (a.0.hypot(a.1) * b.0.hypot(b.1)).max(1e-12);
+        // cos(84°) ≈ 0.105: corners within ±6° of square count as square.
+        (dot / norms).abs() < 0.105
+    })
 }
 
 /// Georeferences every page of a document from its own text layer.

@@ -862,6 +862,7 @@ fn emit_report(
         graph: Graph { edges },
         georeference_note: answers.and_then(|a| a.georef_note.clone()),
         note: answers.and_then(|a| a.note.clone()),
+        warnings: analysis.vector.warnings.clone(),
     })
 }
 

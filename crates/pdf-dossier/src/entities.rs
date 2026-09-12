@@ -252,35 +252,35 @@ mod tests {
 
     #[test]
     fn cadastral_codes_with_and_without_building_suffix_are_found() {
-        let text = "հողամասը՝ 01-011-0274-0052, շինությունը՝ 01-011-0274-0052-001";
+        let text = "հողամասը՝ 10-001-0123-0456, շինությունը՝ 10-001-0123-0456-001";
         let extracted = extract(text);
         let ids: Vec<&str> = extracted.iter().map(|f| f.id.as_str()).collect();
         assert_eq!(
             ids,
             [
-                "cadastral_code:01-011-0274-0052",
-                "cadastral_code:01-011-0274-0052-001"
+                "cadastral_code:10-001-0123-0456",
+                "cadastral_code:10-001-0123-0456-001"
             ]
         );
     }
 
     #[test]
     fn certificate_reference_application_phone_and_email_are_found() {
-        let text = "ՎԿԱՅԱԿԱՆ N 09012025-01-0144, գաղտնաբառ՝ 0EEEE0EEE0EE\n\
-                    Փաստաթղթի համար՝ ԱՏ-05082025-99-0316\n\
-                    Հ Ա Յ Տ\nԾՀԱ/11/00427-26\n\
-                    +37400-000-002, Sample-owner-00@example.am";
+        let text = "ՎԿԱՅԱԿԱՆ N 20300101-01-0001, գաղտնաբառ՝ 0AAAA0AAA0AA\n\
+                    Փաստաթղթի համար՝ ԱՏ-20300303-03-0003\n\
+                    Հ Ա Յ Տ\nԾՀԱ/01/00001-30\n\
+                    +37400-000-001, sample.applicant@example.am";
         let ids: Vec<String> = extract(text).into_iter().map(|f| f.id).collect();
-        assert!(ids.contains(&"certificate_number:09012025-01-0144".into()));
-        assert!(ids.contains(&"reference_number:ԱՏ-05082025-99-0316".into()));
-        assert!(ids.contains(&"application_number:ԾՀԱ/11/00427-26".into()));
-        assert!(ids.contains(&"phone:+37400-000-002".into()));
-        assert!(ids.contains(&"email:Sample-owner-00@example.am".into()));
+        assert!(ids.contains(&"certificate_number:20300101-01-0001".into()));
+        assert!(ids.contains(&"reference_number:ԱՏ-20300303-03-0003".into()));
+        assert!(ids.contains(&"application_number:ԾՀԱ/01/00001-30".into()));
+        assert!(ids.contains(&"phone:+37400-000-001".into()));
+        assert!(ids.contains(&"email:sample.applicant@example.am".into()));
     }
 
     #[test]
     fn duplicate_mentions_collapse_to_one_entity() {
-        let text = "01-011-0388-0007 եւ նորից 01-011-0388-0007";
+        let text = "10-001-0123-0789 եւ նորից 10-001-0123-0789";
         assert_eq!(extract(text).len(), 1);
     }
 
@@ -291,14 +291,14 @@ mod tests {
             Some(Template::ApplicationForm)
         );
         assert_eq!(
-            detect_template("ՎԿԱՅԱԿԱՆ N 09012025-01-0144, գաղտնաբառ՝ X\nԷջ 1/2"),
+            detect_template("ՎԿԱՅԱԿԱՆ N 20300101-01-0001, գաղտնաբառ՝ X\nԷջ 1/2"),
             Some(Template::Certificate {
                 continuation: false
             })
         );
         assert_eq!(
             detect_template(
-                "ՎԿԱՅԱԿԱՆ N 09012025-01-0144, գաղտնաբառ՝ X\nԷջ 2/2\n5. ՇԻՆՈՒԹՅՈՒՆՆԵՐԻ ԲՆՈՒԹԱԳՐԵՐԸ"
+                "ՎԿԱՅԱԿԱՆ N 20300101-01-0001, գաղտնաբառ՝ X\nԷջ 2/2\n5. ՇԻՆՈՒԹՅՈՒՆՆԵՐԻ ԲՆՈՒԹԱԳՐԵՐԸ"
             ),
             Some(Template::Certificate { continuation: true })
         );
@@ -312,38 +312,38 @@ mod tests {
     #[test]
     fn certificate_owners_come_from_section_one() {
         let text = "1. ԳՐԱՆՑՎԱԾ ԻՐԱՎՈՒՆՔԻ ՍՈՒԲՅԵԿՏ(ՆԵՐ)\n\
-                    ՀՐԱՉ ԱԲՐԱՀԱՄՅԱՆ ՍԵՐԳԵՅԻ (1/2), ՆԵԼԼԻ ԱԲՐԱՀԱՄՅԱՆ ՌՈԲԵՐՏԻ (1/2)\n\
+                    ԱՐԱՄ ՂԱԶԱՐՅԱՆ ԱՇՈՏԻ (1/2), ԳԱՅԱՆԵ ՂԱԶԱՐՅԱՆ ՍԱՄՎԵԼԻ (1/2)\n\
                     2. ԱՆՇԱՐԺ ԳՈՒՅՔԻ";
         let owners = certificate_owners(text);
         assert_eq!(owners.len(), 2);
-        assert_eq!(owners[0].id, "person:hrach-abrahamyan");
-        assert_eq!(owners[0].value, "ՀՐԱՉ ԱԲՐԱՀԱՄՅԱՆ ՍԵՐԳԵՅԻ");
-        assert_eq!(owners[1].id, "person:nelli-abrahamyan");
+        assert_eq!(owners[0].id, "person:aram-ghazaryan");
+        assert_eq!(owners[0].value, "ԱՐԱՄ ՂԱԶԱՐՅԱՆ ԱՇՈՏԻ");
+        assert_eq!(owners[1].id, "person:gayane-ghazaryan");
     }
 
     #[test]
     fn entity_ids_slug_people_and_keep_identifiers_verbatim() {
         assert_eq!(
-            entity_id("person", "Բադալյան Սուրեն Ռաֆայելի"),
-            "person:badalyan-suren"
+            entity_id("person", "Մկրտչյան Արամ Սամվելի"),
+            "person:mkrtchyan-aram"
         );
         assert_eq!(
-            entity_id("cadastral_code", "01-011-0388-0007"),
-            "cadastral_code:01-011-0388-0007"
+            entity_id("cadastral_code", "10-001-0123-0789"),
+            "cadastral_code:10-001-0123-0789"
         );
         assert_eq!(
-            split_id("certificate_number:22102024-01-0358"),
-            ("certificate_number", "22102024-01-0358")
+            split_id("certificate_number:20300202-02-0002"),
+            ("certificate_number", "20300202-02-0002")
         );
     }
 
     #[test]
     fn transliteration_romanizes_common_names() {
         assert_eq!(transliterate("Խաչատրյան"), "khachatryan");
-        assert_eq!(transliterate("Բադալյան"), "badalyan");
+        assert_eq!(transliterate("Մկրտչյան"), "mkrtchyan");
         assert_eq!(transliterate("Հովհաննիսյան"), "hovhannisyan");
         // ու is one vowel, not o+u
-        assert_eq!(transliterate("Ավետիսյան"), "avetisyan");
+        assert_eq!(transliterate("Մանուկյան"), "manukyan");
         assert_eq!(transliterate("Հարությունյան"), "harutyunyan");
     }
 

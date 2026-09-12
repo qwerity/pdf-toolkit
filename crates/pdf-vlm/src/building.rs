@@ -161,7 +161,15 @@ pub fn reconstruct(
         .ask(&request)
         .with_context(|| format!("reconstruction request to '{}' failed", client.model()))?;
 
-    let mut warnings = Vec::new();
+    let mut warnings: Vec<String> = vector.warnings.clone();
+    if selection.missing_renders {
+        warnings.push(
+            "no sheet is labelled photo_montage/3d_view, so the 3D renders were not \
+             shown to the model (pages are never uploaded on a guess); pass --answers \
+             with labels to include them"
+                .to_string(),
+        );
+    }
     let mut specs = Vec::new();
     let mut facts = None;
     for call in &reply.tool_calls {
@@ -197,8 +205,28 @@ pub fn reconstruct(
     if let Some(denominator) = declared_scale
         && !metric
     {
-        scale_candidates(&mut candidates, denominator);
-        crs = "local_metres".to_string();
+        // The scale is a model-read number, so geometry confirms it before
+        // it rewrites every coordinate: at the right scale the chosen
+        // building footprints come out building-sized. A misread magnitude
+        // (1:50 for 1:500) makes them absurd, and the frame then honestly
+        // stays in page units.
+        let factor = denominator * 0.0254 / 72.0;
+        let plausible = specs
+            .iter()
+            .filter(|spec| spec.kind == "block")
+            .all(|spec| {
+                let area = candidates[spec.candidate_id].area * factor * factor;
+                (4.0..=20_000.0).contains(&area)
+            });
+        if plausible {
+            scale_candidates(&mut candidates, denominator);
+            crs = "local_metres".to_string();
+        } else {
+            warnings.push(format!(
+                "printed scale 1:{denominator} makes the chosen footprints \
+                 implausibly sized; keeping page units"
+            ));
+        }
     }
 
     // Sheets that specs name as exact-outline sources, serialized once.
@@ -274,6 +302,10 @@ struct Selection {
     /// Elevations, sections, floor plans, the roof plan, and the
     /// visualization sheets.
     info: Vec<usize>,
+    /// No sheet is labelled as a render/photo montage, so the visualization
+    /// section was not shown to the model. Pages are never uploaded on a
+    /// guess — dossiers routinely end in identity-document scans.
+    missing_renders: bool,
 }
 
 impl Selection {
@@ -348,13 +380,8 @@ fn select_pages(vector: &DocumentVector, answers: Option<&Answers>) -> Option<Se
             renders.push(n);
         }
     }
-    if renders.is_empty() {
-        renders.extend(
-            (vector.page_count.saturating_sub(1)..=vector.page_count)
-                .filter(|n| *n >= 1 && *n != anchor),
-        );
-    }
 
+    let missing_renders = renders.is_empty();
     let mut info: Vec<usize> = Vec::new();
     let mut seen: BTreeSet<usize> = BTreeSet::from([anchor]);
     for n in elevations
@@ -371,7 +398,11 @@ fn select_pages(vector: &DocumentVector, answers: Option<&Answers>) -> Option<Se
             info.push(n);
         }
     }
-    Some(Selection { anchor, info })
+    Some(Selection {
+        anchor,
+        info,
+        missing_renders,
+    })
 }
 
 /// How many footprint candidates a sheet would offer — the measure that
@@ -1415,6 +1446,23 @@ mod tests {
             vec![(10.0, 0.0), (14.0, 0.0)],
         ];
         assert!(stitch_polylines(open, 0.05).is_empty());
+    }
+
+    #[test]
+    fn selection_reports_missing_render_labels_instead_of_guessing_pages() {
+        // No answers at all: nothing is labelled photo_montage/3d_view, so
+        // no page may be uploaded on a guess — the flag says so.
+        let vector = DocumentVector {
+            document: "t".into(),
+            source: "t.pdf".into(),
+            page_count: 9,
+            pages: Vec::new(),
+            warnings: Vec::new(),
+        };
+        assert!(
+            select_pages(&vector, None).is_none(),
+            "no drawing, no anchor"
+        );
     }
 
     #[test]

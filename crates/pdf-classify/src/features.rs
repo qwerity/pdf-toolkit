@@ -31,7 +31,7 @@ pub struct PageFeatures {
     pub distinct_colors: usize,
     /// Distinct optional-content group names, i.e. CAD layers.
     pub layer_count: usize,
-    /// Cadastral parcel identifiers such as `01-011-0388-0007`.
+    /// Cadastral parcel identifiers such as `10-001-0123-0789`.
     pub cadastral_codes: usize,
     /// Sheet scales printed on the page, e.g. `500` for `1:500`.
     pub declared_scales: Vec<f64>,

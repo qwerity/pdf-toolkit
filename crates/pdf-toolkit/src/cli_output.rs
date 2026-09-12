@@ -24,6 +24,7 @@ pub fn print_vector_output(report: &pdf_vector::DocumentVector) -> Result<()> {
 }
 
 pub fn print_dossier_output(report: &pdf_dossier::DossierReport) -> Result<()> {
+    print_warnings(&report.warnings);
     print_warnings(&report.validate());
     print_json(serde_json::to_value(report).context("failed to serialize dossier output")?)
 }

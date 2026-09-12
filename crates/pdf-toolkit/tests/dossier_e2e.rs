@@ -46,6 +46,16 @@ fn corpus_available(test: &str) -> bool {
     common::corpus_available(test, &[corpus_pdf(3), annotation(3), answers(3)])
 }
 
+/// Expected values that are themselves excerpts of the private corpus — a
+/// real QR payload, certificate number, parcel code, person — live beside
+/// the corpus in `data/annotations/expected.json`, never in committed code.
+fn expected(section: &str) -> Value {
+    let path = common::data_dir().join("annotations").join("expected.json");
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{} unreadable: {e}", path.display()));
+    serde_json::from_str::<Value>(&raw).expect("expected.json parses")[section].clone()
+}
+
 fn page(report: &Value, number: u64) -> &Value {
     report["pages"]
         .as_array()
@@ -116,11 +126,9 @@ fn deterministic_dossier_flags_what_it_cannot_read() {
     assert_eq!(extract["georeference"]["crs"], "EPSG:28408");
 
     // The e-cadastre reference's QR decodes without any vision pass.
+    let want = expected("dossier_2");
     let reference = page(&report, 15);
-    assert_eq!(
-        reference["qr_codes"][0]["data"],
-        "https://www.e-cadastre.am/application/docview/code/07032025-0418/qr/1"
-    );
+    assert_eq!(reference["qr_codes"][0]["data"], want["qr_p15"]);
     assert!(
         reference["labels"]
             .as_array()
@@ -135,7 +143,13 @@ fn deterministic_dossier_flags_what_it_cannot_read() {
         .as_array()
         .expect("groups")
         .iter()
-        .find(|g| g["id"] == "certificate:22102024-01-0358")
+        .find(|g| {
+            g["id"].as_str()
+                == Some(&format!(
+                    "certificate:{}",
+                    want["certificate"].as_str().unwrap()
+                ))
+        })
         .expect("certificate group");
     assert_eq!(group["pages"], serde_json::json!([5, 6]));
     // The certificate names the parcel the (unread, scanned) application
@@ -148,9 +162,14 @@ fn deterministic_dossier_flags_what_it_cannot_read() {
         .iter()
         .filter_map(|e| e["id"].as_str())
         .collect();
-    assert!(entities.contains(&"certificate_number:22102024-01-0358"));
-    assert!(entities.contains(&"cadastral_code:01-011-0274-0052"));
-    assert!(entities.contains(&"person:suren-badalyan"));
+    for (kind, key) in [
+        ("certificate_number", "certificate"),
+        ("cadastral_code", "cadastral_code"),
+        ("person", "person"),
+    ] {
+        let id = format!("{kind}:{}", want[key].as_str().unwrap());
+        assert!(entities.contains(&id.as_str()), "{id} missing");
+    }
 
     // A garbled CID text layer is present-but-wrong: flagged, not emitted.
     let garbled = page(&report, 25);

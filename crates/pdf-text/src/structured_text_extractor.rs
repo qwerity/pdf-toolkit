@@ -660,6 +660,9 @@ fn find_column_gutter(lines: &[TextLine]) -> (Option<f32>, Option<Vec<DetectedTa
         for span in &line.spans {
             let first = (((span.x - min_x) / bin_width) as usize).min(bin_count - 1);
             let last = (((span.x + span.width - min_x) / bin_width) as usize).min(bin_count - 1);
+            // A span of negative width (a right-to-left run) puts `last`
+            // before `first`; the bins it covers are the same either way.
+            let (first, last) = (first.min(last), first.max(last));
             for bin in &mut coverage[first..=last] {
                 *bin += 1;
             }

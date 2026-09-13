@@ -42,6 +42,11 @@ impl ToUnicode {
                 out.push_str(s);
             } else if self.single.is_empty() && step == 1 && (0x20..0x7f).contains(&code) {
                 out.push(code as u8 as char);
+            } else if self.single.is_empty()
+                && step == 2
+                && let Some(ch) = unicode_identity_char(code)
+            {
+                out.push(ch);
             }
         }
         out
@@ -149,8 +154,47 @@ impl ToUnicode {
     }
 }
 
+/// The character a two-byte `Identity-H` code stands for when the exporter
+/// used Unicode code points as CIDs and wrote no `ToUnicode` map — what
+/// ArchiCAD's PDF export does. Only the scripts a drawing sheet can carry
+/// (Latin, Cyrillic, Armenian, Greek, common punctuation and symbols) are
+/// accepted, so a font whose CIDs are real glyph indices yields little
+/// rather than a page of stray letters.
+fn unicode_identity_char(code: u32) -> Option<char> {
+    let ch = char::from_u32(code)?;
+    let accepted = matches!(code,
+        0x20..=0x7e          // ASCII
+        | 0xa0..=0x24f       // Latin-1 supplement and extended
+        | 0x370..=0x3ff      // Greek
+        | 0x400..=0x4ff      // Cyrillic
+        | 0x530..=0x58f      // Armenian
+        | 0x2010..=0x2027    // dashes, quotes, bullets
+        | 0x2030..=0x205e    // per mille, primes
+        | 0x20a0..=0x20cf    // currency
+        | 0x2100..=0x214f    // letterlike (°C, №)
+        | 0x2190..=0x21ff    // arrows
+        | 0x2200..=0x22ff); // mathematical operators
+    accepted.then_some(ch)
+}
+
 #[cfg(test)]
 mod tests {
+    /// ArchiCAD exports `Identity-H` fonts with no `ToUnicode` map whose
+    /// CIDs are Unicode code points; the fallback reads them as such, and
+    /// only for scripts a drawing sheet carries.
+    #[test]
+    fn an_identity_font_without_a_map_decodes_unicode_cids() {
+        let map = ToUnicode::identity(2);
+        // "Փուլ :" as two-byte code points, then an ASCII colon.
+        let bytes = [
+            0x05, 0x53, 0x05, 0x78, 0x05, 0x82, 0x05, 0x6c, 0x00, 0x20, 0x00, 0x3a,
+        ];
+        assert_eq!(map.decode(&bytes), "Փուլ :");
+        // A glyph-indexed font's small ids fall outside every accepted block
+        // except ASCII; control codes and private-use codes yield nothing.
+        assert_eq!(map.decode(&[0x00, 0x03, 0xe0, 0x00, 0x00, 0x41]), "A");
+    }
+
     use super::*;
 
     #[test]

@@ -27,7 +27,7 @@ use serde::Deserialize;
 
 use llm_providers::{Client, Request};
 use pdf_core::page::{open_document, page_index};
-use pdf_dossier::answers::{Answers, HandwritingAnswer, PageAnswer, PersonMeta};
+use pdf_dossier::answers::{Answers, FactAnswer, HandwritingAnswer, PageAnswer, PersonMeta};
 use pdf_dossier::entities::entity_id;
 use pdf_render::{PngSize, render_page, write_png};
 
@@ -182,11 +182,23 @@ Look at the page image and return ONLY a JSON object (no markdown fences) with:
   "entities": [          // every real-world identifier you can actually read on the page
     {"type": "cadastral_code"|"passport_number"|"id_number"|"psn"|"certificate_number"|
              "reference_number"|"person"|"org"|"address"|"date"|"phone"|"email", "value": "..."}
+  ],
+  "facts": [             // figures the page states about the parcel, for cross-page checks
+    {"kind": "parcel_area"|"building_area"|"footprint_area"|"planned_area"|"owner"|
+             "applicant"|"address"|"cadastral_code"|"certificate_number",
+     "value": "...",     // the number or name exactly as printed
+     "unit": "ha"|"m2",  // areas only
+     "subject": "..."}   // building_area: the building's code; planned_area: "fence"|"building"
   ]
 }
 Rules: report only what is visible; transcribe numbers exactly; do not guess
 unreadable characters (omit the entity instead); person values keep the original
-Armenian/Latin spelling from the page."#;
+Armenian/Latin spelling from the page. On an ownership certificate (ՎԿԱՅԱԿԱՆ)
+the facts are: section 4's "Մակերեսի չափը (հա)" as parcel_area with unit ha,
+section 1's subject(s) as owner, section 2's address as address, section 4's
+code as cadastral_code, and every row of section 5's buildings table as a
+building_area (subject = the row's code, unit m2). On a ՏԵՂԵԿԱՆՔ or fee table
+the "Դիմող" line is the applicant."#;
 
 /// The reply shape the prompt asks for.
 #[derive(Debug, Deserialize)]
@@ -202,6 +214,18 @@ struct RawAnswer {
     handwriting: Option<RawHandwriting>,
     #[serde(default)]
     entities: Vec<RawEntity>,
+    #[serde(default)]
+    facts: Vec<RawFact>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawFact {
+    kind: String,
+    value: String,
+    #[serde(default)]
+    unit: Option<String>,
+    #[serde(default)]
+    subject: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -256,6 +280,17 @@ fn parse_reply(reply: &str) -> Result<(PageAnswer, IndexMap<String, PersonMeta>)
             })
         }),
         entities: entity_ids,
+        facts: raw
+            .facts
+            .into_iter()
+            .filter(|f| !f.value.trim().is_empty())
+            .map(|f| FactAnswer {
+                kind: f.kind,
+                value: f.value,
+                unit: f.unit,
+                subject: f.subject,
+            })
+            .collect(),
         ..Default::default()
     };
     Ok((answer, people))

@@ -15,7 +15,11 @@ use serde_json::Value;
 
 use pdf_classify::{Confidence, PageClass};
 
-pub const SCHEMA_VERSION: &str = "0.2.0";
+use crate::checks::Check;
+use crate::facts::Fact;
+use crate::trust::Trust;
+
+pub const SCHEMA_VERSION: &str = "0.3.0";
 
 /// How a page's text is recovered.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -112,6 +116,15 @@ pub struct DossierReport {
     /// application form states a request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request: Option<crate::request::Request>,
+    /// Every figure the dossier states about its parcel, with the page and
+    /// the trust it came with (`facts.rs`). Absent when nothing was read.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub facts: Vec<Fact>,
+    /// Each repeated figure compared across the pages that state it, the
+    /// official page as the reference (`checks.rs`). Absent when there was
+    /// nothing to compare.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<Check>,
     pub pages: Vec<PageAnnotation>,
     pub groups: Vec<Group>,
     pub entities: Vec<Entity>,
@@ -158,6 +171,10 @@ pub struct PageAnnotation {
     pub page_number: usize,
     /// Multi-label; most specific first. Open vocabulary.
     pub labels: Vec<String>,
+    /// Who vouches for the page: `official` (the Cadastre Committee's own
+    /// documents), `applicant`, `identity`, or `unknown` for a page nothing
+    /// has read yet.
+    pub trust: Trust,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// Album sheet designation printed on the page (ԷՋ-03, Ճ-1, Է.02 …).
@@ -290,6 +307,9 @@ pub struct Group {
     /// `identity`, `ownership`, `application`, `administrative`,
     /// `financial`, `drawings`, or `technical`.
     pub kind: String,
+    /// The trust of the document the group is: official once any page of
+    /// it is the Committee's.
+    pub trust: Trust,
     pub title: String,
     pub pages: Vec<usize>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -424,6 +444,7 @@ mod tests {
         PageAnnotation {
             page_number: number,
             labels: vec!["text_document".into()],
+            trust: Trust::Applicant,
             title: None,
             sheet: None,
             notes: None,
@@ -453,6 +474,8 @@ mod tests {
             generated_by: String::new(),
             stats: Stats::default(),
             request: None,
+            facts: Vec::new(),
+            checks: Vec::new(),
             pages,
             groups: Vec::new(),
             entities: Vec::new(),

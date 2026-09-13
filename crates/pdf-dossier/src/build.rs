@@ -32,8 +32,10 @@ use pdf_vector::{DocumentVector, PageVector, VectorOptions};
 
 use crate::answers::{Answers, PageAnswer};
 use crate::entities::{self, Found, Template};
+use crate::facts::{self, Fact, FactKind};
 use crate::report::*;
-use crate::{qr, request, text_signals};
+use crate::trust::{Trust, group_trust, looks_like_extract, page_trust};
+use crate::{checks, legacy, numbers, qr, request, text_signals};
 
 /// Whether a label marks a page whose geometry export is worth referencing:
 /// the classifier's own drawing classes, plus the labels this schema adds on
@@ -114,6 +116,7 @@ struct PageFacts {
     entities: Vec<(String, String)>,
     groups: Vec<String>,
     related: Vec<RelatedPage>,
+    trust: Trust,
 }
 
 /// Builds the whole-dossier annotation in one call.
@@ -166,7 +169,7 @@ pub fn assemble(analysis: &DossierAnalysis, options: &DossierOptions) -> Result<
         .map(|input| {
             let vector_page = vector_pages.get(&input.number).copied();
             match answers.and_then(|a| a.page(input.number)) {
-                Some(answer) => answered_facts(input, answer),
+                Some(answer) => answered_facts(input, answer, vector_page),
                 None => deterministic_facts(input, vector_page),
             }
         })
@@ -191,15 +194,138 @@ pub fn assemble(analysis: &DossierAnalysis, options: &DossierOptions) -> Result<
         .collect();
     let request = request::detect(&page_texts);
 
+    // The figures every page states, then the comparisons across them.
+    let page_facts = document_facts(
+        &analysis.inputs,
+        &facts,
+        answers,
+        request.as_ref(),
+        &vector_pages,
+    );
+    let application_code = subject
+        .as_deref()
+        .map(|id| entities::split_id(id).1.to_string());
+    let unread: Vec<usize> = analysis
+        .inputs
+        .iter()
+        .zip(&facts)
+        .filter(|(_, f)| f.trust == Trust::Unknown)
+        .map(|(input, _)| input.number)
+        .collect();
+    let page_checks = checks::run(&page_facts, application_code.as_deref(), &unread);
+
     emit_report(
         analysis,
         facts,
         group_meta,
         request,
+        page_facts,
+        page_checks,
         answers,
         options,
         &vector_pages,
     )
+}
+
+/// Every fact every page states: read deterministically off the (legacy-
+/// decoded) text, taken from a vision answer where one names figures, and
+/// implied by a placed sheet's turning-point table.
+fn document_facts(
+    inputs: &[PageInputs],
+    facts: &[PageFacts],
+    answers: Option<&Answers>,
+    request: Option<&request::Request>,
+    vector_pages: &HashMap<usize, &PageVector>,
+) -> Vec<Fact> {
+    let mut out = Vec::new();
+    for (input, fact) in inputs.iter().zip(facts) {
+        let decoded = legacy::decode_legacy(&input.text);
+        let page = facts::PageInput {
+            page: input.number,
+            labels: &fact.labels,
+            text: if input.embedded() { &decoded } else { "" },
+            trust: fact.trust,
+            via: Via::from(fact.route),
+        };
+        let on_form = request.is_some_and(|r| r.page == input.number);
+        out.extend(facts::page_facts(
+            &page,
+            request
+                .filter(|_| on_form)
+                .and_then(|r| r.address.as_deref()),
+            request
+                .filter(|_| on_form)
+                .and_then(|r| r.planned.as_deref()),
+        ));
+        if let Some(answer) = answers.and_then(|a| a.page(input.number)) {
+            out.extend(answered_page_facts(&page, answer));
+        }
+        if let Some(vector_page) = vector_pages.get(&input.number) {
+            for feature in &vector_page.geojson.features {
+                let is_survey = feature
+                    .property("kind")
+                    .and_then(|k| k.as_str())
+                    .is_some_and(|k| k == "survey_parcel");
+                if is_survey && let Ok(value) = serde_json::to_value(feature) {
+                    out.extend(facts::survey_facts(&page, &value));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A vision answer's figures as facts: the model transcribed, the toolkit
+/// converts and keys them the same way it keys its own readings.
+fn answered_page_facts(page: &facts::PageInput<'_>, answer: &PageAnswer) -> Vec<Fact> {
+    answer
+        .facts
+        .iter()
+        .filter_map(|f| {
+            let kind = match f.kind.as_str() {
+                "cadastral_code" => FactKind::CadastralCode,
+                "parcel_area" => FactKind::ParcelArea,
+                "footprint_area" => FactKind::FootprintArea,
+                "building_area" => FactKind::BuildingArea,
+                "planned_area" => FactKind::PlannedArea,
+                "owner" => FactKind::Owner,
+                "applicant" => FactKind::Applicant,
+                "address" => FactKind::Address,
+                "certificate_number" => FactKind::CertificateNumber,
+                _ => return None,
+            };
+            let mut fact = Fact {
+                kind,
+                number: None,
+                text: None,
+                printed: f.value.trim().to_string(),
+                page: page.page,
+                trust: page.trust,
+                via: Via::Vlm,
+                subject: f.subject.clone(),
+                about: None,
+            };
+            match kind {
+                FactKind::ParcelArea
+                | FactKind::FootprintArea
+                | FactKind::BuildingArea
+                | FactKind::PlannedArea => {
+                    let factor = f
+                        .unit
+                        .as_deref()
+                        .and_then(numbers::unit_factor)
+                        .unwrap_or(1.0);
+                    fact.number = Some(numbers::parse_number(&f.value)? * factor);
+                }
+                FactKind::Owner | FactKind::Applicant => {
+                    fact.text = Some(entities::entity_id("person", f.value.trim()));
+                }
+                FactKind::Address => fact.text = Some(facts::address_key(&f.value)),
+                _ => fact.text = Some(f.value.trim().to_string()),
+            }
+            Some(fact)
+        })
+        .collect()
 }
 
 /// The pages a vision pass should be asked about: flagged by the report, and
@@ -337,7 +463,11 @@ fn resolve_route(
 }
 
 /// Facts for a page the vision pass answered: the answer is authoritative.
-fn answered_facts(input: &PageInputs, answer: &PageAnswer) -> PageFacts {
+fn answered_facts(
+    input: &PageInputs,
+    answer: &PageAnswer,
+    vector_page: Option<&PageVector>,
+) -> PageFacts {
     let encoding_issue = has_encoding_issue(input, Some(answer));
     let mut vlm_reasons = answer.vlm.clone();
     let route = resolve_route(input, Some(answer), encoding_issue, &mut vlm_reasons);
@@ -354,6 +484,12 @@ fn answered_facts(input: &PageInputs, answer: &PageAnswer) -> PageFacts {
         route,
         vlm_reasons,
         encoding_issue,
+        trust: page_trust(
+            &answer.labels,
+            &legacy::decode_legacy(&input.text),
+            true,
+            extract_signal(input, vector_page, answer.sheet.as_deref()),
+        ),
         handwriting: answer.handwriting.as_ref().map(|h| Handwriting {
             present: true,
             extent: h.extent.clone(),
@@ -399,11 +535,20 @@ fn deterministic_facts(input: &PageInputs, vector_page: Option<&PageVector>) -> 
         }
     }
 
+    let labels = deterministic_labels(template, vector_page, &input.qr_payloads, route);
+    let sheet = embedded
+        .then(|| entities::sheet_designation(&input.text))
+        .flatten();
+    let trust = page_trust(
+        &labels,
+        &legacy::decode_legacy(&input.text),
+        embedded,
+        extract_signal(input, vector_page, sheet.as_deref()),
+    );
     PageFacts {
-        labels: deterministic_labels(template, vector_page, &input.qr_payloads, route),
-        sheet: embedded
-            .then(|| entities::sheet_designation(&input.text))
-            .flatten(),
+        labels,
+        trust,
+        sheet,
         content_kind: deterministic_content_kind(embedded, input.image_coverage),
         languages: text_signals::languages(&input.text),
         declared_scale: vector_page
@@ -414,6 +559,30 @@ fn deterministic_facts(input: &PageInputs, vector_page: Option<&PageVector>) -> 
         entities: found.into_iter().map(|f| (f.id, f.value)).collect(),
         ..Default::default()
     }
+}
+
+/// Whether the page reads as one of the Committee's map extracts.
+fn extract_signal(
+    input: &PageInputs,
+    vector_page: Option<&PageVector>,
+    sheet: Option<&str>,
+) -> bool {
+    let Some(v) = vector_page else { return false };
+    let is_map_class = matches!(
+        v.classification.class,
+        PageClass::CadastralPlan | PageClass::TopographicSurvey
+    );
+    let codes = entities::extract(&input.text)
+        .into_iter()
+        .filter(|f| entities::split_id(&f.id).0 == "cadastral_code")
+        .count();
+    looks_like_extract(
+        is_map_class,
+        v.classification.features.has_control_table,
+        codes,
+        sheet,
+        &input.text,
+    )
 }
 
 fn deterministic_labels(
@@ -646,11 +815,14 @@ struct EntityAccumulator {
     sources: Vec<EntitySource>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_report(
     analysis: &DossierAnalysis,
     facts: Vec<PageFacts>,
     group_meta: IndexMap<String, (String, String)>,
     request: Option<request::Request>,
+    page_facts: Vec<Fact>,
+    page_checks: Vec<checks::Check>,
     answers: Option<&Answers>,
     options: &DossierOptions,
     vector_pages: &HashMap<usize, &PageVector>,
@@ -666,6 +838,7 @@ fn emit_report(
     let mut group_accumulators: HashMap<String, GroupAccumulator> = HashMap::new();
     let mut edges: Vec<Edge> = Vec::new();
     let mut placed: BTreeSet<usize> = BTreeSet::new();
+    let mut page_trusts: HashMap<usize, Trust> = HashMap::new();
     let mut geojson_dir_ready = false;
 
     for (input, fact) in analysis.inputs.iter().zip(facts) {
@@ -781,9 +954,11 @@ fn emit_report(
             &mut geojson_dir_ready,
         )?;
 
+        page_trusts.insert(n, fact.trust);
         pages_out.push(PageAnnotation {
             page_number: n,
             labels: fact.labels,
+            trust: fact.trust,
             title: fact.title,
             sheet: fact.sheet,
             notes: fact.notes,
@@ -855,6 +1030,12 @@ fn emit_report(
         groups_out.push(Group {
             id: id.clone(),
             kind: kind.clone(),
+            trust: group_trust(
+                accumulator
+                    .pages
+                    .iter()
+                    .filter_map(|p| page_trusts.get(p).copied()),
+            ),
             title: title.clone(),
             pages: accumulator.pages.iter().copied().collect(),
             entities: accumulator.entities.iter().cloned().collect(),
@@ -909,6 +1090,8 @@ fn emit_report(
         generated_by: generated_by(answers.is_some()),
         stats,
         request,
+        facts: page_facts,
+        checks: page_checks,
         pages: pages_out,
         groups: groups_out,
         entities: entities_out,

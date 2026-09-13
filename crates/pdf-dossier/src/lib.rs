@@ -17,11 +17,16 @@
 
 pub mod answers;
 mod build;
+pub mod checks;
 pub mod entities;
+pub mod facts;
+pub mod legacy;
+pub mod numbers;
 pub mod qr;
 pub mod report;
 pub mod request;
 pub mod text_signals;
+pub mod trust;
 
 pub use answers::Answers;
 pub use build::{

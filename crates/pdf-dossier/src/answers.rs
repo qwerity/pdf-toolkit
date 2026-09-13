@@ -76,6 +76,24 @@ pub struct PageAnswer {
     pub vlm: Vec<String>,
     #[serde(default)]
     pub encoding_issue: bool,
+    /// Figures the model read off the page, for the cross-page checks —
+    /// what a scanned certificate states about the parcel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub facts: Vec<FactAnswer>,
+}
+
+/// One figure a vision answer states: `kind` is a `FactKind` name
+/// (`parcel_area`, `building_area`, `owner`, `applicant`, `address`,
+/// `cadastral_code`, `certificate_number`), `value` as printed, `unit` for
+/// an area (`ha` or `m2`), `subject` a building code or planned item.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FactAnswer {
+    pub kind: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

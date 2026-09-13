@@ -20,6 +20,7 @@ mod build;
 pub mod entities;
 pub mod qr;
 pub mod report;
+pub mod request;
 pub mod text_signals;
 
 pub use answers::Answers;

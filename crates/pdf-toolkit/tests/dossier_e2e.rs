@@ -171,6 +171,28 @@ fn deterministic_dossier_flags_what_it_cannot_read() {
         assert!(entities.contains(&id.as_str()), "{id} missing");
     }
 
+    // The application form's request slot is read off the embedded text:
+    // this dossier asks to rebuild a house and put up a fence.
+    let request = &report["request"];
+    assert_eq!(request["action"], "reconstruction");
+    assert_eq!(request["use"], "residential");
+    assert_eq!(request["page"], request["use_page"]);
+    assert!(
+        request["works"]
+            .as_array()
+            .expect("works")
+            .iter()
+            .any(|w| w == "fence"),
+        "the form names a fence beside the house"
+    );
+    assert!(
+        !request["address"]
+            .as_str()
+            .expect("address")
+            .contains("01-011"),
+        "the cadastral code is an entity, not part of the address"
+    );
+
     // A garbled CID text layer is present-but-wrong: flagged, not emitted.
     let garbled = page(&report, 25);
     assert_eq!(garbled["extraction"]["encoding_issue"], Value::Bool(true));
@@ -226,4 +248,8 @@ fn dossier_reports_the_contract_shape_on_a_plain_document() {
         assert_eq!(p["content_kind"], "digital");
     }
     assert!(report["graph"]["edges"].is_array());
+    assert!(
+        report.get("request").is_none(),
+        "no application form, no request block — absence, not a default"
+    );
 }

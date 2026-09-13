@@ -32,6 +32,7 @@ use pdf_dossier::Answers;
 use pdf_vector::{DocumentVector, VectorOptions, extract_document};
 
 use crate::DRAWING_RENDER_WIDTH_PX;
+use crate::measure::{self, Body, Parcel, ParcelReport, centroid, ring_area, ring_points, round7};
 
 /// The most pages sent in the one request: the anchor, elevations, floor
 /// plans, the roof plan, and the visualization/render sheets.
@@ -73,6 +74,18 @@ pub struct BuildingReport {
     pub geojson_file: Option<String>,
     /// The extruded FeatureCollection, inline — same policy as `vector`.
     pub geojson: Value,
+    /// The parcel the measurements are taken against. Absent when no ring
+    /// could be identified, or the frame is not metric.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parcel: Option<ParcelReport>,
+    /// Written under `--output` as `building/<document>.measurements.geojson`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measurements_file: Option<String>,
+    /// Side lengths, setbacks and clearances as labelled LineStrings in the
+    /// same frame as `geojson` — a toggleable dimensions layer. Absent
+    /// together with `parcel`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measurements: Option<Value>,
 }
 
 /// One structure the model declared.
@@ -115,10 +128,11 @@ pub fn reconstruct(
     client: &Client,
     pdfium: &Pdfium,
     pdf_path: &Path,
+    vector_options: &VectorOptions,
     answers: Option<&Answers>,
     output_dir: Option<&Path>,
 ) -> Result<BuildingReport> {
-    let vector = extract_document(pdf_path, &[], &VectorOptions::default())?;
+    let vector = extract_document(pdf_path, &[], vector_options)?;
     let selection = select_pages(&vector, answers)
         .ok_or_else(|| anyhow!("no drawing page to anchor a footprint on"))?;
     let anchor = vector
@@ -129,7 +143,9 @@ pub fn reconstruct(
     let anchor_collection = serde_json::to_value(&anchor.geojson)?;
     let placed = anchor.georeference.as_ref().is_some_and(|g| g.placed);
     let metric = placed || anchor.crs == "local_metres";
-    let candidates = footprint_candidates(&anchor_collection, placed, metric);
+    let parcel_ring = anchor_parcel(&anchor_collection);
+    let mut candidates = footprint_candidates(&anchor_collection, placed, metric);
+    mark_parcel_candidates(&mut candidates, parcel_ring.as_ref(), placed);
     if candidates.is_empty() {
         bail!(
             "page {} carries no closed outline usable as a footprint candidate",
@@ -154,7 +170,11 @@ pub fn reconstruct(
             DRAWING_RENDER_WIDTH_PX,
         )?);
     }
-    request.max_output_tokens = 12_000;
+    // Reasoning tokens count against this cap on Gemini, and a reconstruction
+    // over seven sheets thinks for ten thousand of them before the first
+    // tool call: at 12k the reply was cut off mid-thought on half the
+    // corpus and read as "the model proposed no structure".
+    request.max_output_tokens = 48_000;
     request.effort = Some(Effort::High);
     request.tools = vec![add_part_tool(), set_facts_tool()];
     let reply = client
@@ -174,7 +194,7 @@ pub fn reconstruct(
     let mut facts = None;
     for call in &reply.tool_calls {
         match call.name.as_str() {
-            "add_part" => match spec_from(&call.arguments, candidates.len(), specs.len()) {
+            "add_part" => match spec_from(&call.arguments, &candidates, specs.len()) {
                 Ok(spec) => specs.push(spec),
                 Err(reason) => warnings.push(format!("ignored a part: {reason}")),
             },
@@ -183,8 +203,20 @@ pub fn reconstruct(
         }
     }
     if specs.is_empty() {
+        // Every reason is in the message: the rejected calls say what the
+        // model tried, and the prose says why it stopped.
+        let rejected: Vec<&str> = warnings
+            .iter()
+            .filter(|w| w.starts_with("ignored"))
+            .map(String::as_str)
+            .collect();
         bail!(
-            "the model proposed no structure{}",
+            "the model proposed no structure{}{}",
+            if rejected.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", rejected.join("; "))
+            },
             if reply.text.is_empty() {
                 String::new()
             } else {
@@ -196,7 +228,6 @@ pub fn reconstruct(
     // Heights are metres; footprints should be too. Where the frame is
     // unscaled page units and the model read a printed sheet scale, the
     // conversion is pure arithmetic on that printed number.
-    let mut candidates = candidates;
     let mut crs = anchor.crs.clone();
     let declared_scale = facts
         .as_ref()
@@ -246,6 +277,7 @@ pub fn reconstruct(
 
     let mut parts = Vec::new();
     let mut features = Vec::new();
+    let mut bodies = Vec::new();
     for spec in &specs {
         let outline = match resolve_outline(spec, &outline_sources, &candidates, placed) {
             Ok(outline) => outline,
@@ -255,9 +287,43 @@ pub fn reconstruct(
             }
         };
         let (part, mut part_features) = realize_part(spec, &candidates, placed, outline.as_ref());
+        // The footprint actually extruded: the exact outline where one
+        // resolved, the candidate ring otherwise.
+        let extruded = outline
+            .as_ref()
+            .map_or(&candidates[spec.candidate_id].ring, |(ring, _)| ring);
+        if let Some(ring) = ring_points(extruded) {
+            bodies.push(Body {
+                name: part.name.clone(),
+                kind: spec.kind,
+                ring,
+            });
+        }
         parts.push(part);
         features.append(&mut part_features);
     }
+
+    // Measurements need metres: a page-units frame the printed scale could
+    // not settle is reported as such rather than measured in nonsense.
+    let (parcel, measurements) = if placed || crs == "local_metres" {
+        match resolve_parcel(parcel_ring, &bodies, &candidates) {
+            Some(parcel) => {
+                let (collection, report) = measure::measure(&parcel, &bodies, placed);
+                (Some(report), Some(collection))
+            }
+            None => {
+                warnings.push(
+                    "no parcel ring identified (no survey parcel on the anchor, no fence, \
+                     no candidate enclosing every building); measurements omitted"
+                        .to_string(),
+                );
+                (None, None)
+            }
+        }
+    } else {
+        warnings.push(format!("frame is {crs}, not metres; measurements omitted"));
+        (None, None)
+    };
 
     let collection = json!({
         "type": "FeatureCollection",
@@ -274,8 +340,16 @@ pub fn reconstruct(
         },
     });
     let geojson_file = output_dir
-        .map(|dir| write_building(dir, &vector.document, &collection))
+        .map(|dir| write_building(dir, &format!("{}.geojson", vector.document), &collection))
         .transpose()?;
+    let measurements_file = match (output_dir, &measurements) {
+        (Some(dir), Some(collection)) => Some(write_building(
+            dir,
+            &format!("{}.measurements.geojson", vector.document),
+            collection,
+        )?),
+        _ => None,
+    };
 
     Ok(BuildingReport {
         document: vector.document.clone(),
@@ -290,7 +364,68 @@ pub fn reconstruct(
         warnings,
         geojson_file,
         geojson: collection,
+        parcel,
+        measurements_file,
+        measurements,
     })
+}
+
+/// The parcel statement the anchor sheet carries: the surveyor's own ring
+/// first, else the caller's polygon the sheet was placed from (`--parcel`).
+/// Both the candidate flagging and the measurements read this one answer.
+fn anchor_parcel(anchor_collection: &Value) -> Option<(&'static str, Vec<(f64, f64)>)> {
+    ["survey_parcel", "reference_parcel"]
+        .into_iter()
+        .find_map(|kind| {
+            anchor_collection["features"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|f| f["properties"]["kind"] == kind)
+                .and_then(|f| f["geometry"]["coordinates"][0].as_array())
+                .and_then(|ring| ring_points(ring))
+                .map(|ring| (kind, ring))
+        })
+}
+
+/// The parcel ring the measurements are taken against, in the anchor
+/// frame: the anchor's own parcel statement; else the ring the declared
+/// perimeter fence follows; else the largest candidate ring that contains
+/// every building. Nothing is guessed beyond that.
+fn resolve_parcel(
+    parcel: Option<(&'static str, Vec<(f64, f64)>)>,
+    bodies: &[Body],
+    candidates: &[Candidate],
+) -> Option<Parcel> {
+    if let Some((source, ring)) = parcel {
+        return Some(Parcel { source, ring });
+    }
+    if let Some(fence) = bodies.iter().find(|b| b.kind == "fence") {
+        return Some(Parcel {
+            source: "fence",
+            ring: fence.ring.clone(),
+        });
+    }
+    let blocks: Vec<&Body> = bodies.iter().filter(|b| b.kind == "block").collect();
+    if blocks.is_empty() {
+        return None;
+    }
+    // Candidates are largest-first; the first that holds every building's
+    // centroid is the tightest enclosure worth calling the parcel — but
+    // only if it is bigger than the buildings themselves.
+    candidates
+        .iter()
+        .filter_map(|candidate| ring_points(&candidate.ring).map(|ring| (candidate, ring)))
+        .find(|(candidate, ring)| {
+            blocks.iter().all(|block| {
+                measure::contains(ring, centroid(&block.ring))
+                    && candidate.area > ring_area(&block.ring, false).max(1.0) * 1.5
+            })
+        })
+        .map(|(_, ring)| Parcel {
+            source: "enclosing_ring",
+            ring,
+        })
 }
 
 /// Which pages the model gets to see.
@@ -318,9 +453,6 @@ impl Selection {
 
 /// Picks the anchor and info sheets from the classification, letting a
 /// reviewed or vision-pass answers file refine what the heuristics saw.
-/// The visualization section — renders, photo montages — usually sits at
-/// the end of the set, so the document's last pages fill in when no sheet
-/// is labelled as a render.
 fn select_pages(vector: &DocumentVector, answers: Option<&Answers>) -> Option<Selection> {
     let labelled = |number: usize, wanted: &[&str]| {
         answers
@@ -328,35 +460,68 @@ fn select_pages(vector: &DocumentVector, answers: Option<&Answers>) -> Option<Se
             .is_some_and(|answer| answer.labels.iter().any(|l| wanted.contains(&l.as_str())))
     };
 
-    // A placed sheet wins outright — a world frame is worth more than any
-    // count. Otherwise the anchor is the plan-view sheet with the MOST
-    // structure-sized closed rings: the proposal general plan draws every
-    // house block on the parcel, where the cadastral existing-situation
-    // sheet (often earlier in the set) draws only the boundary. Ties go to
-    // the later sheet, because proposal drawings follow survey drawings.
-    let anchor = vector
+    // A plan view: the sheets that draw footprints. A floor plan's forty
+    // closed rings are rooms, not buildings, so a sheet the labels call a
+    // floor plan is never a plan view however rich it looks.
+    let plan_view = |p: &pdf_vector::PageVector| {
+        !labelled(
+            p.page_number,
+            &["floor_plan", "elevation_or_section", "roof_plan"],
+        ) && (matches!(
+            p.classification.class,
+            PageClass::SitePlan | PageClass::CadastralPlan | PageClass::TopographicSurvey
+        ) || labelled(
+            p.page_number,
+            &["site_plan", "general_plan", "cadastral_plan"],
+        ))
+    };
+    // Serialising a sheet and stitching its outlines is the expensive part;
+    // once per page, then the ranking reads a number.
+    let richness: std::collections::HashMap<usize, usize> = vector
         .pages
         .iter()
-        .find(|p| p.georeference.as_ref().is_some_and(|g| g.placed))
-        .or_else(|| {
-            vector
-                .pages
-                .iter()
-                .filter(|p| {
-                    matches!(
-                        p.classification.class,
-                        PageClass::SitePlan
-                            | PageClass::CadastralPlan
-                            | PageClass::TopographicSurvey
-                    ) || labelled(
-                        p.page_number,
-                        &["site_plan", "general_plan", "cadastral_plan"],
-                    )
-                })
-                .max_by_key(|p| (anchor_richness(p), p.page_number))
-        })
-        .or_else(|| vector.pages.iter().find(|p| p.classification.is_drawing))?
-        .page_number;
+        .map(|p| (p.page_number, anchor_richness(p)))
+        .collect();
+    let rich = |p: &pdf_vector::PageVector| richness[&p.page_number];
+    let placed_anchor = vector
+        .pages
+        .iter()
+        .filter(|p| p.georeference.as_ref().is_some_and(|g| g.placed))
+        .max_by_key(|p| {
+            let geo = p.georeference.as_ref().expect("filtered on placed");
+            let design_scale = geo.fitted_scale_denominator.is_some_and(|d| d <= 1000.0);
+            let confident = geo.rmse_m.is_some_and(|r| r <= 0.05);
+            // Richness ranks above the plan-view label: a floor-plan sheet
+            // with a site inset (dossier 11) holds the house and the fence
+            // where the site plan holds one ring. The label breaks ties —
+            // forty rooms and forty house blocks look alike to a count —
+            // and confidence ranks below both: a 0.4 m fit on the sheet
+            // that draws the houses puts them 0.4 m off, where the
+            // millimetre-fitted survey sheet draws no house at all.
+            (
+                design_scale,
+                rich(p),
+                plan_view(p),
+                confident,
+                p.page_number,
+            )
+        });
+    let richest_plan = vector
+        .pages
+        .iter()
+        .filter(|p| plan_view(p))
+        .max_by_key(|p| (rich(p), p.page_number));
+    // A placed sheet wins outright — unless it offers no building outline
+    // at all (a survey sheet drawing the parcel and nothing else) while an
+    // unplaced plan sheet offers some: a reconstruction in the sheet's own
+    // metres is worth more than a georeferenced refusal.
+    let anchor = match (placed_anchor, richest_plan) {
+        (Some(placed), Some(plan)) if rich(placed) == 0 && rich(plan) > 0 => Some(plan),
+        (Some(placed), _) => Some(placed),
+        (None, plan) => plan,
+    }
+    .or_else(|| vector.pages.iter().find(|p| p.classification.is_drawing))?
+    .page_number;
 
     let mut elevations = Vec::new();
     let mut floors = Vec::new();
@@ -405,15 +570,29 @@ fn select_pages(vector: &DocumentVector, answers: Option<&Answers>) -> Option<Se
     })
 }
 
-/// How many footprint candidates a sheet would offer — the measure that
-/// separates a proposal plan full of house blocks from a survey sheet
-/// holding one parcel ring.
+/// How many building-sized outlines a sheet offers that are not the parcel
+/// boundary — the measure that separates a proposal plan full of house
+/// blocks from a survey sheet holding the parcel ring and nothing else.
 fn anchor_richness(page: &pdf_vector::PageVector) -> usize {
-    serde_json::to_value(&page.geojson)
-        .map(|collection| {
-            footprint_candidates(&collection, false, page.crs == "local_metres").len()
-        })
-        .unwrap_or_default()
+    // A placed page is in degrees: counted as if it were metres, every
+    // ring came out smaller than a square metre and no placed sheet ever
+    // scored — which is how a table-less plan used to outrank the sheet
+    // that was actually on the map.
+    let geographic = page.crs == "EPSG:4326";
+    let Ok(collection) = serde_json::to_value(&page.geojson) else {
+        return 0;
+    };
+    let mut candidates = footprint_candidates(
+        &collection,
+        geographic,
+        geographic || page.crs == "local_metres",
+    );
+    mark_parcel_candidates(
+        &mut candidates,
+        anchor_parcel(&collection).as_ref(),
+        geographic,
+    );
+    candidates.iter().filter(|c| !c.is_parcel).count()
 }
 
 /// A closed outline on the anchor sheet that a structure could stand on.
@@ -423,75 +602,116 @@ struct Candidate {
     area: f64,
     corners: usize,
     centre: (f64, f64),
+    /// This ring is the parcel boundary itself (the survey or reference
+    /// parcel the anchor carries, or a ring of the same size on the same
+    /// spot): a fence may follow it, a building may not stand on it.
+    is_parcel: bool,
+}
+
+/// Flags the candidates that are the parcel boundary: the survey or
+/// reference parcel the anchor carries, and any ring of the same area
+/// (±10 %) about the same centre — the drawn boundary the survey ring was
+/// fitted to. Nothing is flagged on an unplaced sheet, which carries no
+/// parcel statement of its own.
+fn mark_parcel_candidates(
+    candidates: &mut [Candidate],
+    parcel: Option<&(&'static str, Vec<(f64, f64)>)>,
+    geographic: bool,
+) {
+    let Some((_, parcel)) = parcel else {
+        return;
+    };
+    let parcel: &[(f64, f64)] = parcel;
+    let area = ring_area(parcel, geographic);
+    // Area centroids, not vertex means: the reference ring carries the
+    // cadastre's collinear vertices, and a vertex mean drifts metres away
+    // from where the same boundary drawn with four corners sits.
+    let centre = area_centroid(parcel);
+    let (sx, sy) = measure::scale_at(centre.1, geographic);
+    for candidate in candidates {
+        let same_size = (candidate.area - area).abs() <= 0.1 * area;
+        let own = ring_points(&candidate.ring).map(|ring| area_centroid(&ring));
+        let offset = own.map_or(f64::INFINITY, |(x, y)| {
+            ((x - centre.0) * sx).hypot((y - centre.1) * sy)
+        });
+        // A sheet draws the boundary simplified — four corners for the
+        // cadastre's nine — so the centroids differ by metres on a parcel
+        // twenty metres across. A quarter of the parcel's width is still
+        // nowhere a same-sized building could stand beside it.
+        candidate.is_parcel = same_size && offset <= 0.25 * area.sqrt();
+    }
+}
+
+/// The centroid of a closed ring's area (shoelace), in the ring's own
+/// frame; the vertex mean for a degenerate ring.
+fn area_centroid(ring: &[(f64, f64)]) -> (f64, f64) {
+    let mut twice_area = 0.0;
+    let (mut cx, mut cy) = (0.0, 0.0);
+    for pair in ring.windows(2) {
+        let cross = pair[0].0 * pair[1].1 - pair[1].0 * pair[0].1;
+        twice_area += cross;
+        cx += (pair[0].0 + pair[1].0) * cross;
+        cy += (pair[0].1 + pair[1].1) * cross;
+    }
+    if twice_area.abs() < 1e-12 {
+        return centroid(ring);
+    }
+    (cx / (3.0 * twice_area), cy / (3.0 * twice_area))
 }
 
 /// Every closed ring on the sheet big enough to be a structure, largest
 /// first. `geographic` says coordinates are degrees; `metric` says areas
-/// come out in square metres.
+/// come out in square metres. CAD exports routinely draw a building's
+/// outline as loose polylines rather than one closed path, so open
+/// polylines whose ends meet are stitched into rings first — the same
+/// conservative chaining the exact-outline pass uses.
 fn footprint_candidates(collection: &Value, geographic: bool, metric: bool) -> Vec<Candidate> {
-    let mut candidates: Vec<Candidate> = collection["features"]
+    let join_tolerance = if geographic {
+        5e-7
+    } else if metric {
+        0.05
+    } else {
+        0.75
+    };
+    let mut rings: Vec<Vec<(f64, f64)>> = Vec::new();
+    let mut open: Vec<Vec<(f64, f64)>> = Vec::new();
+    for feature in collection["features"]
         .as_array()
         .map_or(&[][..], Vec::as_slice)
-        .iter()
-        .filter_map(|feature| {
-            let geometry = &feature["geometry"];
-            let ring: &Vec<Value> = match geometry["type"].as_str()? {
-                "LineString" => geometry["coordinates"].as_array()?,
-                "Polygon" => geometry["coordinates"][0].as_array()?,
-                _ => return None,
-            };
-            if ring.len() < 4 || ring.first() != ring.last() {
-                return None;
-            }
-            let points = ring_points(ring)?;
+    {
+        let geometry = &feature["geometry"];
+        let line = match geometry["type"].as_str() {
+            Some("LineString") => geometry["coordinates"].as_array(),
+            Some("Polygon") => geometry["coordinates"][0].as_array(),
+            _ => None,
+        };
+        let Some(points) = line.and_then(|line| ring_points(line)) else {
+            continue;
+        };
+        if points.len() >= 4 && points.first() == points.last() {
+            rings.push(points);
+        } else if points.len() >= 2 {
+            open.push(points);
+        }
+    }
+    rings.extend(stitch_polylines(open, join_tolerance));
+
+    let mut candidates: Vec<Candidate> = rings
+        .into_iter()
+        .filter_map(|points| {
             let area = ring_area(&points, geographic);
             (area >= if metric { 4.0 } else { 1.0 }).then(|| Candidate {
-                ring: ring.clone(),
+                ring: points.iter().map(|&(x, y)| json!([x, y])).collect(),
                 area,
                 corners: points.len() - 1,
                 centre: centroid(&points),
+                is_parcel: false,
             })
         })
         .collect();
     candidates.sort_by(|a, b| b.area.total_cmp(&a.area));
     candidates.truncate(CANDIDATE_LIMIT);
     candidates
-}
-
-fn ring_points(ring: &[Value]) -> Option<Vec<(f64, f64)>> {
-    let points: Vec<(f64, f64)> = ring
-        .iter()
-        .filter_map(|p| Some((p[0].as_f64()?, p[1].as_f64()?)))
-        .collect();
-    (points.len() == ring.len()).then_some(points)
-}
-
-/// Shoelace area of one closed ring. Longitude/latitude rings are measured
-/// in metres via an equirectangular projection about the ring's own
-/// latitude — exact enough at building scale; a footprint is not a country.
-fn ring_area(points: &[(f64, f64)], geographic: bool) -> f64 {
-    let (sx, sy) = if geographic {
-        let lat = points.iter().map(|p| p.1).sum::<f64>() / points.len() as f64;
-        (111_320.0 * lat.to_radians().cos(), 110_540.0)
-    } else {
-        (1.0, 1.0)
-    };
-    let mut doubled = 0.0;
-    for pair in points.windows(2) {
-        let (x1, y1) = (pair[0].0 * sx, pair[0].1 * sy);
-        let (x2, y2) = (pair[1].0 * sx, pair[1].1 * sy);
-        doubled += x1 * y2 - x2 * y1;
-    }
-    (doubled / 2.0).abs()
-}
-
-fn centroid(points: &[(f64, f64)]) -> (f64, f64) {
-    let n = points.len().saturating_sub(1).max(1) as f64;
-    let (sum_x, sum_y) = points
-        .iter()
-        .take(points.len().saturating_sub(1).max(1))
-        .fold((0.0, 0.0), |(x, y), p| (x + p.0, y + p.1));
-    (sum_x / n, sum_y / n)
 }
 
 /// A copy of the ring pulled toward its centroid: by a scale `factor`
@@ -510,11 +730,7 @@ fn inset_ring(ring: &[Value], factor: f64, metres: Option<(f64, bool)>) -> Vec<V
             let (nx, ny) = match metres {
                 None => (cx + dx * factor, cy + dy * factor),
                 Some((distance, geographic)) => {
-                    let (sx, sy) = if geographic {
-                        (111_320.0 * cy.to_radians().cos(), 110_540.0)
-                    } else {
-                        (1.0, 1.0)
-                    };
+                    let (sx, sy) = measure::scale_at(cy, geographic);
                     let length = ((dx * sx).powi(2) + (dy * sy).powi(2)).sqrt().max(1e-9);
                     let shrink = (1.0 - distance / length).max(0.0);
                     (cx + dx * shrink, cy + dy * shrink)
@@ -523,10 +739,6 @@ fn inset_ring(ring: &[Value], factor: f64, metres: Option<(f64, bool)>) -> Vec<V
             json!([round7(nx), round7(ny)])
         })
         .collect()
-}
-
-fn round7(value: f64) -> f64 {
-    (value * 1e7).round() / 1e7
 }
 
 /// The largest closed outline a sheet draws — on a floor plan, the
@@ -610,11 +822,7 @@ fn stitch_polylines(mut open: Vec<Vec<(f64, f64)>>, tolerance: f64) -> Vec<Vec<(
 /// scale is applied by the caller).
 fn centre_in_metres(points: &[(f64, f64)], geographic: bool) -> (Vec<(f64, f64)>, (f64, f64)) {
     let origin = centroid(points);
-    let (sx, sy) = if geographic {
-        (111_320.0 * origin.1.to_radians().cos(), 110_540.0)
-    } else {
-        (1.0, 1.0)
-    };
+    let (sx, sy) = measure::scale_at(origin.1, geographic);
     let centred = points
         .iter()
         .map(|&(x, y)| ((x - origin.0) * sx, (y - origin.1) * sy))
@@ -755,7 +963,7 @@ fn resolve_outline(
     let ratio = outline_area / target_area.max(1e-9);
     if !(0.45..=2.2).contains(&ratio) {
         return Err(format!(
-            "outline page {page}: drawn outline is {outline_area:.1} m² against a              {target_area:.1} m² candidate — not the same building"
+            "outline page {page}: drawn outline is {outline_area:.1} m² against a {target_area:.1} m² candidate — not the same building"
         ));
     }
 
@@ -763,16 +971,12 @@ fn resolve_outline(
     let allowance = (0.12 * target_area.sqrt()).max(0.6);
     if score > allowance {
         return Err(format!(
-            "outline page {page}: outline does not align with the candidate              (mean corner distance {score:.2} m)"
+            "outline page {page}: outline does not align with the candidate (mean corner distance {score:.2} m)"
         ));
     }
 
     // Back into the anchor's frame, about the candidate's position.
-    let (sx, sy) = if geographic {
-        (111_320.0 * target_origin.1.to_radians().cos(), 110_540.0)
-    } else {
-        (1.0, 1.0)
-    };
+    let (sx, sy) = measure::scale_at(target_origin.1, geographic);
     let placed_ring: Vec<Value> = aligned
         .iter()
         .map(|&(x, y)| {
@@ -900,8 +1104,16 @@ fn prompt(vector: &DocumentVector, selection: &Selection, candidates: &[Candidat
         .enumerate()
         .map(|(id, c)| {
             format!(
-                "candidate {id}: area {:.1}, {} corners, centre ({:.6}, {:.6})",
-                c.area, c.corners, c.centre.0, c.centre.1
+                "candidate {id}: area {:.1}, {} corners, centre ({:.6}, {:.6}){}",
+                c.area,
+                c.corners,
+                c.centre.0,
+                c.centre.1,
+                if c.is_parcel {
+                    " — THE PARCEL BOUNDARY: a fence may follow it, no building stands on it"
+                } else {
+                    ""
+                }
             )
         })
         .collect();
@@ -962,14 +1174,21 @@ struct PartSpec {
 /// Validates one `add_part` call, or says why it cannot be used.
 fn spec_from(
     arguments: &Value,
-    candidate_count: usize,
+    candidates: &[Candidate],
     index: usize,
 ) -> std::result::Result<PartSpec, String> {
     let candidate_id = arguments["footprint_candidate"]
         .as_u64()
         .ok_or("no footprint_candidate")? as usize;
-    if candidate_id >= candidate_count {
+    if candidate_id >= candidates.len() {
         return Err(format!("candidate {candidate_id} does not exist"));
+    }
+    // The model picks the parcel for the house more often than not when the
+    // parcel is the largest ring on the sheet; the rule is geometry's.
+    if candidates[candidate_id].is_parcel && arguments["kind"].as_str() != Some("fence") {
+        return Err(format!(
+            "candidate {candidate_id} is the parcel boundary, not a building footprint"
+        ));
     }
     let height_m = arguments["height_m"].as_f64().ok_or("no height_m")?;
     if !(height_m > 0.0 && height_m < 500.0) {
@@ -1119,11 +1338,11 @@ fn hex_color(value: &Value) -> Option<String> {
         .then(|| format!("#{}", hex.to_ascii_lowercase()))
 }
 
-fn write_building(dir: &Path, document: &str, collection: &Value) -> Result<String> {
+fn write_building(dir: &Path, file_name: &str, collection: &Value) -> Result<String> {
     let subdir = dir.join("building");
     std::fs::create_dir_all(&subdir)
         .with_context(|| format!("cannot create output directory {}", subdir.display()))?;
-    let name = format!("building/{document}.geojson");
+    let name = format!("building/{file_name}");
     let path = dir.join(&name);
     let mut file = std::fs::File::create(&path)
         .with_context(|| format!("cannot create {}", path.display()))?;
@@ -1139,8 +1358,8 @@ mod tests {
     /// A 20 m x 10 m rectangle at Yerevan's latitude, drawn in degrees.
     fn rectangle() -> Vec<(f64, f64)> {
         let (lon, lat) = (44.5_f64, 40.09_f64);
-        let dlon = 20.0 / (111_320.0 * lat.to_radians().cos());
-        let dlat = 10.0 / 110_540.0;
+        let (per_lon, per_lat) = measure::metres_per_degree(lat);
+        let (dlon, dlat) = (20.0 / per_lon, 10.0 / per_lat);
         vec![
             (lon, lat),
             (lon + dlon, lat),
@@ -1160,6 +1379,7 @@ mod tests {
             area: 200.0,
             corners: 4,
             centre: (44.5, 40.09),
+            is_parcel: false,
         }]
     }
 
@@ -1195,7 +1415,7 @@ mod tests {
     }
 
     fn realize(arguments: Value, candidates: &[Candidate]) -> (PartReport, Vec<Value>) {
-        let spec = spec_from(&arguments, candidates.len(), 0).expect("a sound part");
+        let spec = spec_from(&arguments, candidates, 0).expect("a sound part");
         realize_part(&spec, candidates, true, None)
     }
 
@@ -1224,7 +1444,7 @@ mod tests {
             json!({"footprint_candidate": 0, "height_m": 10.0, "base_m": 11.0}),
             json!({"height_m": 10.0}),
         ] {
-            assert!(spec_from(&bad, candidates.len(), 0).is_err());
+            assert!(spec_from(&bad, &candidates, 0).is_err());
         }
     }
 
@@ -1281,6 +1501,7 @@ mod tests {
             area: 1380.0,
             corners: 4,
             centre: (20.0, 17.25),
+            is_parcel: false,
         }];
         scale_candidates(&mut candidates, 500.0);
         let factor = 500.0 * 0.0254 / 72.0;
@@ -1363,6 +1584,7 @@ mod tests {
             area: 80.0,
             corners: 4,
             centre: (100.0, 60.0),
+            is_parcel: false,
         }];
         let spec = |page: Option<usize>, scale: Option<f64>| PartSpec {
             name: "house".into(),
@@ -1405,6 +1627,7 @@ mod tests {
             area: 9.0,
             corners: 4,
             centre: (1.5, 1.5),
+            is_parcel: false,
         }];
         assert!(resolve_outline(&spec(Some(12), Some(100.0)), &sources, &tiny, false).is_err());
         assert!(
@@ -1462,6 +1685,34 @@ mod tests {
         assert!(
             select_pages(&vector, None).is_none(),
             "no drawing, no anchor"
+        );
+    }
+
+    #[test]
+    fn the_parcel_boundary_is_flagged_and_refused_as_a_building() {
+        // The reference parcel with an extra collinear vertex, and the
+        // same boundary drawn with four corners: one ring, two vertex
+        // means metres apart, one area centroid.
+        let mut parcel = rectangle();
+        let mid = ((parcel[0].0 + parcel[1].0) / 2.0, parcel[0].1);
+        parcel.insert(1, mid);
+        let collection = json!({"features": [
+            {"geometry": {"type": "Polygon", "coordinates": [ring(&parcel)]},
+             "properties": {"kind": "reference_parcel"}},
+        ]});
+        let mut candidates = one_candidate();
+        mark_parcel_candidates(&mut candidates, anchor_parcel(&collection).as_ref(), true);
+        assert!(candidates[0].is_parcel, "the drawn boundary is the parcel");
+
+        let house_on_parcel = json!({"footprint_candidate": 0, "height_m": 7.6});
+        assert!(
+            spec_from(&house_on_parcel, &candidates, 0).is_err(),
+            "a building cannot stand on the parcel ring"
+        );
+        let fence = json!({"footprint_candidate": 0, "kind": "fence", "height_m": 2.0});
+        assert!(
+            spec_from(&fence, &candidates, 0).is_ok(),
+            "a fence follows it"
         );
     }
 

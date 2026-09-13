@@ -19,6 +19,7 @@ requires `dossier --answers` to reproduce those annotations exactly.
 | `schema_version` | This document's version |
 | `document` / `source` / `page_count` | Same meaning as the `vector` command |
 | `stats` | Per-dossier counts (routes, QR pages, handwriting pages, placed pages) |
+| `request` | What the application form asks for: `{"page", "via", "action", "object"?, "use"?, "use_page"?, "works"?, "storeys"?, "address"?, "planned"?}` — see the `request` subsection of the `dossier` contract in `json-api.md` for the vocabularies. Deterministic, read off the Ձև N 1-1 form's fixed slots; absent when no embedded-text application form states a request |
 | `pages` | Array, one entry per page, in page order |
 | `groups` | Document sections: pages that belong together |
 | `entities` | Deduplicated real-world identifiers found anywhere in the dossier |
@@ -45,7 +46,7 @@ requires `dossier --answers` to reproduce those annotations exactly.
 | `groups` | Ids into top-level `groups` |
 | `related_pages` | Non-group relations: `{"page": N, "relation": "continues" \| "duplicate_of"}` |
 | `georeference` | Verbatim from `vector` **when placed**; absent otherwise |
-| `cad` | Present on drawing pages: `{"geojson": "<relative path>", "crs", "features"}` — the geometry extraction lives in the GeoJSON file, georeferenced when the page placed |
+| `cad` | Present on drawing pages **and on every placed page**: `{"geojson": "<relative path>", "crs", "features"}` — the geometry extraction lives in the GeoJSON file, georeferenced when the page placed. A page the structural heuristic could not classify but that was fitted to the survey is labelled `cad_drawing` by the deterministic pass — geometry decides |
 | `anomaly` | Free-form flag for things a reviewer must see (e.g. a title block naming a different project) |
 | `notes` | Reviewer's free-text page note, carried over from the answers file; absent unless written |
 

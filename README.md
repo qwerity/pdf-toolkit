@@ -115,6 +115,7 @@ writes GeoJSON.
 ./dist/pdf-toolkit vector input.pdf
 ./dist/pdf-toolkit vector input.pdf --pages 9
 ./dist/pdf-toolkit vector input.pdf --output out        # also write .geojson files
+./dist/pdf-toolkit vector input.pdf --parcel parcel.geojson   # place table-less sheets from a known parcel polygon
 ```
 
 A survey sheet usually prints a table of boundary turning-point coordinates,
@@ -164,6 +165,11 @@ routing, decoded QR payloads, entities, groups and a derived document graph,
 with the `vector` classification and georeferencing folded in. Pages a binary
 cannot read — scans, handwriting, mis-encoded text layers — carry a vision-model
 work order instead of a guess; a second run merges what that pass returned.
+The application form's fixed slots are read into a `request` block — the
+action from the form's own closed list (build, rebuild, restore, strengthen,
+change use), the object, use, secondary works, storeys, site address and
+the parameters line — so a caller learns what is being asked without
+reading prose.
 
 ```bash
 ./dist/pdf-toolkit dossier input.pdf                          # deterministic pass
@@ -186,14 +192,16 @@ The output shape is `docs/annotation-schema.md`; the command contract is the
 
 ### cadfix and building (experimental)
 
-Both drive a hosted model — `gpt-6-astra` by default (`--model` takes any
-spec `--vlm` takes; `OPENAI_API_KEY` for `gpt-*`, see `.env.sample`) — and
+Both drive a hosted model — `gemini-3.8-flash` by default, the same as
+`--vlm` (`--model` takes any spec `--vlm` takes; `GEMINI_API_KEY` for
+`gemini-*`, `OPENAI_API_KEY` for `gpt-*`, see `.env.sample`) — and
 both keep the toolkit's discipline: **the model proposes, extracted geometry
 decides**. Coordinates never come from a model.
 
 ```bash
 ./dist/pdf-toolkit cadfix input.pdf --page 11 -o out      # layers, noise, ring closing
 ./dist/pdf-toolkit building input.pdf --answers a.json -o out
+./dist/pdf-toolkit building input.pdf --parcel parcel.geojson -o out   # on the map without a survey table
 ```
 
 `cadfix` shows the model the rendered sheet beside an inventory of the
@@ -215,7 +223,11 @@ exact extracted CAD rings; when a floor plan draws a richer *closed*
 exterior outline, the model names that sheet (`outline_page`) and the
 toolkit extrudes the exact drawn outline, aligned onto the site position —
 loose CAD polylines are stitched first, and an outline that fails the area
-or alignment guard falls back to the site ring with a warning. Both commands are
+or alignment guard falls back to the site ring with a warning. Beside the
+extrusions, `building` measures the site deterministically — parcel and
+footprint side lengths, each building's setback to every parcel side,
+building-to-building and building-to-fence clearances — as a second,
+labelled GeoJSON layer (`measurements`) a map can toggle. Both commands are
 networked and opt-in, like `--vlm`, and every hosted call logs its token
 usage and estimated cost on stderr, priced from
 `crates/llm-providers/models.json`.
@@ -238,7 +250,7 @@ usage and estimated cost on stderr, priced from
   the current directory; `vector`, `dossier`, `cadfix` and `building` write
   their `.geojson` files only when it is given.
 - `--model`: `cadfix` and `building` only; the hosted model spec, default
-  `gpt-6-astra`. `--page`: `cadfix` only; the one page to refine.
+  `gemini-3.8-flash`. `--page`: `cadfix` only; the one page to refine.
 - `--concat` / `-c`: `cut` merges the selection into one PDF; `text` merges it
   into one `.txt` file. `text` also merges when the selection is `all`, which is
   the default — so only an explicit page selection yields per-page files.

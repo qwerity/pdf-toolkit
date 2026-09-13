@@ -20,12 +20,14 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use indexmap::IndexMap;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::report::Relation;
 
-/// Everything the vision pass answered for one document.
-#[derive(Debug, Default, Deserialize)]
+/// Everything the vision pass answered for one document. Serializable too:
+/// a live `--vlm` pass writes what it answered so a later `building
+/// --answers` can reuse it instead of asking again.
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Answers {
     /// Keyed by one-based page number.
     #[serde(default)]
@@ -43,7 +45,7 @@ pub struct Answers {
 }
 
 /// What the vision pass said about one page.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct PageAnswer {
     pub labels: Vec<String>,
     /// `digital`, `scan`, or `mixed`.
@@ -76,26 +78,26 @@ pub struct PageAnswer {
     pub encoding_issue: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct RelatedAnswer {
     pub page: usize,
     pub relation: Relation,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct HandwritingAnswer {
     pub extent: String,
     #[serde(default)]
     pub script: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GroupMeta {
     pub kind: String,
     pub title: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct PersonMeta {
     pub value: String,
     #[serde(default)]

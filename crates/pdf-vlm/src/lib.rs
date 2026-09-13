@@ -33,6 +33,7 @@ use pdf_render::{PngSize, render_page, write_png};
 
 pub mod building;
 pub mod cad;
+pub mod measure;
 
 pub use llm_providers::ASTRA_MODEL;
 

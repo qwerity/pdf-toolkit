@@ -33,7 +33,7 @@ use pdf_vector::{DocumentVector, PageVector, VectorOptions};
 use crate::answers::{Answers, PageAnswer};
 use crate::entities::{self, Found, Template};
 use crate::report::*;
-use crate::{qr, text_signals};
+use crate::{qr, request, text_signals};
 
 /// Whether a label marks a page whose geometry export is worth referencing:
 /// the classifier's own drawing classes, plus the labels this schema adds on
@@ -122,19 +122,23 @@ pub fn build_dossier(
     path: &Path,
     options: &DossierOptions,
 ) -> Result<DossierReport> {
-    assemble(&analyze(pdfium, path)?, options)
+    assemble(&analyze(pdfium, path, &VectorOptions::default())?, options)
 }
 
 /// The expensive half: reads text, routing signals, QR payloads and the
-/// vector geometry for every page.
-pub fn analyze(pdfium: &Pdfium, path: &Path) -> Result<DossierAnalysis> {
-    let vector =
-        pdf_vector::extract_document(path, &[], &VectorOptions::default()).with_context(|| {
-            format!(
-                "failed to extract vector geometry from '{}'",
-                path.display()
-            )
-        })?;
+/// vector geometry for every page. `vector` carries what the caller knows
+/// about the site — parcel polygons for sheets that print no table.
+pub fn analyze(
+    pdfium: &Pdfium,
+    path: &Path,
+    vector_options: &VectorOptions,
+) -> Result<DossierAnalysis> {
+    let vector = pdf_vector::extract_document(path, &[], vector_options).with_context(|| {
+        format!(
+            "failed to extract vector geometry from '{}'",
+            path.display()
+        )
+    })?;
     let inputs = collect_page_inputs(pdfium, path)
         .with_context(|| format!("failed to analyze '{}'", path.display()))?;
     Ok(DossierAnalysis {
@@ -174,7 +178,28 @@ pub fn assemble(analysis: &DossierAnalysis, options: &DossierOptions) -> Result<
     let subject = subject_parcel(&facts);
     let group_meta = group_metadata(&facts, &certificate_numbers, answers, subject.as_deref());
 
-    emit_report(analysis, facts, group_meta, answers, options, &vector_pages)
+    let page_texts: Vec<request::PageText<'_>> = analysis
+        .inputs
+        .iter()
+        .zip(&facts)
+        .filter(|(input, _)| input.embedded())
+        .map(|(input, fact)| request::PageText {
+            number: input.number,
+            labels: &fact.labels,
+            text: &input.text,
+        })
+        .collect();
+    let request = request::detect(&page_texts);
+
+    emit_report(
+        analysis,
+        facts,
+        group_meta,
+        request,
+        answers,
+        options,
+        &vector_pages,
+    )
 }
 
 /// The pages a vision pass should be asked about: flagged by the report, and
@@ -416,6 +441,17 @@ fn deterministic_labels(
                     vec!["cad_drawing".into(), class.as_str().to_string()]
                 }
             }
+            // Geometry decides: a sheet that placed drew the parcel well
+            // enough to be fitted to its survey, whatever the structural
+            // heuristic made of its line density. Its text layer, where it
+            // has one, is still text.
+            Some(v) if v.georeference.as_ref().is_some_and(|g| g.placed) => {
+                if route == Route::EmbeddedText {
+                    vec!["cad_drawing".into(), "text_document".into()]
+                } else {
+                    vec!["cad_drawing".into()]
+                }
+            }
             _ if route == Route::EmbeddedText => vec!["text_document".into()],
             _ => vec!["unknown".into()],
         },
@@ -614,6 +650,7 @@ fn emit_report(
     analysis: &DossierAnalysis,
     facts: Vec<PageFacts>,
     group_meta: IndexMap<String, (String, String)>,
+    request: Option<request::Request>,
     answers: Option<&Answers>,
     options: &DossierOptions,
     vector_pages: &HashMap<usize, &PageVector>,
@@ -870,6 +907,7 @@ fn emit_report(
         page_count: analysis.vector.page_count,
         generated_by: generated_by(answers.is_some()),
         stats,
+        request,
         pages: pages_out,
         groups: groups_out,
         entities: entities_out,
@@ -877,6 +915,7 @@ fn emit_report(
         georeference_note: answers.and_then(|a| a.georef_note.clone()),
         note: answers.and_then(|a| a.note.clone()),
         warnings: analysis.vector.warnings.clone(),
+        answers_file: None,
     })
 }
 
@@ -911,7 +950,10 @@ fn build_cad(
     options: &DossierOptions,
     geojson_dir_ready: &mut bool,
 ) -> Result<Option<Cad>> {
-    let is_drawing_page = labels.iter().any(|l| is_drawing_label(l));
+    // A placed page carries georeferenced geometry whatever it is labelled:
+    // the export is the one thing a caller cannot get elsewhere.
+    let placed = vector_page.is_some_and(|v| v.georeference.as_ref().is_some_and(|g| g.placed));
+    let is_drawing_page = placed || labels.iter().any(|l| is_drawing_label(l));
     let (Some(vector_page), true) = (vector_page, is_drawing_page) else {
         return Ok(None);
     };

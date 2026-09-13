@@ -107,6 +107,11 @@ pub struct DossierReport {
     /// deterministic-only run from one merged with vision-model answers.
     pub generated_by: String,
     pub stats: Stats,
+    /// What the application form asks for — action, object, use, works —
+    /// read off the form's fixed slots. Absent when no embedded-text
+    /// application form states a request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request: Option<crate::request::Request>,
     pub pages: Vec<PageAnnotation>,
     pub groups: Vec<Group>,
     pub entities: Vec<Entity>,
@@ -121,6 +126,11 @@ pub struct DossierReport {
     /// that could not run does not look like a check that passed.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub warnings: Vec<String>,
+    /// With `--vlm` and `--output`: the merged vision-pass answers, written as
+    /// `answers/<document>.json` relative to the output directory — the file
+    /// `building --answers` takes. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answers_file: Option<String>,
 }
 
 /// Per-dossier counts, so a caller can see the shape of the work at a glance.
@@ -436,6 +446,7 @@ mod tests {
             page_count: pages.len(),
             generated_by: String::new(),
             stats: Stats::default(),
+            request: None,
             pages,
             groups: Vec::new(),
             entities: Vec::new(),
@@ -443,6 +454,7 @@ mod tests {
             georeference_note: None,
             note: None,
             warnings: Vec::new(),
+            answers_file: None,
         }
     }
 

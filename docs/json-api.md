@@ -50,10 +50,11 @@ pdf-toolkit <command> <input.pdf> [options]
 | `--scale-width-px` | `render` | Exact output width in pixels; preserves aspect ratio |
 | `--structured-format` | `structured` | `full` (default) or `markdown` |
 | `--georeference`, `-g` | `vector` | `local_x,local_y,longitude,latitude`; repeatable |
+| `--parcel` | `vector`, `dossier`, `building` | A GeoJSON file of WGS 84 parcel polygon(s) — the cadastre's statement of the boundary. Matched by shape to sheets that draw the parcel but print no coordinate table; see `georeference.source: "parcel_polygon"` |
 | `--answers` | `dossier`, `building` | Vision-pass answers file (`dossier`: merged; `building`: labels sharpen sheet selection) |
 | `--vlm` | `dossier` | In-process vision pass. Bare `--vlm` uses `gemini-3.8-flash`; see below |
 | `--page` | `cadfix` | The one page holding the drawing to refine |
-| `--model` | `cadfix`, `building` | Hosted model; defaults to `gpt-6-astra`. Same spec grammar as `--vlm`. |
+| `--model` | `cadfix`, `building` | Hosted model; defaults to `gemini-3.8-flash`, like `--vlm`. Same spec grammar. |
 
 An option that does not apply to a command does not exist on it, and using it is
 a usage error rather than a silently ignored flag.
@@ -417,9 +418,9 @@ Not placed:
 | Field | Type | Notes |
 |---|---|---|
 | `placed` | bool | The only field always present. Branch on it first. |
-| `source` | enum | `text_layer`, `document_table` or `references`. Absent when not placed. |
+| `source` | enum | `text_layer`, `document_table`, `parcel_polygon` or `references`. Absent when not placed. |
 | `failure.reason` | enum | Absent when placed. See below. |
-| `crs` | string | The CRS the **fit** was made in — the exported coordinates are WGS 84 either way. Absent if it could not be identified. |
+| `crs` | string | The CRS the **fit** was made in — the exported coordinates are WGS 84 either way. Absent if it could not be identified. The Gauss-Krüger tables are read **without a Pulkovo datum shift**: the Yerevan cadastre publishes the same parcels that way, and the surveyor's turning points land on the city's parcel to the centimetre only under that reading (measured on two corpus parcels; the EPSG Pulkovo 1942 → WGS 84 shift put them 105 m off). |
 | `rmse_m` | float | RMS residual over the control points, in metres |
 | `max_residual_m` | float | Worst single residual, in metres |
 | `control_points_used` | int | Points the fit was built on |
@@ -437,6 +438,20 @@ complete small parcel at confident residual). The `rmse_m` is this
 sheet's own fit; the `fitted_scale_denominator` is this sheet's own
 drawing scale. `printed_dimensions` never appears with a lent table —
 this sheet did not print the side lengths.
+
+`parcel_polygon` says the sheet was placed from a polygon the caller
+supplied with `--parcel` — typically the cadastre's own polygon for the
+subject parcel — matched to the drawn outline exactly like a lent sibling
+table, under a stricter gate: at least two thirds of the polygon's corners
+must match at a residual of 0.1 m or better, because an external polygon is
+tried against every unplaced page of the dossier and five corners of fifteen
+at decimetre residual is what a facade's window grid produces. On the
+corpus's dossier 1, which prints no coordinate table at all, the cadastre
+polygon places five sheets with all fifteen corners at 6–9 mm (the 1:2000
+extract at 51 mm) and leaves the table of contents and the elevations
+unplaced. The parcel used appears in the page's collection as a
+`kind: "reference_parcel"` polygon (`coordinate_source: "external:parcel"`),
+distinct from a `survey_parcel`, which is the surveyor's own statement.
 
 **`rmse_m` is the number that says a placement is right.** A survey sheet is
 plotted from the same coordinates its table lists, so a correct fit agrees to
@@ -479,6 +494,31 @@ A standard `FeatureCollection` with a `metadata` foreign member.
 
 Feature properties: `document`, `page`, `stroke` (source colour as `#rrggbb`),
 `length_m`, and `layer` when the CAD export named one.
+
+**A placed page's collection ends with the subject parcel itself**: one
+`Polygon` feature with `kind: "survey_parcel"`, built from the turning-point
+table the fit was made on rather than from the line work — so a caller can
+draw the boundary, or measure it, without guessing which drawn ring it is.
+Copied from a real run (`jq '.pages[0].geojson.features[-1].properties'`):
+
+```json
+{
+  "area_m2": 512.40,
+  "coordinate_source": "text_layer",
+  "document": "2",
+  "kind": "survey_parcel",
+  "page": 11,
+  "perimeter_m": 92.810,
+  "turning_points": 10,
+  "verified": true
+}
+```
+
+`verified` is always `true` here — the ring is the very table the drawing
+was fitted to. With a lent table (`georeference.source: "document_table"`)
+the ring is the sibling sheet's survey, which is the parcel all the same.
+It is counted in `summary.features` and `summary.polygons`. Unplaced pages
+have no such feature: nothing on them says where the parcel is.
 
 Placed pages carry the fit in `metadata`:
 
@@ -620,9 +660,11 @@ changes its rates. Model quality on the annotation task is compared in
 | `document` / `source` / `page_count` | As in `vector` |
 | `generated_by` | Names the passes; says whether answers were merged or are pending |
 | `stats` | Per-dossier counts: route totals, `vlm_flagged`, `qr_pages`, `handwriting_pages`, `placed_pages` |
+| `request` | What the application form asks for — see below. Absent when no embedded-text application form states a request. |
 | `pages` | Array, one entry per page — field tables in `annotation-schema.md` |
 | `groups` / `entities` / `graph` | Document sections, the identifier registry, and the derived edges |
 | `warnings` | Pages whose geometry extraction failed, verbatim from the vector pass; also printed as `Warning:` stderr lines. Absent when none — a page listed here has no classification/`cad`, and this is what says why. |
+| `answers_file` | With `--vlm` **and** `--output`: `answers/<document>.json`, relative to the output directory — the merged vision-pass answers in the `--answers` format, so a following `building --answers` reuses them instead of asking again. Absent otherwise. |
 
 Branch on these enums, not on prose:
 
@@ -649,7 +691,50 @@ Internal-consistency problems (a dangling group or entity reference, an
 out-of-range related page) are reported as `Warning:` lines on stderr, per
 the toolkit-wide rule; the JSON on stdout is emitted either way.
 
-With `--output`, each drawing page's GeoJSON is written under
+### `request`
+
+The Ձև N 1-1 application form has one fixed slot for what is asked, filled
+from a closed list the form itself prints (կառուցում, վերակառուցում,
+վերականգնում, ուժեղացում, գործառնական նշանակության փոփոխում), so the
+**action is a lookup, not a reading**. The object description, site address
+and the «1. Նախատեսում եմ» parameters line are carried verbatim; `use`,
+`works` and `storeys` are keyword facts over those strings. Copied from a
+real run on a synthetic form (`jq .request`):
+
+```json
+{
+  "action": "new_construction",
+  "address": "Երևան, Օրինակ վարչական շրջան Նմուշի 1-ին փողոց 2/3 հողամաս",
+  "object": "Երկհարկանի բնակելի տուն և պարիսպ",
+  "page": 1,
+  "planned": "հիմնական շենք 10,00x8,00 մ, 160,00 քմ, պարիսպ 0,2x40 մ",
+  "storeys": 2,
+  "use": "residential",
+  "use_page": 1,
+  "via": "embedded_text",
+  "works": [
+    "fence"
+  ]
+}
+```
+
+| Field | Notes |
+|---|---|
+| `page` / `via` | The application-form page read, and how (`embedded_text`; the block is deterministic) |
+| `action` | `new_construction` \| `reconstruction` \| `restoration` \| `strengthening` \| `change_of_use` \| `other` — the form's own list; `other` when the slot holds something outside it (the verbatim text is then in `object`) |
+| `object` | The description filled in beside the action, verbatim. Absent when the applicant wrote none. |
+| `use` | `residential` \| `commercial` \| `industrial` \| `mixed`. **Absent when no page names one** — an auxiliary annex says nothing about use, and absence is the honest answer. |
+| `use_page` | The page whose text named the use: the form itself, else the first other embedded-text page (an album title block). Cadastre certificates and references are never consulted — their «բնակելի կառուցապատման» is the land's designation, not the request. Present with `use`. |
+| `works` | Secondary works the request names: `demolition`, `annex`, `extension`, `fence`, `garage`, `basement`, `attic`, `canopy`, `summer_kitchen`, `replanning`. «առանց նկուղի» (without a basement) is honoured. Absent when empty. |
+| `storeys` | Storey count the request states, as a digit («2 հարկից») or an Armenian compound («երկհարկանի», «միահարկ»). Absent when unstated. |
+| `address` | The site address as the form states it, with the cadastral code removed — the code is an entity of its own (`entities[]`, and the subject parcel) |
+| `planned` | The «1. Նախատեսում եմ» line verbatim: dimensions, areas, whatever was typed. Absent when empty. |
+
+A scanned application form is routed to the vision pass like any scan and
+yields no `request` in this version; the block is deterministic by design.
+
+With `--output`, each drawing page's GeoJSON — and every **placed** page's,
+whatever it is labelled — is written under
 `<dir>/geojson/<document>/<document>_pNN.geojson` and referenced from
 `pages[].cad.geojson` by that relative path; without it, `cad` still reports
 `crs` and `features` but no path. An absent field is not a false one, here as
@@ -670,7 +755,7 @@ the model**, and a proposal referencing a feature that does not exist
 degrades to a `Warning:` stderr line and a `warnings` entry, not a change.
 
 ```
-pdf-toolkit cadfix input.pdf --page 11 [--model gpt-6-astra] [-o dir]
+pdf-toolkit cadfix input.pdf --page 11 [--model gemini-3.8-flash] [-o dir]
 ```
 
 Copied from a real run (`jq 'del(.geojson)'` — the `geojson` field carries
@@ -713,16 +798,30 @@ says the finished site must look like — every house block of a development,
 the perimeter fence, roof forms, facade colours. The drawing set's
 **visualization section** (development scheme, facades and sections with
 level marks, roof plan, indicator table, 3D renders — usually the last
-sheets) is what the model reads; the **anchor sheet** — the placed page
-where one exists, else the plan-view sheet richest in closed outlines —
+sheets) is what the model reads; the **anchor sheet** — among placed pages
+the sheet drawn at 1:1000 or finer that holds the most structure-sized
+closed outlines, a plan-view label (site plan, general plan, cadastral
+plan, over a floor plan whose rings are rooms) and then confidence of fit
+as tie-breaks; else the plan-view sheet richest in outlines. Outlines that
+are the parcel boundary do not count. A placed sheet holding no building
+outline at all while an unplaced plan sheet holds some yields the anchor to
+the latter — a reconstruction in the sheet's own metres over a georeferenced
+refusal. Outlines drawn as loose polylines are stitched into rings first —
 supplies footprint candidates as exact extracted geometry. One request,
 parallel tool calls: `add_part` per structure, `set_facts` once for the
 printed indicator numbers. The model reads numbers and colours; it never
 draws.
 
 ```
-pdf-toolkit building input.pdf [--answers a.json] [--model gpt-6-astra] [-o dir]
+pdf-toolkit building input.pdf [--answers a.json] [--parcel parcel.geojson] [--model gemini-3.8-flash] [-o dir]
 ```
+
+`--parcel` is what puts a reconstruction on the map for a dossier that prints
+no coordinate table: the anchor sheet is placed from the supplied polygon
+(`georeference.source: "parcel_polygon"`), the footprints come out in WGS 84,
+and the measurements are taken against that polygon (`parcel.source:
+"reference_parcel"`). Without it such a dossier reconstructs in
+`local_metres` — right in shape, unknown in position.
 
 `--answers` labels (`elevation_or_section`, `floor_plan`, `general_plan`,
 `photo_montage`, `3d_view`, …) sharpen which sheets are shown; without them
@@ -740,14 +839,15 @@ dossiers routinely end in identity-document scans. Copied from a real run (`jq '
     "anchor_scale_denominator": 500,
     "buildings": 3,
     "floors": 2,
-    "footprint_area_m2": 0,
-    "height_m": 7.6,
-    "notes": "Three proposed identical houses A1–A3. Areas are printed per typical house, not development totals: first floor 62.15 m², second floor 57.58 m², total 119.73 m²; roof 66.76 m². No footprint-area indicator is printed in the supplied sheets; footprint_area_m2=0 denotes unavailable, not a stated zero area. Individual facades mark the parapet +7.600 relative to +0.000; overall site elevations additionally dimension 8000 mm from grade, including the 400 mm plinth offset. Perimeter wall is dimensioned 2400 mm. Flat parapet roofs and light warm-grey finishes follow the renders. Existing neighbouring buildings are outside the proposed development.",
+    "footprint_area_m2": 63.7,
+    "height_m": 8,
+    "notes": "Development of 3 identical two-storey residential houses (Ա1, Ա2, Ա3) with a stone perimeter fence. Each house has footprint 7.0m x 9.1m = 63.7 m2, total area 119.73 m2, flat roof with parapet at 7.6m (8.0m above ground). Perimeter fence height 2.4m.",
     "roof_area_m2": 66.76,
-    "total_area_m2": 119.73
+    "total_area_m2": 359.19
   },
   "geojson_file": "building/1.geojson",
-  "model": "gpt-6-astra",
+  "measurements_file": "building/1.measurements.geojson",
+  "model": "gemini-3.8-flash",
   "pages_used": [
     11,
     14,
@@ -757,50 +857,60 @@ dossiers routinely end in identity-document scans. Copied from a real run (`jq '
     13,
     18
   ],
+  "parcel": {
+    "area_m2": 548.97,
+    "perimeter_m": 99.5,
+    "sides": 13,
+    "source": "fence"
+  },
   "parts": [
     {
       "base_m": 0.0,
-      "color": "#d8d4d0",
+      "color": "#e8e8e8",
       "floors": 2,
       "footprint_area": 64.3,
       "footprint_candidate": 24,
-      "height_m": 7.6,
+      "height_m": 8.0,
       "kind": "block",
-      "name": "house A1"
+      "name": "House Ա1"
     },
     {
       "base_m": 0.0,
-      "color": "#d8d4d0",
+      "color": "#e8e8e8",
       "floors": 2,
       "footprint_area": 64.3,
       "footprint_candidate": 20,
-      "height_m": 7.6,
+      "height_m": 8.0,
       "kind": "block",
-      "name": "house A2"
+      "name": "House Ա2"
     },
     {
       "base_m": 0.0,
-      "color": "#d8d4d0",
+      "color": "#e8e8e8",
       "floors": 2,
       "footprint_area": 64.3,
       "footprint_candidate": 16,
-      "height_m": 7.6,
+      "height_m": 8.0,
       "kind": "block",
-      "name": "house A3"
+      "name": "House Ա3"
     },
     {
       "base_m": 0.0,
-      "color": "#d8d4d0",
-      "floors": 0,
+      "color": "#e0e0e0",
       "footprint_area": 549.0,
       "footprint_candidate": 0,
       "height_m": 2.4,
       "kind": "fence",
-      "name": "perimeter yard wall"
+      "name": "Perimeter fence"
     }
   ],
   "placed": false,
-  "source": "data/plan/1.pdf"
+  "source": "data/plan/1.pdf",
+  "warnings": [
+    "House Ա1: outline page 12: outline does not align with the candidate (mean corner distance 1.84 m); using the candidate ring",
+    "House Ա2: outline page 12: outline does not align with the candidate (mean corner distance 1.84 m); using the candidate ring",
+    "House Ա3: outline page 12: outline does not align with the candidate (mean corner distance 1.84 m); using the candidate ring"
+  ]
 }
 ```
 
@@ -814,9 +924,62 @@ dossiers routinely end in identity-document scans. Copied from a real run (`jq '
 | `parts[].footprint_candidate` / `footprint_area` | Which extracted ring the part stands on, and the extruded footprint's area (m² when the frame is metric) |
 | `parts[].outline_page` | Present when the part extrudes the **exact outline drawn on that sheet** (a floor plan), scaled by its printed scale and rigidly aligned onto the candidate's position — instead of the site plan's block. Guarded by area ratio and alignment residual; a failed guard falls back to the candidate ring with a `warnings` entry. |
 | `facts` | The printed indicator numbers, verbatim: `height_m`, `floors`, `buildings`, areas, `anchor_scale_denominator`, `notes`. Absent when none were reported. |
-| `warnings` | Proposals that could not be applied; absent when none |
+| `warnings` | Proposals that could not be applied (a building declared on the parcel boundary among them), guards that fell back, and why measurements were omitted; absent when none |
 | `geojson_file` | Present with `--output`: `building/<document>.geojson`, relative to that directory |
 | `geojson` | The extruded FeatureCollection: `height`/`base`/`color` per feature, fences as outer-ring + inset-hole polygons — ready for a Mapbox/MapLibre `fill-extrusion` layer |
+| `parcel` | The ring the measurements are taken against: `source` — `survey_parcel` (the placed anchor's own turning points) \| `reference_parcel` (the `--parcel` polygon the anchor was placed from) \| `fence` (the declared perimeter fence's ring) \| `enclosing_ring` (the largest candidate holding every building) — with `area_m2`, `perimeter_m`, `sides`. **Absent, with a `warnings` entry, when the frame is not metric or no ring qualifies**; `measurements` is absent with it. |
+| `measurements_file` | Present with `--output` and `parcel`: `building/<document>.measurements.geojson` |
+| `measurements` | The dimensions layer, inline — see below |
+
+### `measurements`
+
+Deterministic geometry over the parcel ring and the realized footprints,
+in the same frame as `geojson`, so it draws on the same map and toggles as
+one layer. Every length is the two-point `LineString` it was measured along,
+with `length_m` and a ready `label`; features are typed by `kind`:
+
+| `kind` | Geometry | Properties | Meaning |
+|---|---|---|---|
+| `parcel` | `Polygon` | `source`, `area_m2`, `perimeter_m` | The ring itself |
+| `side` | `LineString` | `of` (`parcel` or a part name), `index` | One edge's length — the parcel's dimensions, and each footprint's |
+| `setback` | `LineString` | `from` (part), `to: "parcel"`, `side` (index) | Shortest distance from a building to that parcel side; `0.00` when it touches or crosses |
+| `clearance` | `LineString` | `from`, `to` (part names) | Shortest distance building↔building, and building↔fence where the fence is not the parcel ring |
+
+Copied from the run above (`jq '.measurements.features[] | select(.properties.kind == "clearance")'`,
+first entry — the gap between two houses of the row):
+
+```json
+{
+  "geometry": {
+    "coordinates": [
+      [
+        -16.8380833,
+        4.445
+      ],
+      [
+        -15.9855558,
+        2.8182382
+      ]
+    ],
+    "type": "LineString"
+  },
+  "properties": {
+    "from": "House Ա1",
+    "kind": "clearance",
+    "label": "1.84 m",
+    "length_m": 1.84,
+    "to": "House Ա2"
+  },
+  "type": "Feature"
+}
+```
+
+On a placed anchor the coordinates are degrees and the lengths are metres
+all the same (measured in a local metric frame from the WGS 84
+metres-per-degree series, centimetre-accurate over a parcel). Each block
+gets one `setback` per parcel side — three houses on a thirteen-sided
+ring is thirty-nine — so a map should filter by `kind`, or by `from`, rather
+than draw everything at once.
 
 A run on a dossier with no drawing pages, no closed outline usable as a
 candidate, or a model that (correctly) declines to match a structure to a
@@ -839,8 +1002,12 @@ worse than none.
   and `vector` use arrays with a numeric `page`/`page_number` instead.
 - **File paths in `cut`, `render` and `text` results are absolute.** `source`
   echoes the input path exactly as typed; `dossier`'s `pages[].cad.geojson`
-  and the `geojson_file` of `cadfix` / `building` are relative to the
-  `--output` directory — the report and its GeoJSON tree are meant to move
-  together.
+  and the `geojson_file` / `measurements_file` of `cadfix` / `building` are
+  relative to the `--output` directory — the report and its GeoJSON tree
+  are meant to move together.
+- **The subject parcel is tagged, not inferred.** Every placed page's
+  collection ends with a `kind: "survey_parcel"` polygon; `building`
+  measures against it. Draw that feature for the boundary rather than
+  picking the largest ring.
 - `vector` is the only command that does not load PDFium; it needs no native
   library and spawns no subprocess.

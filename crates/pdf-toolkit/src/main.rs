@@ -155,7 +155,7 @@ fn vector(args: &VectorArgs) -> Result<()> {
 
     let options = pdf_vector::VectorOptions {
         references: args.georeference.clone(),
-        ..Default::default()
+        ..vector_options(args.parcel.as_deref())?
     };
     let report = pdf_vector::extract_document(
         &args.source.input,
@@ -181,11 +181,12 @@ fn dossier(args: &DossierArgs) -> Result<()> {
         answers,
         output_dir: args.output.clone(),
     };
+    let vector_options = vector_options(args.parcel.as_deref())?;
 
     let pdfium = pdfium()?;
     // The document is read once; a vision-pass merge re-assembles over the
     // same analysis rather than re-extracting and re-rendering every page.
-    let analysis = pdf_dossier::analyze(&pdfium, &args.input)?;
+    let analysis = pdf_dossier::analyze(&pdfium, &args.input, &vector_options)?;
     let mut report = pdf_dossier::assemble(&analysis, &options)?;
 
     // The live vision pass answers what the deterministic run flagged and the
@@ -205,10 +206,42 @@ fn dossier(args: &DossierArgs) -> Result<()> {
             combined.absorb(live);
             options.answers = Some(combined);
             report = pdf_dossier::assemble(&analysis, &options)?;
+            // The merged answers are what `building --answers` wants next, so
+            // they are written beside the report's own files.
+            if let Some(dir) = args.output.as_deref() {
+                report.answers_file = Some(write_answers(
+                    dir,
+                    &report.document,
+                    options.answers.as_ref().expect("just set"),
+                )?);
+            }
         }
     }
 
     print_dossier_output(&report)
+}
+
+/// Writes the merged vision-pass answers as `answers/<document>.json` under
+/// the output directory and returns that relative path.
+fn write_answers(dir: &Path, document: &str, answers: &pdf_dossier::Answers) -> Result<String> {
+    let subdir = dir.join("answers");
+    std::fs::create_dir_all(&subdir)
+        .with_context(|| format!("cannot create '{}'", subdir.display()))?;
+    let name = format!("answers/{document}.json");
+    pdf_vector::write_pretty_json(&dir.join(&name), answers)?;
+    Ok(name)
+}
+
+/// The vector options a `--parcel` file implies: the caller's parcel
+/// polygons, or none.
+fn vector_options(parcel: Option<&Path>) -> Result<pdf_vector::VectorOptions> {
+    Ok(pdf_vector::VectorOptions {
+        parcels: parcel
+            .map(pdf_vector::read_parcel_file)
+            .transpose()?
+            .unwrap_or_default(),
+        ..Default::default()
+    })
 }
 
 fn cadfix(args: &CadfixArgs) -> Result<()> {
@@ -232,10 +265,12 @@ fn building(args: &BuildingArgs) -> Result<()> {
         .transpose()?;
     let client = llm_providers::Client::from_env(&args.model)?;
     let pdfium = pdfium()?;
+    let vector_options = vector_options(args.parcel.as_deref())?;
     let report = pdf_vlm::building::reconstruct(
         &client,
         &pdfium,
         &args.input,
+        &vector_options,
         answers.as_ref(),
         args.output.as_deref(),
     )?;

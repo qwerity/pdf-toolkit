@@ -9,7 +9,6 @@
 //! feature that does not exist is a warning, not a change.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
@@ -327,11 +326,7 @@ fn write_fixed(
     std::fs::create_dir_all(dir)
         .with_context(|| format!("cannot create output directory {}", dir.display()))?;
     let name = format!("{document}_p{page_number:02}.fixed.geojson");
-    let path = dir.join(&name);
-    let mut file = std::fs::File::create(&path)
-        .with_context(|| format!("cannot create {}", path.display()))?;
-    serde_json::to_writer_pretty(&mut file, collection)?;
-    file.flush()?;
+    pdf_vector::write_pretty_json(&dir.join(&name), collection)?;
     Ok(name)
 }
 

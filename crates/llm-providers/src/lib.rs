@@ -9,10 +9,10 @@
 //!   [`ASTRA_MODEL`]
 //! - `vendor/model` — OpenRouter (`OPENROUTER_API_KEY`)
 //!
-//! Every request can carry page images; OpenAI-format providers can also
-//! carry tool definitions, and a reply then holds the model's tool calls —
-//! issued in parallel, so one request over several pages comes back as one
-//! call per finding instead of one round-trip each.
+//! Every request can carry page images and tool definitions on every
+//! provider, and a reply then holds the model's tool calls — issued in
+//! parallel, so one request over several pages comes back as one call per
+//! finding instead of one round-trip each.
 //!
 //! API keys travel in headers, never in URLs, so they cannot leak through a
 //! proxy log or a malformed-URL error message. A provider's error body is
@@ -32,11 +32,13 @@ use base64::Engine;
 use serde_json::{Value, json};
 
 /// OpenAI's GPT-6 Astra: the strongest model available here for reading
-/// construction drawings and carrying out multi-step tool work. Used as the
-/// default for the `cadfix` and `building` commands.
+/// construction drawings and carrying out multi-step tool work, at roughly
+/// ten times the price of the default `gemini-3.8-flash`.
 pub const ASTRA_MODEL: &str = "gpt-6-astra";
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+/// A reconstruction over seven sheets can think for forty thousand tokens
+/// before its first tool call; five minutes cut such replies off.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Which API a model spec is served by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,9 +86,10 @@ impl Provider {
     }
 }
 
-/// How hard an OpenAI reasoning model should think.
+/// How hard a reasoning model should think.
 ///
-/// Honoured on [`Provider::OpenAi`] only; GPT-6 Astra accepts the full range.
+/// GPT-6 Astra accepts the full range; Gemini folds it to its `low` / `high`
+/// thinking levels; OpenRouter models ignore it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effort {
     Low,
@@ -97,6 +100,15 @@ pub enum Effort {
 }
 
 impl Effort {
+    /// Gemini 3 takes a thinking level rather than a budget; `low` and
+    /// `high` are the two every model in the family accepts.
+    fn gemini_level(self) -> &'static str {
+        match self {
+            Effort::Low => "low",
+            _ => "high",
+        }
+    }
+
     fn as_str(self) -> &'static str {
         match self {
             Effort::Low => "low",
@@ -284,12 +296,6 @@ impl Client {
     fn send(&self, request: &Request) -> Result<Reply> {
         match self.provider {
             Provider::Gemini => {
-                if !request.tools.is_empty() {
-                    bail!(
-                        "tool calling is wired for the OpenAI-format providers; \
-                         use a gpt-* or vendor/model spec"
-                    );
-                }
                 let url = format!(
                     "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
                     self.model
@@ -381,29 +387,64 @@ fn gemini_body(request: &Request) -> Value {
         })
         .collect();
     parts.push(json!({"text": request.prompt}));
-    json!({
+    let mut body = json!({
         "contents": [{"parts": parts}],
         "generationConfig": {"temperature": 0, "maxOutputTokens": request.max_output_tokens},
-    })
+    });
+    if let Some(effort) = request.effort {
+        body["generationConfig"]["thinkingConfig"] =
+            json!({ "thinkingLevel": effort.gemini_level() });
+    }
+    if !request.tools.is_empty() {
+        let declarations: Vec<Value> = request
+            .tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                })
+            })
+            .collect();
+        body["tools"] = json!([{"functionDeclarations": declarations}]);
+        body["toolConfig"] = json!({"functionCallingConfig": {"mode": "AUTO"}});
+    }
+    body
 }
 
-/// The concatenated text of a Gemini reply.
+/// The text and function calls of a Gemini reply, in the order the model
+/// produced them. Thought parts are not content and are skipped.
 fn gemini_reply(reply: &Value) -> Result<Reply> {
-    reply["candidates"][0]["content"]["parts"]
+    let parts = reply["candidates"][0]["content"]["parts"]
         .as_array()
-        .map(|parts| {
-            parts
-                .iter()
-                .filter_map(|p| p["text"].as_str())
-                .collect::<String>()
-        })
-        .filter(|text| !text.is_empty())
-        .map(|text| Reply {
-            text,
-            tool_calls: Vec::new(),
-            usage: gemini_usage(reply),
-        })
-        .ok_or_else(|| anyhow!("no text candidate in Gemini reply: {reply}"))
+        .ok_or_else(|| anyhow!("no content parts in Gemini reply: {reply}"))?;
+    let mut text = String::new();
+    let mut tool_calls = Vec::new();
+    for part in parts {
+        if part["thought"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        if let Some(chunk) = part["text"].as_str() {
+            text.push_str(chunk);
+        }
+        if let Some(call) = part.get("functionCall")
+            && let Some(name) = call["name"].as_str()
+        {
+            tool_calls.push(ToolCall {
+                name: name.to_string(),
+                arguments: call.get("args").cloned().unwrap_or(Value::Null),
+            });
+        }
+    }
+    if text.is_empty() && tool_calls.is_empty() {
+        bail!("no text or function call in Gemini reply: {reply}");
+    }
+    Ok(Reply {
+        text,
+        tool_calls,
+        usage: gemini_usage(reply),
+    })
 }
 
 /// Gemini's `usageMetadata`. Thinking tokens are billed as output, so they
@@ -755,6 +796,54 @@ mod tests {
             Value::String("not json at all".into()),
             "a malformed call is carried raw, not fatal"
         );
+    }
+
+    #[test]
+    fn the_gemini_dialect_declares_functions_and_returns_parallel_calls() {
+        let mut request = Request::new("reconstruct");
+        request.effort = Some(Effort::High);
+        request.tools.push(Tool {
+            name: "add_part".into(),
+            description: "declare a part".into(),
+            parameters: json!({"type": "object", "properties": {"name": {"type": "string"}}}),
+        });
+        let body = gemini_body(&request);
+        assert_eq!(
+            body["tools"][0]["functionDeclarations"][0]["name"],
+            "add_part"
+        );
+        assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "AUTO");
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "high"
+        );
+        assert!(
+            gemini_body(&Request::new("plain")).get("tools").is_none(),
+            "no tools, no declarations"
+        );
+
+        let reply = json!({"candidates": [{"content": {"parts": [
+            {"thought": true, "text": "planning…"},
+            {"functionCall": {"name": "add_part", "args": {"name": "house A"}}},
+            {"functionCall": {"name": "add_part", "args": {"name": "house B"}}},
+            {"functionCall": {"name": "set_facts", "args": {"floors": 2}}},
+            {"text": "done"},
+        ]}}]});
+        let parsed = gemini_reply(&reply).expect("parses");
+        assert_eq!(parsed.text, "done", "thought parts are not content");
+        assert_eq!(parsed.tool_calls.len(), 3);
+        assert_eq!(parsed.tool_calls[1].arguments["name"], "house B");
+        assert_eq!(parsed.tool_calls[2].name, "set_facts");
+
+        let calls_only = json!({"candidates": [{"content": {"parts": [
+            {"functionCall": {"name": "set_facts", "args": {}}}]}}]});
+        assert!(
+            gemini_reply(&calls_only).is_ok(),
+            "a call with no prose is a reply"
+        );
+        let empty =
+            json!({"candidates": [{"content": {"parts": [{"thought": true, "text": "…"}]}}]});
+        assert!(gemini_reply(&empty).is_err());
     }
 
     #[test]

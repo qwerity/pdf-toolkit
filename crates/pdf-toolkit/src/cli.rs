@@ -179,6 +179,11 @@ pub struct DossierArgs {
     /// paths reference. The same annotation JSON is on stdout either way.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
+
+    /// A GeoJSON file of WGS 84 parcel polygon(s), matched by shape to
+    /// drawing sheets that print no coordinate table — see `vector --parcel`.
+    #[arg(long, value_name = "FILE")]
+    pub parcel: Option<PathBuf>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -192,7 +197,7 @@ pub struct CadfixArgs {
 
     /// Hosted model; the spec's shape picks the provider, as with `--vlm`.
     /// **This sends the page image to that provider.**
-    #[arg(long, default_value = pdf_vlm::ASTRA_MODEL)]
+    #[arg(long, default_value = pdf_vlm::DEFAULT_MODEL)]
     pub model: String,
 
     /// Also write the refined collection as
@@ -214,7 +219,7 @@ pub struct BuildingArgs {
 
     /// Hosted model; the spec's shape picks the provider, as with `--vlm`.
     /// **This sends the selected drawing sheets to that provider.**
-    #[arg(long, default_value = pdf_vlm::ASTRA_MODEL)]
+    #[arg(long, default_value = pdf_vlm::DEFAULT_MODEL)]
     pub model: String,
 
     /// Also write the extruded collection as
@@ -222,6 +227,12 @@ pub struct BuildingArgs {
     /// either way.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
+
+    /// A GeoJSON file of WGS 84 parcel polygon(s), matched by shape to the
+    /// anchor sheet when it prints no coordinate table — what puts a
+    /// reconstruction on the map for a dossier without a survey table.
+    #[arg(long, value_name = "FILE")]
+    pub parcel: Option<PathBuf>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -255,6 +266,12 @@ pub struct VectorArgs {
     /// in the JSON on stdout either way.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
+
+    /// A GeoJSON file of WGS 84 parcel polygon(s) — the cadastre's statement
+    /// of the boundary — matched by shape to sheets that draw the parcel but
+    /// print no coordinate table (`georeference.source: "parcel_polygon"`).
+    #[arg(long, value_name = "FILE")]
+    pub parcel: Option<PathBuf>,
 }
 
 impl VectorArgs {
@@ -629,7 +646,7 @@ mod tests {
             panic!("expected cadfix");
         };
         assert_eq!(args.page, 9);
-        assert_eq!(args.model, pdf_vlm::ASTRA_MODEL);
+        assert_eq!(args.model, pdf_vlm::DEFAULT_MODEL);
         assert!(args.output.is_none());
     }
 
@@ -641,7 +658,7 @@ mod tests {
             "--answers",
             "a.json",
             "--model",
-            "gemini-3.8-flash",
+            pdf_vlm::ASTRA_MODEL,
             "-o",
             "out",
         ])
@@ -653,13 +670,17 @@ mod tests {
             args.answers.as_deref(),
             Some(std::path::Path::new("a.json"))
         );
-        assert_eq!(args.model, "gemini-3.8-flash");
+        assert_eq!(args.model, pdf_vlm::ASTRA_MODEL);
         assert_eq!(args.output.as_deref(), Some(std::path::Path::new("out")));
 
         let Command::Building(args) = parse(&["building", "a.pdf"]).command else {
             panic!("expected building");
         };
-        assert_eq!(args.model, pdf_vlm::ASTRA_MODEL, "astra is the default");
+        assert_eq!(
+            args.model,
+            pdf_vlm::DEFAULT_MODEL,
+            "the corpus benchmark winner is the default"
+        );
     }
 
     #[test]

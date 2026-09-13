@@ -48,6 +48,7 @@ The serialisable types are all in one place, which makes this easy to check:
 | `GeoreferenceFailure` | `crates/pdf-geo/src/pipeline.rs` |
 | Errors and per-page warnings | `crates/pdf-core/src/{error,warning}.rs` |
 | `dossier` output | `crates/pdf-dossier/src/report.rs` |
+| `dossier` `facts[]` / `checks[]` / `trust` | `crates/pdf-dossier/src/facts.rs`, `checks.rs`, `trust.rs` |
 | `dossier --answers` input | `crates/pdf-dossier/src/answers.rs` |
 | `cadfix` output | `crates/pdf-vlm/src/cad.rs` |
 | `building` output | `crates/pdf-vlm/src/building.rs` |

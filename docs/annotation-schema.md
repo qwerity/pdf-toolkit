@@ -1,4 +1,4 @@
-# Dossier annotation schema — 0.2.0
+# Dossier annotation schema — 0.3.0
 
 The output of `pdf-toolkit dossier` (command contract: the `dossier` section
 of `json-api.md`). One JSON per document: every page's labels, extraction
@@ -20,6 +20,8 @@ requires `dossier --answers` to reproduce those annotations exactly.
 | `document` / `source` / `page_count` | Same meaning as the `vector` command |
 | `stats` | Per-dossier counts (routes, QR pages, handwriting pages, placed pages) |
 | `request` | What the application form asks for: `{"page", "via", "action", "object"?, "use"?, "use_page"?, "works"?, "storeys"?, "address"?, "planned"?}` — see the `request` subsection of the `dossier` contract in `json-api.md` for the vocabularies. Deterministic, read off the Ձև N 1-1 form's fixed slots; absent when no embedded-text application form states a request |
+| `facts` | Every figure the dossier states about its parcel, one entry per page that states it, with the page's `trust` — see the `facts` and `checks` subsection of the `dossier` contract in `json-api.md`. Absent when nothing was read |
+| `checks` | Each repeated figure compared across the pages that state it, the official page as the reference. Absent when there was nothing to compare |
 | `pages` | Array, one entry per page, in page order |
 | `groups` | Document sections: pages that belong together |
 | `entities` | Deduplicated real-world identifiers found anywhere in the dossier |
@@ -33,6 +35,7 @@ requires `dossier --answers` to reproduce those annotations exactly.
 |---|---|
 | `page_number` | One-based |
 | `labels` | Multi-label, see vocabulary below. Order: most specific first |
+| `trust` | Who vouches for the page: `official` (issued by the Cadastre Committee — certificate, reference letter, fee table, map extract), `applicant` (the form, the drawings, the notes), `identity` (a person's papers), `unknown` (a page nothing has read yet) |
 | `title` | One-line description of the page (from the visual pass) |
 | `sheet` | The album sheet designation printed on the page (ԷՋ-03, Ճ-1, Է.02 …), when present |
 | `classification` | `class`+`confidence` verbatim from `vector` — kept so the ground truth records what the current heuristic said, right or wrong |
@@ -94,14 +97,15 @@ certificate), `cadastral_reference` (ՏԵՂԵԿԱՆՔ), `passport`, `id_card`,
 
 ## `groups[]`
 
-`{"id", "kind", "title", "pages", "entities"}` — `kind` one of `identity`,
+`{"id", "kind", "trust", "title", "pages", "entities"}` — `kind` one of `identity`,
 `ownership`, `application`, `administrative`, `financial`, `drawings`,
 `technical`. A deterministic-only run (no answers) derives structural groups
 with fixed ids — `application`, `certificate:<number>` (one per ownership
 certificate, `ownership` when its parcel matches the application form's,
 `administrative` otherwise), `cadastre_references`, `drawings` — and
 generated English titles; answered pages carry whatever groups their answers
-name instead. A dossier can hold several `drawings` groups (e.g. cadastre
+name instead. `trust` is the document's: `official` once any page of the group
+is the Committee's, else `identity` for identity papers, else `applicant`. A dossier can hold several `drawings` groups (e.g. cadastre
 extracts vs. the design album vs. a demolition part); georeference application
 respects that boundary:
 

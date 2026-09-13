@@ -679,6 +679,7 @@ changes its rates. Model quality on the annotation task is compared in
 | `generated_by` | Names the passes; says whether answers were merged or are pending |
 | `stats` | Per-dossier counts: route totals, `vlm_flagged`, `qr_pages`, `handwriting_pages`, `placed_pages` |
 | `request` | What the application form asks for — see below. Absent when no embedded-text application form states a request. |
+| `facts` / `checks` | Every figure the dossier states about its parcel, and each repeated figure compared across the pages that state it — see *`facts` and `checks`* below. Absent when nothing was read / nothing could be compared. |
 | `pages` | Array, one entry per page — field tables in `annotation-schema.md` |
 | `groups` / `entities` / `graph` | Document sections, the identifier registry, and the derived edges |
 | `warnings` | Pages whose geometry extraction failed, verbatim from the vector pass; also printed as `Warning:` stderr lines. Absent when none — a page listed here has no classification/`cad`, and this is what says why. |
@@ -705,6 +706,14 @@ Branch on these enums, not on prose:
   `none`. `applied` only where a placed fit is in that group's own drawing
   frame; a floor plan of the same building is `same_site_unverified` —
   geometry decides, never proximity.
+- `pages[].trust` / `groups[].trust` — `official` \| `applicant` \|
+  `identity` \| `unknown`. Official pages are the Cadastre Committee's own
+  documents (certificate, reference letter, fee table, map extract): the
+  record of what the parcel is. Everything the applicant or their designer
+  wrote is `applicant`: a claim about it. `unknown` is a page nothing has
+  read yet.
+- `checks[].status` — `agree` \| `near_miss` \| `disagree` \|
+  `single_source` \| `unreadable`.
 
 Internal-consistency problems (a dangling group or entity reference, an
 out-of-range related page) are reported as `Warning:` lines on stderr, per
@@ -751,6 +760,84 @@ real run on a synthetic form (`jq .request`):
 
 A scanned application form is routed to the vision pass like any scan and
 yields no `request` in this version; the block is deterministic by design.
+
+### `facts` and `checks`
+
+A dossier states the same figures several times by several hands: the
+certificate prints the parcel's area in hectares, the explanatory note
+repeats it in square metres, the architect's general plan carries the
+turning-point table again, the application form quotes the fence's area and
+the note quotes another. `facts[]` lists every such figure with the page it
+was read from and that page's trust; `checks[]` compares each figure across
+the pages, the official page as the reference where there is one, the
+applicant's copies checked against it, and the applicant's own copies
+against each other where there is none. **A mismatch is reported, never
+resolved**: the check names both pages and both values and says how far
+apart they are. Copied from a real run (`jq '.checks[] | select(.kind ==
+"planned_area")'`):
+
+```json
+{
+  "kind": "planned_area",
+  "subject": "fence",
+  "status": "disagree",
+  "reference": {
+    "page": 1, "trust": "applicant", "printed": "3.0 քմ", "number": 3.0,
+    "status": "agree", "delta": 0.0
+  },
+  "witnesses": [
+    { "page": 8, "trust": "applicant", "printed": "5,20 քմ", "number": 5.2,
+      "status": "disagree", "delta": 2.2 }
+  ],
+  "note": "fence area on page 1 is 3.0 քմ; page 8 says 5,20 քմ (+2.20)"
+}
+```
+
+`facts[]` entries: `{"kind", "number"?, "text"?, "printed", "page", "trust",
+"via", "subject"?, "about"?}`. `kind` is one of `cadastral_code`,
+`parcel_area`, `footprint_area`, `building_area`, `planned_area`, `owner`,
+`applicant`, `address`, `certificate_number`, `survey_area`,
+`survey_perimeter`, `turning_points`. `number` is the figure in canonical
+units (square metres, metres, a count); `text` the canonical form of a code,
+a person entity id or an address key; `printed` is verbatim. `subject` says
+what the fact is about where the kind needs it — a building's code for
+`building_area`, `fence` \| `building` for `planned_area`, `map` \| `mention`
+\| `partial` for a cadastral code a map labels a parcel with, a note names
+in passing, or a fee table prints by its last two groups. `about` is the
+parcel an official page is about (a neighbour's certificate states the
+neighbour's owner and area, and is never compared as the subject's).
+
+Reading is deterministic: the certificate's fixed labels («Մակերեսի չափը
+(հա)», section 5's buildings table), the form's «Նախատեսում եմ» line, the
+reference letter's «Դիմող», and a small vocabulary of context words on the
+same line before a printed area on every other page (հողամաս → parcel,
+կառուցապատման → footprint, ցանկապատ / պարիսպ → fence); a figure whose
+context is not recognised is not a fact. Legacy 8-bit Armenian fonts (the
+fee table, some extracts, many title blocks) are decoded for this reading
+alone. A vision answer may add facts for a scanned page (`facts[]` in the
+answers file, kinds as above, `unit` `ha` \| `m2` for areas); they merge
+with `via: "vlm"`.
+
+`checks[]` entries: `{"kind", "subject"?, "status", "reference"?,
+"witnesses", "note"}`, each witness `{"page", "trust", "printed", "number"?,
+"text"?, "status", "delta"?}`.
+
+| `kind` | Compares |
+|---|---|
+| `cadastral_code` | Every code an applicant page declares as the site's (the form, a title block, a code introduced by «ծածկագիր») against the subject parcel's, and a fee table's partial code by its tail. Codes the official pages name (neighbours) are allowed; any other is `disagree`; one or two digits off the subject's is `near_miss`. Codes a map labels its parcels with, or a note mentions, are never findings. |
+| `parcel_area` | The certificate's hectares against every other statement of the plot's area, the turning-point tables' polygons included. |
+| `building_area` | A registered building's area (section 5) against a page quoting it by code or by its `-001` suffix. |
+| `planned_area` (`fence`) | The fence's area on the application form against every other page that states one; a page agrees when any of its fence figures does. |
+| `applicant` | Whoever applies, commissions, or asked the Committee for the map, against the registered owner(s). |
+| `address` | The site address on the certificate against the form's and the notes' — the same numbers and a street word in common. |
+| `certificate_number` | The certificate's number against every citation of it. |
+| `official_readability` | `unreadable` with the pages nothing has read yet, so a caller knows the vision pass is still owed before the official figures are settled. |
+
+Tolerances: an area copy agrees within 0.2 % (or half a square metre when
+printed without decimals — the note's `350 քմ` against the certificate's
+`0.03504 հա`), is `near_miss` within 2 %, `disagree` beyond. A code or a
+certificate number one or two edits away is `near_miss`. `single_source`
+means the figure appears once and nothing could be compared with it.
 
 With `--output`, each drawing page's GeoJSON — and every **placed** page's,
 whatever it is labelled — is written under

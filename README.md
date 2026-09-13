@@ -1,9 +1,10 @@
 # pdf-toolkit
 
 CLI tool for inspecting PDFs, extracting pages as single-page PDFs or PNGs,
-extracting text, recovering CAD geometry as georeferenced GeoJSON, and
-annotating whole building-permit dossiers — with experimental hosted-model
-passes that refine the CAD and reconstruct the building's 3D massing.
+extracting text, recovering CAD geometry as georeferenced GeoJSON,
+annotating whole building-permit dossiers, and reconstructing the building
+storey by storey from its plan sheets — with experimental hosted-model
+passes that refine the CAD and reconstruct the building's massing.
 
 Built as a quicker alternative to [Docling](https://github.com/docling-project/docling)
 for turning PDFs into text and structured markdown: a single native binary over
@@ -64,6 +65,7 @@ pdf-toolkit <COMMAND> <INPUT> [OPTIONS]
   structured  positioned spans and a markdown reconstruction, to stdout
   vector      CAD geometry + classification + georeferenced GeoJSON
   dossier     whole-dossier annotation: labels, routing, QR, entities, graph
+  model       storey-by-storey 3D reconstruction from the plan sheets (deterministic)
   cadfix      model-proposed CAD refinement of one page   (experimental, networked)
   building    3D building massing from the drawings       (experimental, networked)
 ```
@@ -232,6 +234,46 @@ networked and opt-in, like `--vlm`, and every hosted call logs its token
 usage and estimated cost on stderr, priced from
 `crates/llm-providers/models.json`.
 
+### model
+
+Reconstructs the building storey by storey from the CAD-exported plan
+sheets — deterministically, from the fills the exporter wrote. Walls, the
+building envelope and the rooms are told apart by fill colour, the storeys
+are stacked on the printed grid axes, and the openings are what the envelope
+minus the rooms minus the walls leaves behind: edge pieces are glazing,
+interior pieces door gaps. Levels come from the section's level marks, the
+scale from the title block.
+
+```bash
+./dist/pdf-toolkit model input.pdf -o out                  # model.json, .glb, .geojson, .params.json
+./dist/pdf-toolkit model input.pdf --params out/model/input.params.json   # a reviewed parameter file
+./dist/pdf-toolkit model input.pdf --llm-params            # gemini-3.8-flash confirms the parameters
+./dist/pdf-toolkit model input.pdf --parcel parcel.geojson # place it from the site plan matched to the cadastre
+./dist/pdf-toolkit model input.pdf -g 0,0,44.51,40.15 -g 10,0,44.5101,40.15   # place it by hand
+```
+
+The parameters — which sheets are the floor plans and the roof plan, the
+plan scale, the storey levels, the fill colours, the grid labels — are
+**detected from the document** (title blocks, printed scales, level marks,
+the plan's own fills, the lettered grid bubbles); `params_notes` lists every
+decision, and the `params` block is a valid `--params` file to review and
+edit. `--llm-params` asks a hosted model to confirm or correct them; the
+proposal is checked against the drawings before it is used. Geometry never
+comes from a parameter source.
+
+The model is **placed on the map** when a georeferenced sibling sheet draws
+the building's box (the site plan, placed from its table, a sibling's, or
+`--parcel`): the ground-floor envelope is matched to it by shape, and the
+sheet's other line work settles which way round it stands. On the reference
+dossier that fit is 4 mm. Without such a sheet the model stays in
+`local_metres` — right in shape, unknown in position — for a map to let a
+reviewer put it down by hand.
+
+Outputs: `model.json` (2D polygons with z ranges, metres about the grid
+origin), a binary glTF for any 3D viewer, and the same map-native extruded
+GeoJSON `building` emits. The shapes are the `model` section of
+`docs/json-api.md`.
+
 ### structured
 
 ```bash
@@ -245,10 +287,11 @@ usage and estimated cost on stderr, priced from
 - `--pages` / `-p` (alias `--page`): page list or inclusive ranges like
   `1-3,5,9-10`, or `all` (the default). Accepted by `cut`, `render`, `text`,
   `structured` and `vector`; the other commands always work on the whole
-  document (`cadfix` names its single page with `--page`).
+  document (`cadfix` names its single page with `--page`; `model` names its
+  plan sheets through detection or `--params`).
 - `--output` / `-o`: output directory. `cut`, `render` and `text` default to
-  the current directory; `vector`, `dossier`, `cadfix` and `building` write
-  their `.geojson` files only when it is given.
+  the current directory; `vector`, `dossier`, `cadfix`, `building` and
+  `model` write their files only when it is given.
 - `--model`: `cadfix` and `building` only; the hosted model spec, default
   `gemini-3.8-flash`. `--page`: `cadfix` only; the one page to refine.
 - `--concat` / `-c`: `cut` merges the selection into one PDF; `text` merges it

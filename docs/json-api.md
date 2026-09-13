@@ -6,7 +6,7 @@ document on stdout and nothing else**, so it can be driven from another program.
 This file is the contract. It is the reference for integrating the tool; if you
 are wiring it into a service, this is all you need.
 
-- Version described here: **0.9.0** (matches the package version)
+- Version described here: **0.10.0** (matches the package version)
 - Warnings and progress go to **stderr**; stdout is only ever the JSON document
 - Files written under `--output` are the same whether or not you parse stdout
 - Exit code is `0` on success and non-zero on failure. **A failed run prints no
@@ -358,8 +358,9 @@ mean:
 ```
 
 `class` is one of `topographic_survey`, `site_plan`, `cadastral_plan`,
-`floor_plan`, `elevation_or_section`, `technical_detail`, `scanned_document`,
-`scanned_drawing`, `text_document`, `unknown`. Branch on this, not on `reason`.
+`floor_plan`, `roof_plan`, `elevation_or_section`, `technical_detail`,
+`scanned_document`, `scanned_drawing`, `text_document`, `unknown`. Branch on
+this, not on `reason`.
 
 `confidence` is `certain` or `ambiguous`. **`ambiguous` is the common case** —
 structural rules settle the pages that matter and leave the rest open. In
@@ -372,7 +373,24 @@ regardless of how it is classified.
 floor plan is unmistakably a drawing, it is simply not a drawing of terrain.
 
 `features` are the measurements the verdict was made from, reported so a caller
-that disagrees can see the basis.
+that disagrees can see the basis. Since 0.10.0 they include what the sheet's
+**title block** says — the strongest evidence a drawing sheet carries about
+itself, and what settles floor plans, roof plans, elevations and site plans
+with `certain` confidence:
+
+| Field | Type | Notes |
+|---|---|---|
+| `sheet_title` | string | The sheet name printed after the title-block label (`Անվանում :`, `Наименование:`, `Title:`), whitespace collapsed. **Absent** when the page prints no title block. |
+| `sheet_role` | string | What the title names: `floor_plan`, `roof_plan`, `elevation`, `section`, `site_plan`, `situation_plan`, `fence`, `views3d`, `sheet_index`. **Absent** when there is no title or it names no known kind. |
+| `sheet_level_m` | number | A level the title names (`+3,60 նիշով` → `3.6`), metres. **Absent** when none. |
+| `level_marks` | int | Distinct level marks printed on the page (`+7,200`, `±0,000`, `-0,350`). A plan prints one, an elevation one per storey, eaves and parapet. |
+| `filled_paths` | int | Painted fills, as opposed to strokes. A CAD plan is made of them. |
+
+A titled drawing takes its class from `sheet_role` (`elevation` and `section`
+both map to `elevation_or_section`, `situation_plan` to `cadastral_plan`,
+`fence` to `technical_detail`; `views3d` and `sheet_index` decide nothing).
+An untitled drawing with four or more level marks is reported as
+`elevation_or_section` with `ambiguous` confidence.
 
 ### `georeference`
 
@@ -610,7 +628,7 @@ changes its rates. Model quality on the annotation task is compared in
 {
   "document": "letter",
   "entities": [],
-  "generated_by": "pdf-toolkit 0.9.0 dossier: deterministic extraction (pdfium text, templates, rxing QR, vector classification and georeferencing); vision-pass answers pending",
+  "generated_by": "pdf-toolkit 0.10.0 dossier: deterministic extraction (pdfium text, templates, rxing QR, vector classification and georeferencing); vision-pass answers pending",
   "graph": {
     "edges": []
   },
@@ -664,6 +682,7 @@ changes its rates. Model quality on the annotation task is compared in
 | `pages` | Array, one entry per page — field tables in `annotation-schema.md` |
 | `groups` / `entities` / `graph` | Document sections, the identifier registry, and the derived edges |
 | `warnings` | Pages whose geometry extraction failed, verbatim from the vector pass; also printed as `Warning:` stderr lines. Absent when none — a page listed here has no classification/`cad`, and this is what says why. |
+| `llm_usage` | Present with `--vlm`: one entry per page the vision pass sent, with tokens and estimated cost — see *Token usage* below. Absent when no model was called. |
 | `answers_file` | With `--vlm` **and** `--output`: `answers/<document>.json`, relative to the output directory — the merged vision-pass answers in the `--answers` format, so a following `building --answers` reuses them instead of asking again. Absent otherwise. |
 
 Branch on these enums, not on prose:
@@ -789,6 +808,7 @@ the full refined FeatureCollection inline, `vector`-style):
 | `closed` / `dropped` | Rings closed, features removed |
 | `warnings` | Proposals that could not be applied; absent when none |
 | `geojson_file` | Present with `--output`: `<document>_pNN.fixed.geojson`, relative to that directory |
+| `llm_usage` | The refinement call's tokens and estimated cost — see *Token usage* below |
 | `geojson` | The refined FeatureCollection, inline |
 
 ## `building` *(experimental)*
@@ -929,6 +949,7 @@ dossiers routinely end in identity-document scans. Copied from a real run (`jq '
 | `geojson` | The extruded FeatureCollection: `height`/`base`/`color` per feature, fences as outer-ring + inset-hole polygons — ready for a Mapbox/MapLibre `fill-extrusion` layer |
 | `parcel` | The ring the measurements are taken against: `source` — `survey_parcel` (the placed anchor's own turning points) \| `reference_parcel` (the `--parcel` polygon the anchor was placed from) \| `fence` (the declared perimeter fence's ring) \| `enclosing_ring` (the largest candidate holding every building) — with `area_m2`, `perimeter_m`, `sides`. **Absent, with a `warnings` entry, when the frame is not metric or no ring qualifies**; `measurements` is absent with it. |
 | `measurements_file` | Present with `--output` and `parcel`: `building/<document>.measurements.geojson` |
+| `llm_usage` | The reconstruction call's tokens and estimated cost — see *Token usage* below |
 | `measurements` | The dimensions layer, inline — see below |
 
 ### `measurements`
@@ -981,10 +1002,317 @@ gets one `setback` per parcel side — three houses on a thirteen-sided
 ring is thirty-nine — so a map should filter by `kind`, or by `from`, rather
 than draw everything at once.
 
-A run on a dossier with no drawing pages, no closed outline usable as a
-candidate, or a model that (correctly) declines to match a structure to a
-candidate fails with the reason on stderr — an invented building would be
-worse than none.
+A reply with no `add_part` call is asked again, up to three times, with the
+previous reply quoted and the instruction that this one must declare the
+main building; each empty attempt is a `warnings` entry (`attempt 1/3: the
+model proposed no structure: …`) and `llm_usage` carries every attempt. A
+run on a dossier with no drawing pages, no closed outline usable as a
+candidate, or a model that declines three times fails with the reasons on
+stderr — an invented building would be worse than none.
+
+---
+
+## `model`
+
+Reconstructs the building storey by storey from the CAD-exported plan
+sheets, **deterministically**: every wall, room and envelope on a vector plan
+is a filled path with the fill colour of its element type, the sheets are
+printed at a known scale, and the storeys are aligned on the printed grid.
+Openings are what the envelope minus the rooms minus the walls leaves —
+edge pieces are glazing, interior pieces door gaps; ground-floor wall pieces
+outside the envelope are the stone piers; terrace edges become railings; the
+roof plan gives the roof outline and a parapet ring. No rendering, no
+tracing, and — unless asked — no model call. The Rust port of the
+earlier prototype; on the reference document every polygon matches the
+prototype's output to within 0.1 % of its area.
+
+```
+pdf-toolkit model input.pdf [--params p.json] [--llm-params [MODEL]] [--parcel parcel.geojson] [-g lx,ly,lon,lat]… [-o dir]
+```
+
+What a drawing set does not print as geometry is a **parameter**: which
+sheets are the floor plans and the roof plan, the plan scale, the storey
+levels, the fill colours, the grid labels. Without `--params` the command
+**detects** them from the document — title blocks (`+3,60 նիշով հարկի
+հատակագիծ`), printed scales, level marks on the elevations and section, the
+plan's own fill statistics, the lettered grid bubbles — and lists every
+decision in `params_notes`. `--params <file>` overrides detection with a
+reviewed file (the `params` block of a previous run, or the
+`model/<document>.params.json` it writes). `--llm-params [MODEL]` shows the
+detected parameters and the drawing sheets to a hosted model
+(`gemini-3.8-flash` bare; any `--vlm` spec) and takes its `set_params`
+proposal **after checking it against the drawings** — the pages it names
+must be plan sheets, the levels must stack, the building it yields must be
+building-sized — falling back to detection with a `warnings` entry
+otherwise. It is networked and opt-in like every model call. **Coordinates
+never come from a parameter source**; only these numbers do.
+
+The model is **placed on the map** when the dossier allows: the ground
+floor's envelope is matched by shape (rotation and translation, both
+already in metres) to the building box drawn on a georeferenced sibling
+sheet — the site plan placed from its own table, a sibling's, or the
+`--parcel` polygon — and the sheet's other line work settles which way round
+a symmetric box stands. `--georeference` references (two or more,
+`local_x,local_y,longitude,latitude` in the model's own metres) place it
+where the caller says instead. Otherwise the model stays in `local_metres`:
+right in shape, unknown in position, for a map to let someone put it down by
+hand. Copied from a real run (`jq 'del(.model, .geojson)'` — those two carry
+the model and the extruded FeatureCollection inline):
+
+```json
+{
+  "bounds": [
+    [
+      44.63044517659083,
+      39.93789471181501
+    ],
+    [
+      44.63061079146217,
+      39.93802544132125
+    ]
+  ],
+  "crs": "EPSG:4326",
+  "document": "4",
+  "floors": [
+    {
+      "door_gaps": 6,
+      "glazing": 10,
+      "level_m": 0.0,
+      "name": "+0,00 նիշով հարկի հատակագիծ",
+      "page": 13,
+      "rails": 0,
+      "rooms": 14,
+      "rooms_area_m2": 72.52,
+      "slab_area_m2": 87.79,
+      "top_m": 3.6,
+      "walls": 12
+    },
+    {
+      "door_gaps": 8,
+      "glazing": 12,
+      "level_m": 3.6,
+      "name": "+3,60 նիշով հարկի հատակագիծ",
+      "page": 14,
+      "rails": 6,
+      "rooms": 20,
+      "rooms_area_m2": 89.46,
+      "slab_area_m2": 93.87,
+      "top_m": 7.2,
+      "walls": 18
+    }
+  ],
+  "geojson_file": "model/4.geojson",
+  "georeference": {
+    "linework_residual_m": 0.0146,
+    "origin": [
+      44.630522,
+      39.9379549
+    ],
+    "page": 10,
+    "placed": true,
+    "residual_m": 0.0036,
+    "rotation_degrees": 227.13,
+    "source": "sheet_outline"
+  },
+  "glb_file": "model/4.glb",
+  "model_file": "model/4.model.json",
+  "params": {
+    "axis": {
+      "column_label": "1",
+      "font_size": 11.7,
+      "row_label": "Ա"
+    },
+    "colours": {
+      "envelope": [
+        0.953,
+        0.953,
+        0.953
+      ],
+      "room": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "tolerance": 0.02,
+      "wall": [
+        0.286,
+        0.267,
+        0.251
+      ]
+    },
+    "floors": [
+      {
+        "level_m": 0.0,
+        "name": "+0,00 նիշով հարկի հատակագիծ",
+        "page": 13,
+        "top_m": 3.6
+      },
+      {
+        "level_m": 3.6,
+        "name": "+3,60 նիշով հարկի հատակագիծ",
+        "page": 14,
+        "top_m": 7.2
+      }
+    ],
+    "parapet_level_m": 7.78,
+    "parapet_width_m": 0.15,
+    "plinth_m": 0.35,
+    "rail_height_m": 1.1,
+    "roof_level_m": 7.2,
+    "roof_page": 15,
+    "scale_denominator": 75.0,
+    "slab_thickness_m": 0.5,
+    "source": "detected"
+  },
+  "params_file": "model/4.params.json",
+  "params_notes": [
+    "roof level 7.2 from the roof plan's title (page 15)",
+    "roof plan: page 15",
+    "parapet level 7.78 from the highest level mark on the elevations",
+    "slab thickness 0.50 from paired level marks on the section",
+    "plinth 0.35 from the lowest level mark",
+    "floors: page 13 at 0 to 3.6, page 14 at 3.6 to 7.2",
+    "scale 1:75 from the plan sheet's title block",
+    "fill colours from page 13: walls [0.286, 0.267, 0.251] (69 fills), envelope [0.953, 0.953, 0.953], rooms [1.0, 1.0, 1.0]",
+    "grid origin: column '1' x row 'Ա' from the bubbles on page 13"
+  ],
+  "placed": true,
+  "roof": {
+    "area_m2": 100.87,
+    "page": 15,
+    "parapet_pieces": 1
+  },
+  "sheets": [
+    {
+      "envelope_fills": 22,
+      "origin_page": [
+        399.8500614898803,
+        334.47206472260586
+      ],
+      "origin_source": "axis_bubbles",
+      "page": 13,
+      "role": "floor",
+      "room_fills": 119,
+      "wall_fills": 66
+    },
+    {
+      "envelope_fills": 14,
+      "origin_page": [
+        412.85828332492383,
+        340.1626238121826
+      ],
+      "origin_source": "axis_bubbles",
+      "page": 14,
+      "role": "floor",
+      "room_fills": 137,
+      "wall_fills": 96
+    },
+    {
+      "envelope_fills": 4,
+      "origin_page": [
+        437.86839508853154,
+        368.5303832191421
+      ],
+      "origin_source": "axis_bubbles",
+      "page": 15,
+      "role": "roof",
+      "room_fills": 775,
+      "wall_fills": 0
+    }
+  ],
+  "source": "data/plan/4.pdf",
+  "stone_piers": 7
+}
+```
+
+| Field | Notes |
+|---|---|
+| `params` | The parameters the model was built from. `source` — `detected` (read off the document) \| `file` (`--params`) \| `model` (proposed by `--llm-params` and confirmed against the drawings). `floors[]` bottom first, one-based `page`, `level_m` / `top_m`; `roof_page` **absent** when the set has no roof plan; `colours` RGB in 0..1 with a per-channel `tolerance`; `axis` the grid labels the storeys are aligned on, `font_size` **absent** when not pinned. The block is a valid `--params` file. |
+| `params_notes` | One line per detection decision, in reading order. **Absent** for a `--params` file. |
+| `placed` / `crs` | Whether the model is on the map; `geojson` is in `EPSG:4326` when placed and `local_metres` otherwise. `model` is always in local metres. |
+| `georeference` | How it was placed: `source` — `sheet_outline` (matched to the box on `page`, with `residual_m` the mean corner distance and `linework_residual_m` how close the placed slab sits to the sheet's other line work, the latter **absent** when the sheet draws nothing else nearby) \| `references` (`--georeference`, `residual_m` the fit's RMSE). `rotation_degrees` CCW from the model's x axis to east, `origin` the tangent-plane origin, and `transform` `{a, b, tx, ty}` — the model's metres to metres east/north of `origin` as `x' = a·x − b·y + tx`, `y' = b·x + a·y + ty` (`a² + b² = 1`); degrees follow from `origin` and the WGS 84 metres-per-degree at its latitude, which is how a consumer brings the parcel into the model's frame. **Absent** when not placed, with a `warnings` entry. |
+| `bounds` | The placed ground-floor slab's extent, `[[west, south], [east, north]]`. **Absent** when not placed. |
+| `sheets[]` | How each sheet was read: `role` `floor` \| `roof`, the grid `origin_page` in page units, `origin_source` — `axis_bubbles` (both labels sit in drawn circles) \| `axis_text` (no circle; the text position stood in, with a `warnings` entry) — and the fill counts by element type. |
+| `floors[]` | Per-storey counts and areas: `walls`, `glazing`, `door_gaps`, `rooms`, `rooms_area_m2` (sum of the room fills), `slab_area_m2` (envelope plus terraces), `rails`. |
+| `roof` | `page`, `area_m2`, `parapet_pieces`. **Absent** when the set has no roof plan. |
+| `stone_piers` | Ground-floor wall pieces outside the envelope. |
+| `warnings` | Why the model is not placed, a rejected or failed parameter proposal, a sheet whose grid origin came from text; absent when none. |
+| `model_file` / `glb_file` / `geojson_file` / `params_file` | Present with `--output`: `model/<document>.model.json`, `.glb`, `.geojson`, `.params.json`, relative to that directory. |
+| `model` | The model itself, inline — the schema below. |
+| `geojson` | The extruded FeatureCollection, inline — the shape below. |
+| `llm_usage` | Present with `--llm-params`: that call's tokens and estimated cost — see *Token usage* below |
+
+### `model` (the `model.json` schema)
+
+`{units: "m", up: "z", source, scale: "1:75", levels, floors[], roof?, stone[]}`.
+Polygons are `{outer: [[x, y], …], holes: [[[x, y], …], …]}` in metres
+relative to the grid intersection the parameters name, outer rings
+counter-clockwise, holes clockwise, no closing repeat. `levels` names
+`ground`, one entry per storey (`first`, `second`, …), `roof` and `parapet`.
+Each floor: `name`, one-based `page`, `z`, `top`, `envelope` (the building
+box as drawn), `slab` (envelope plus terraces, exterior only) with `slab_z`
+`[bottom, top]`, `walls[]`, `glazing[]` with `glazing_z`, `door_gaps[]`,
+`rooms[]` (`area` in m² plus the polygon), `rails[]` (open polylines along
+the terrace edges, upper floors only). `roof`: `outline`, `slab_z`,
+`parapet[]`, `parapet_z`; **absent** without a roof plan. `stone[]`: the
+piers, extruded by consumers from the plinth to the parapet. Any consumer
+that can extrude a polygon between two z values rebuilds the building; the
+glTF writer and the GeoJSON below are two such consumers.
+
+### `geojson`
+
+One `Polygon` feature per element with `role` — `slab`, `wall`, `glazing`,
+`rail`, `stone`, `roof`, `parapet` — plus `base` and `height` (metres above
+±0.000), `color` (`#rrggbb`), `area_m2`, and for storey elements `floor`
+(index) and `floor_name`. Ready for a Mapbox/MapLibre `fill-extrusion`
+layer, the same shape `building` emits. Rooms are carried flat
+(`role: "room"`, no `height`) with `level`, `area_m2` and a ready `label`
+for a map that names them. `metadata` carries `document`, `source`, `crs`,
+`placed` and `params_source`.
+
+A run on a dossier with no sheet titled as a floor plan fails with the
+reason on stderr — pass `--params` naming the plan pages. A plan whose grid
+labels the text layer does not carry fails the same way, because without
+the grid the storeys cannot be stacked.
+
+---
+
+## Token usage (`llm_usage`)
+
+Every command that calls a hosted model reports each call it made, with the
+provider's token counts and the cost estimated from
+`crates/llm-providers/models.json` (USD per million tokens, the cache-read
+rate for the cached share). `building` and `cadfix` always carry the array;
+`dossier` carries it only with `--vlm`, `model` only with `--llm-params`, and
+both omit it entirely when no model was called. Copied from a real
+`dossier --vlm` run (one entry per flagged page):
+
+```json
+{
+  "label": "vlm page 5",
+  "model": "gemini-3.8-flash",
+  "provider": "gemini",
+  "usage_reported": true,
+  "input_tokens": 1483,
+  "cached_input_tokens": 0,
+  "output_tokens": 212,
+  "cost_usd": 0.001907,
+  "elapsed_ms": 4180
+}
+```
+
+| Field | Notes |
+|---|---|
+| `label` | What the call was for, in the command's words: `building`, `cadfix page 11`, `vlm page 5`, `model params`. Empty when the caller did not say. |
+| `model` / `provider` | The model spec as given, and `gemini` \| `openai` \| `openrouter` — the provider its shape names. |
+| `usage_reported` | Whether the provider returned token counts. When `false` the three counts are `0` and `cost_usd` is absent — an unreported usage is not a free one. |
+| `input_tokens` | Prompt tokens, the cached share **included**, as every provider reports them. |
+| `cached_input_tokens` | The share of the prompt served from the provider's cache, billed at the cache-read rate. |
+| `output_tokens` | Reasoning/thinking tokens included, as providers bill them. |
+| `cost_usd` | Estimated at the catalogued rates, six decimals. **Absent** when the model is not in `models.json` or no usage was reported. |
+| `elapsed_ms` | Wall-clock time of the call. |
+
+The same figures are printed on stderr as `llm:` lines as each call returns.
 
 ---
 
@@ -1002,12 +1330,13 @@ worse than none.
   and `vector` use arrays with a numeric `page`/`page_number` instead.
 - **File paths in `cut`, `render` and `text` results are absolute.** `source`
   echoes the input path exactly as typed; `dossier`'s `pages[].cad.geojson`
-  and the `geojson_file` / `measurements_file` of `cadfix` / `building` are
-  relative to the `--output` directory — the report and its GeoJSON tree
-  are meant to move together.
+  and the `geojson_file` / `measurements_file` of `cadfix` / `building` and
+  the `model_file` / `glb_file` / `geojson_file` / `params_file` of `model`
+  are relative to the `--output` directory — the report and its GeoJSON
+  tree are meant to move together.
 - **The subject parcel is tagged, not inferred.** Every placed page's
   collection ends with a `kind: "survey_parcel"` polygon; `building`
   measures against it. Draw that feature for the boundary rather than
   picking the largest ring.
-- `vector` is the only command that does not load PDFium; it needs no native
-  library and spawns no subprocess.
+- `vector` and `model` (without `--llm-params`) do not load PDFium; they need
+  no native library and spawn no subprocess.

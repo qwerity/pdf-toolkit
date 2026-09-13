@@ -51,12 +51,19 @@ The serialisable types are all in one place, which makes this easy to check:
 | `dossier --answers` input | `crates/pdf-dossier/src/answers.rs` |
 | `cadfix` output | `crates/pdf-vlm/src/cad.rs` |
 | `building` output | `crates/pdf-vlm/src/building.rs` |
+| `model` output | `crates/pdf-model/src/report.rs` |
+| `model` parameters (`params` / `--params`) | `crates/pdf-model/src/params.rs` |
+| `model.json` schema | `crates/pdf-model/src/model.rs` |
+| `SheetRole` (`classification.features.sheet_role`) | `crates/pdf-classify/src/sheet.rs` |
 
 ## What this tool is
 
-Nine commands over one PDF: `inspect`, `cut`, `render`, `text`, `structured`,
-`vector`, `dossier`, and the experimental hosted-model pair `cadfix` and
-`building`. `README.md` explains the pipeline and the crate layout;
+Ten commands over one PDF: `inspect`, `cut`, `render`, `text`, `structured`,
+`vector`, `dossier`, `model`, and the experimental hosted-model pair `cadfix`
+and `building`. `model` is the deterministic storey-by-storey reconstruction
+(`crates/pdf-model`, the Rust port of the earlier prototype); its only
+networked corner is the opt-in `--llm-params` parameter proposal, which
+routes through `pdf-vlm` like everything else that talks to a model. `README.md` explains the pipeline and the crate layout;
 `docs/json-api.md` is the output contract, and `docs/annotation-schema.md` is
 the field reference for the `dossier` annotation.
 
@@ -85,8 +92,16 @@ rather than adding a validation.
 **`pdf-core` depends on no other workspace crate.** That rule is what keeps the
 dependency graph acyclic; the two chains are in `README.md`. `llm-providers`
 is likewise leaf-free and is the only crate that opens a network connection —
-every networked surface (`--vlm`, `cadfix`, `building`) is opt-in per
-invocation and routes through it.
+every networked surface (`--vlm`, `cadfix`, `building`, `model --llm-params`)
+is opt-in per invocation and routes through it. `pdf-model` never depends on
+`pdf-vlm`: the model proposes parameters through a callback the CLI injects,
+so the reconstruction crate stays offline and testable on its own.
+
+**The reference reconstruction is pinned by a golden test.**
+`crates/pdf-model/tests/golden.rs` diffs the port's output on
+`data/plan/4-sketch.pdf` against `data/annotations/model/4.json`, the Python
+prototype's `model.json` (both private corpus data). Every polygon must match
+to within 2 % of its area; a rule change that moves a wall shows up there.
 
 ## Conventions
 
@@ -100,7 +115,7 @@ invocation and routes through it.
 ## Running things
 
 ```sh
-cargo test --workspace                      # 325 tests
+cargo test --workspace                      # ~400 tests
 PDF_TOOLKIT_REQUIRE_CORPUS=1 cargo test     # corpus tests must run, not skip
 ./build.sh                                  # dist/ bundle; runs the full gate
 ```

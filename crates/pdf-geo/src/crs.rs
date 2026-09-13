@@ -1,46 +1,27 @@
 //! Projected-CRS handling for Armenian cadastral drawings.
 //!
-//! Survey sheets in scope carry turning-point tables in Pulkovo 1942 /
-//! Gauss-Krüger coordinates with a zone-prefixed easting (e.g. northing
-//! `4419484.10`, easting `8471288.80` for zone 8). This module recovers the
-//! zone, inverts the Transverse Mercator projection on the Krassovsky 1940
-//! ellipsoid, and applies the Pulkovo 1942 → WGS 84 Helmert transform so the
-//! result can be written straight into GeoJSON.
+//! Survey sheets in scope carry turning-point tables in Gauss-Krüger
+//! coordinates with a zone-prefixed easting (e.g. northing `4419484.10`,
+//! easting `8471288.80` for zone 8) — the form Pulkovo 1942 / EPSG:284xx
+//! takes. This module recovers the zone, inverts the Transverse Mercator
+//! projection on the Krassovsky 1940 ellipsoid, and writes the geodetic
+//! result straight out as WGS 84.
 //!
-//! Accuracy is bounded by the datum-shift parameters (~4.5 m), which is well
-//! inside the tolerance for overlaying a parcel on satellite imagery.
+//! **No datum shift is applied, and that is measured, not assumed.** The
+//! Yerevan cadastre publishes the same parcels (gis.yerevan.am) in WGS 84, and the
+//! surveyor's tables land on them to the centimetre only when the Krassovsky
+//! inverse is taken as WGS 84 as is: on dossier 2's parcel the centroid
+//! agrees to 0.00 m, on dossier 4's to the same. Applying the EPSG Pulkovo
+//! 1942 → WGS 84 Helmert (EPSG:1267) instead put both 105.6 m east and
+//! 12.3 m north of the city's parcel — the shift the cadastre never applied.
+//! The registry is the ground truth a placement is checked against, so the
+//! tables are read the way the registry reads them.
 
 use serde::{Deserialize, Serialize};
 
 /// Krassovsky 1940, the ellipsoid underlying Pulkovo 1942.
 const KRASSOVSKY_A: f64 = 6378245.0;
 const KRASSOVSKY_F: f64 = 1.0 / 298.3;
-
-const WGS84_A: f64 = 6378137.0;
-const WGS84_F: f64 = 1.0 / 298.257_223_563;
-
-/// Pulkovo 1942 → WGS 84, EPSG:1267 ("Pulkovo 1942 to WGS 84 (16)"),
-/// coordinate-frame rotation convention. Translations in metres, rotations in
-/// arc-seconds, scale in ppm.
-const HELMERT: Helmert = Helmert {
-    dx: 25.0,
-    dy: -141.0,
-    dz: -78.5,
-    rx: 0.0,
-    ry: -0.35,
-    rz: -0.736,
-    ppm: 0.0,
-};
-
-struct Helmert {
-    dx: f64,
-    dy: f64,
-    dz: f64,
-    rx: f64,
-    ry: f64,
-    rz: f64,
-    ppm: f64,
-}
 
 /// A geographic position in WGS 84 degrees.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -121,6 +102,38 @@ impl ProjectedCrs {
         })
     }
 
+    /// The 6° Gauss-Krüger zone a longitude falls in (Yerevan, 44.5°E, is zone 8).
+    pub fn zone_for_longitude(lon: f64) -> u8 {
+        ((lon / 6.0).floor() as i64 + 1).clamp(1, 60) as u8
+    }
+
+    /// Converts a WGS 84 position into this CRS — the same reading as
+    /// [`to_wgs84`](Self::to_wgs84), inverted, so an external polygon can
+    /// serve as a control table beside the sheets' own.
+    pub fn from_wgs84(&self, p: LonLat) -> Option<Projected> {
+        match *self {
+            ProjectedCrs::Unknown => None,
+            ProjectedCrs::PulkovoGaussKruger { zone } => Some(Self::gauss_kruger_forward(zone, p)),
+        }
+    }
+
+    /// Projects a WGS 84 position into Gauss-Krüger `zone` with the
+    /// zone-prefixed easting; every position projects, so no `Option`.
+    pub fn gauss_kruger_forward(zone: u8, p: LonLat) -> Projected {
+        let central_meridian = f64::from(zone) * 6.0 - 3.0;
+        let (x, y) = tmerc_forward(
+            p.lat.to_radians(),
+            p.lon.to_radians(),
+            central_meridian.to_radians(),
+            KRASSOVSKY_A,
+            KRASSOVSKY_F,
+        );
+        Projected {
+            easting: x + f64::from(zone) * 1000000.0 + 500000.0,
+            northing: y,
+        }
+    }
+
     /// Converts a projected point to WGS 84 longitude/latitude.
     pub fn to_wgs84(&self, p: Projected) -> Option<LonLat> {
         match *self {
@@ -135,7 +148,6 @@ impl ProjectedCrs {
                     KRASSOVSKY_A,
                     KRASSOVSKY_F,
                 );
-                let (lat, lon) = helmert_to_wgs84(lat, lon);
                 Some(LonLat {
                     lon: lon.to_degrees(),
                     lat: lat.to_degrees(),
@@ -185,69 +197,70 @@ fn tmerc_inverse(x: f64, y: f64, lon0: f64, a: f64, f: f64) -> (f64, f64) {
     (lat, lon)
 }
 
-/// Applies the Pulkovo 1942 → WGS 84 Helmert transform via geocentric
-/// coordinates, using the coordinate-frame rotation convention.
-fn helmert_to_wgs84(lat: f64, lon: f64) -> (f64, f64) {
-    let (x, y, z) = geodetic_to_cartesian(lat, lon, 0.0, KRASSOVSKY_A, KRASSOVSKY_F);
-
-    let arcsec = std::f64::consts::PI / (180.0 * 3600.0);
-    let (rx, ry, rz) = (
-        HELMERT.rx * arcsec,
-        HELMERT.ry * arcsec,
-        HELMERT.rz * arcsec,
-    );
-    let s = 1.0 + HELMERT.ppm * 1e-6;
-
-    // Coordinate-frame convention: the rotation matrix is the transpose of the
-    // position-vector one, i.e. the off-diagonal signs are flipped.
-    let xw = HELMERT.dx + s * (x + rz * y - ry * z);
-    let yw = HELMERT.dy + s * (-rz * x + y + rx * z);
-    let zw = HELMERT.dz + s * (ry * x - rx * y + z);
-
-    let (lat, lon, _) = cartesian_to_geodetic(xw, yw, zw, WGS84_A, WGS84_F);
-    (lat, lon)
-}
-
-fn geodetic_to_cartesian(lat: f64, lon: f64, h: f64, a: f64, f: f64) -> (f64, f64, f64) {
+/// Forward Transverse Mercator (scale factor 1, false northing 0), the
+/// series inverse to [`tmerc_inverse`]; sub-millimetre within a zone.
+fn tmerc_forward(lat: f64, lon: f64, lon0: f64, a: f64, f: f64) -> (f64, f64) {
     let e2 = f * (2.0 - f);
-    let (sin_lat, cos_lat) = lat.sin_cos();
-    let (sin_lon, cos_lon) = lon.sin_cos();
-    let n = a / (1.0 - e2 * sin_lat * sin_lat).sqrt();
-    (
-        (n + h) * cos_lat * cos_lon,
-        (n + h) * cos_lat * sin_lon,
-        (n * (1.0 - e2) + h) * sin_lat,
-    )
-}
-
-/// Bowring's iterative inverse; converges to millimetre level in a few passes.
-fn cartesian_to_geodetic(x: f64, y: f64, z: f64, a: f64, f: f64) -> (f64, f64, f64) {
-    let e2 = f * (2.0 - f);
-    let lon = y.atan2(x);
-    let p = (x * x + y * y).sqrt();
-    let mut lat = z.atan2(p * (1.0 - e2));
-    let mut n = a;
-    for _ in 0..8 {
-        let sin_lat = lat.sin();
-        n = a / (1.0 - e2 * sin_lat * sin_lat).sqrt();
-        let next = (z + e2 * n * sin_lat).atan2(p);
-        if (next - lat).abs() < 1e-13 {
-            lat = next;
-            break;
-        }
-        lat = next;
-    }
-    let h = p / lat.cos() - n;
-    (lat, lon, h)
+    let ep2 = e2 / (1.0 - e2);
+    let (sin, cos) = lat.sin_cos();
+    let n = a / (1.0 - e2 * sin * sin).sqrt();
+    let t = (sin / cos).powi(2);
+    let c = ep2 * cos * cos;
+    let aa = (lon - lon0) * cos;
+    let m = a
+        * ((1.0 - e2 / 4.0 - 3.0 * e2 * e2 / 64.0 - 5.0 * e2.powi(3) / 256.0) * lat
+            - (3.0 * e2 / 8.0 + 3.0 * e2 * e2 / 32.0 + 45.0 * e2.powi(3) / 1024.0)
+                * (2.0 * lat).sin()
+            + (15.0 * e2 * e2 / 256.0 + 45.0 * e2.powi(3) / 1024.0) * (4.0 * lat).sin()
+            - (35.0 * e2.powi(3) / 3072.0) * (6.0 * lat).sin());
+    let x = n
+        * (aa
+            + (1.0 - t + c) * aa.powi(3) / 6.0
+            + (5.0 - 18.0 * t + t * t + 72.0 * c - 58.0 * ep2) * aa.powi(5) / 120.0);
+    let y = m + n
+        * (sin / cos)
+        * (aa * aa / 2.0
+            + (5.0 - t + 9.0 * c + 4.0 * c * c) * aa.powi(4) / 24.0
+            + (61.0 - 58.0 * t + t * t + 600.0 * c - 330.0 * ep2) * aa.powi(6) / 720.0);
+    (x, y)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Reference value produced by PROJ 9.8 for EPSG:28408 → EPSG:4326.
+    /// A WGS 84 point goes into the projection and comes back to the
+    /// millimetre — the property an external parcel polygon relies on.
     #[test]
-    fn matches_proj_for_yerevan_control_point() {
+    fn forward_and_inverse_round_trip_to_the_millimetre() {
+        let crs = ProjectedCrs::PulkovoGaussKruger { zone: 8 };
+        assert_eq!(ProjectedCrs::zone_for_longitude(44.5), 8);
+        let original = Projected {
+            northing: 4419484.1041,
+            easting: 8471288.7976,
+        };
+        let there = crs.to_wgs84(original).unwrap();
+        let back = crs.from_wgs84(there).unwrap();
+        assert!(
+            (back.easting - original.easting).abs() < 1e-3,
+            "{}",
+            back.easting
+        );
+        assert!(
+            (back.northing - original.northing).abs() < 1e-3,
+            "{}",
+            back.northing
+        );
+    }
+
+    /// Reference value produced by PostGIS/PROJ for the Krassovsky
+    /// Transverse Mercator inverse taken as WGS 84
+    /// (`+proj=tmerc +lon_0=45 +k=1 +x_0=8500000 +ellps=krass`), which is
+    /// the reading that lands on the Yerevan cadastre's own parcels. The
+    /// EPSG:28408 → EPSG:4326 value (44.6630029, 39.9082250) is 106 m away
+    /// and is exactly what must NOT come out.
+    #[test]
+    fn matches_the_cadastre_reading_for_a_yerevan_control_point() {
         let crs = ProjectedCrs::PulkovoGaussKruger { zone: 8 };
         let p = crs
             .to_wgs84(Projected {
@@ -255,8 +268,8 @@ mod tests {
                 easting: 8471288.7976,
             })
             .expect("known CRS");
-        assert!((p.lat - 39.9082250).abs() < 1e-5, "lat was {}", p.lat);
-        assert!((p.lon - 44.6630029).abs() < 1e-5, "lon was {}", p.lon);
+        assert!((p.lat - 39.9083426).abs() < 1e-6, "lat was {}", p.lat);
+        assert!((p.lon - 44.6642335).abs() < 1e-6, "lon was {}", p.lon);
     }
 
     #[test]

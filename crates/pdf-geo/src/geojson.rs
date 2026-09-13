@@ -378,7 +378,18 @@ pub fn export_survey_parcel(
     }
 
     let mut props = JsonObject::new();
-    props.insert("kind".into(), JsonValue::from("survey_parcel"));
+    // The surveyor's own ring is a survey parcel; a caller-supplied polygon
+    // (the cadastre's) is a reference the sheet was matched to, and a map
+    // must not mistake one statement of the boundary for the other.
+    let external = matches!(table.source, super::control::TableSource::External { .. });
+    props.insert(
+        "kind".into(),
+        JsonValue::from(if external {
+            "reference_parcel"
+        } else {
+            "survey_parcel"
+        }),
+    );
     props.insert("document".into(), JsonValue::from(document_id.to_string()));
     props.insert("page".into(), JsonValue::from(page_number));
     props.insert("turning_points".into(), JsonValue::from(ring.len()));
@@ -387,6 +398,7 @@ pub fn export_survey_parcel(
         JsonValue::from(match &table.source {
             super::control::TableSource::TextLayer => "text_layer".to_string(),
             super::control::TableSource::Vlm { model } => format!("vlm:{model}"),
+            super::control::TableSource::External { origin } => format!("external:{origin}"),
         }),
     );
     props.insert(

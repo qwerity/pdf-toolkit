@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use super::crs::{Projected, ProjectedCrs};
+use super::crs::{LonLat, Projected, ProjectedCrs};
 use super::fit::{CandidateSource, Correspondence};
 use super::topology::{Chain, ChainOptions, assemble_chains};
 use pdf_geometry::model::{BBox, PageContent, Point};
@@ -58,6 +58,10 @@ pub enum TableSource {
     TextLayer,
     /// Read by a vision model from the rendered page.
     Vlm { model: String },
+    /// Supplied by the caller — a parcel polygon from a cadastre, say — as a
+    /// stand-in for the table a sheet did not print. `origin` names where
+    /// it came from.
+    External { origin: String },
 }
 
 impl ControlTable {
@@ -83,6 +87,51 @@ impl ControlTable {
 
     pub fn is_usable(&self) -> bool {
         self.rows.len() >= 3 && self.crs != ProjectedCrs::Unknown
+    }
+
+    /// Whether the table came from the caller rather than from a sheet.
+    pub fn is_external(&self) -> bool {
+        matches!(self.source, TableSource::External { .. })
+    }
+
+    /// A control table from a WGS 84 ring — an external statement of the
+    /// parcel (the cadastre's polygon) projected into the sheets' own
+    /// frame, so it can be matched to a drawn outline exactly like a lent
+    /// sibling table. A closing repeat of the first vertex is dropped.
+    /// `None` for fewer than three distinct vertices.
+    pub fn from_wgs84_ring(ring: &[LonLat], origin: &str) -> Option<Self> {
+        let mut ring = ring.to_vec();
+        drop_closing_vertex(&mut ring, |a, b| {
+            (a.lon - b.lon).abs() < 1e-9 && (a.lat - b.lat).abs() < 1e-9
+        });
+        if ring.len() < 3 {
+            return None;
+        }
+        let mean_lon = ring.iter().map(|p| p.lon).sum::<f64>() / ring.len() as f64;
+        let zone = ProjectedCrs::zone_for_longitude(mean_lon);
+        let rows: Vec<ControlRow> = ring
+            .iter()
+            .enumerate()
+            .map(|(i, p)| ControlRow {
+                label: (i + 1).to_string(),
+                projected: ProjectedCrs::gauss_kruger_forward(zone, *p),
+            })
+            .collect();
+        Some(Self::from_rows(
+            rows,
+            TableSource::External {
+                origin: origin.to_string(),
+            },
+            None,
+        ))
+    }
+}
+
+/// Survey tables conventionally repeat the first vertex as the last; the
+/// ring's own vertices are what a polygon is made of.
+fn drop_closing_vertex<T>(ring: &mut Vec<T>, same: impl Fn(&T, &T) -> bool) {
+    while ring.len() > 3 && same(&ring[0], &ring[ring.len() - 1]) {
+        ring.pop();
     }
 }
 
@@ -522,9 +571,7 @@ pub fn world_polygon(table: &ControlTable) -> Vec<Point> {
         .iter()
         .map(|r| Point::new(r.projected.easting, r.projected.northing))
         .collect();
-    while pts.len() > 3 && pts[0].distance(&pts[pts.len() - 1]) < 1e-6 {
-        pts.pop();
-    }
+    drop_closing_vertex(&mut pts, |a, b| a.distance(b) < 1e-6);
     pts
 }
 

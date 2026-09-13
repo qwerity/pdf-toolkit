@@ -40,11 +40,12 @@ use pdf_classify::{PageFeatures, heuristic_label};
 use pdf_geo::ControlTable;
 use pdf_geo::control::{declared_scale_denominators, table_candidates_from_text_layer};
 use pdf_geo::fit::FitConstraints;
-use pdf_geo::geojson::{ExportOptions, export_local, export_page};
+use pdf_geo::geojson::{ExportOptions, export_local, export_page, export_survey_parcel};
 use pdf_geo::local::{LocalFrame, Reference, ScaleSource, place};
 use pdf_geo::pipeline::georeference_page;
 use pdf_geo::pipeline::{
     GeoreferenceFailure, GeoreferenceResult, enforce_document_crs, propagate_document_tables,
+    propagate_external_tables,
 };
 use pdf_geometry::PdfDocument;
 use pdf_geometry::model::{BBox, PageContent};
@@ -63,7 +64,85 @@ pub struct VectorOptions {
     /// them alongside a multi-page selection only affects the pages that need
     /// them.
     pub references: Vec<Reference>,
+    /// Parcel polygons supplied by the caller — the cadastre's statement of
+    /// the boundary — for sheets that draw the parcel but print no table.
+    /// Matched by shape under the same consensus and credibility gate as a
+    /// table lent by a sibling sheet; see [`read_parcel_file`].
+    pub parcels: Vec<ControlTable>,
     pub export: ExportOptions,
+}
+
+/// The provenance a `--parcel` polygon carries into the GeoJSON it places
+/// (`coordinate_source: "external:parcel"`).
+const PARCEL_ORIGIN: &str = "parcel";
+
+/// Reads WGS 84 parcel polygons from a GeoJSON file: a `Polygon`,
+/// `MultiPolygon`, `Feature` or `FeatureCollection`; every outer ring becomes
+/// one control table. Interior rings are ignored — a hole is not a boundary a
+/// sheet draws.
+pub fn read_parcel_file(path: &Path) -> Result<Vec<ControlTable>> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read parcel file '{}'", path.display()))?;
+    let value: geojson::GeoJson = raw
+        .parse()
+        .with_context(|| format!("'{}' is not GeoJSON", path.display()))?;
+    let mut rings: Vec<Vec<pdf_geo::LonLat>> = Vec::new();
+    fn collect(geometry: &geojson::Geometry, rings: &mut Vec<Vec<pdf_geo::LonLat>>) {
+        use geojson::GeometryValue as V;
+        let ring_of = |ring: &[geojson::Position]| -> Vec<pdf_geo::LonLat> {
+            ring.iter()
+                .filter(|p| p.len() >= 2)
+                .map(|p| pdf_geo::LonLat {
+                    lon: p[0],
+                    lat: p[1],
+                })
+                .collect()
+        };
+        match &geometry.value {
+            V::Polygon { coordinates } => {
+                if let Some(outer) = coordinates.first() {
+                    rings.push(ring_of(outer));
+                }
+            }
+            V::MultiPolygon { coordinates } => {
+                for polygon in coordinates {
+                    if let Some(outer) = polygon.first() {
+                        rings.push(ring_of(outer));
+                    }
+                }
+            }
+            V::GeometryCollection { geometries } => {
+                geometries.iter().for_each(|g| collect(g, rings));
+            }
+            _ => {}
+        }
+    }
+    match &value {
+        geojson::GeoJson::Geometry(g) => collect(g, &mut rings),
+        geojson::GeoJson::Feature(f) => {
+            if let Some(g) = &f.geometry {
+                collect(g, &mut rings);
+            }
+        }
+        geojson::GeoJson::FeatureCollection(fc) => {
+            for f in &fc.features {
+                if let Some(g) = &f.geometry {
+                    collect(g, &mut rings);
+                }
+            }
+        }
+    }
+    let tables: Vec<ControlTable> = rings
+        .iter()
+        .filter_map(|ring| ControlTable::from_wgs84_ring(ring, PARCEL_ORIGIN))
+        .collect();
+    if tables.is_empty() {
+        anyhow::bail!(
+            "'{}' holds no polygon with three or more vertices",
+            path.display()
+        );
+    }
+    Ok(tables)
 }
 
 /// Where a page's placement came from.
@@ -75,6 +154,9 @@ pub enum PlacementSource {
     /// A turning-point table printed on another sheet of the same document,
     /// matched to this sheet's drawn parcel outline by shape.
     DocumentTable,
+    /// A parcel polygon supplied by the caller (`--parcel`), matched to this
+    /// sheet's drawn parcel outline by shape.
+    ParcelPolygon,
     /// References supplied by the caller.
     References,
 }
@@ -133,6 +215,10 @@ pub fn extract_document(
     // dossier: sheets that draw the same parcel but print no table of
     // their own are placed by matching that shape.
     propagate_document_tables(&contents, &mut fits, constraints);
+    // Last, the caller's own statement of the parcel — after the document's
+    // sheets have had their say, so a sheet that could be placed from the
+    // dossier's own survey still is, and the external polygon only fills in.
+    propagate_external_tables(&contents, &mut fits, constraints, &options.parcels);
 
     let pages = contents
         .iter()
@@ -179,18 +265,31 @@ fn export(
         // draughtsman's statement of where the parcel is, and it can be checked
         // against the drawing, which a reference pair cannot.
         Ok(result) => {
-            let export = export_page(
+            let mut export = export_page(
                 page,
                 &result.georeference,
                 document_id,
                 &exclude,
                 options.export,
             );
+            // The subject parcel, from the survey's own turning points rather
+            // than the line work — the one feature a caller can find without
+            // guessing which drawn ring is the boundary (`kind:
+            // "survey_parcel"`). A lent table is still the parcel's survey.
+            if let Some(parcel) =
+                export_survey_parcel(&result.table, document_id, page.page_number, true)
+            {
+                export.summary.features += parcel.features.len();
+                export.summary.polygons += parcel.features.len();
+                export.collection.features.extend(parcel.features);
+            }
             PageVector {
                 page_number: page.page_number,
                 classification,
                 georeference: Some(GeoreferenceReport::placed(
-                    if result.borrowed_table {
+                    if result.table.is_external() {
+                        PlacementSource::ParcelPolygon
+                    } else if result.borrowed_table {
                         PlacementSource::DocumentTable
                     } else {
                         PlacementSource::TextLayer
@@ -312,18 +411,24 @@ pub fn page_geojson_file_name(document: &str, page_number: usize) -> String {
     format!("{document}_p{page_number:02}.geojson")
 }
 
-/// Writes a page's `FeatureCollection` as pretty-printed GeoJSON, streaming
-/// rather than buffering — a dense CAD sheet's collection runs to tens of
-/// megabytes.
+/// Writes a page's `FeatureCollection` as pretty-printed GeoJSON.
 pub fn write_page_geojson(
     path: &std::path::Path,
     geojson: &geojson::FeatureCollection,
 ) -> Result<()> {
+    write_pretty_json(path, geojson)
+}
+
+/// Writes any serializable value as pretty-printed JSON, streaming rather
+/// than buffering the text — a dense CAD sheet's collection runs to tens of
+/// megabytes. The one JSON writer every command's `--output` file goes
+/// through.
+pub fn write_pretty_json<T: Serialize>(path: &std::path::Path, value: &T) -> Result<()> {
     let file = std::fs::File::create(path)
         .with_context(|| format!("cannot write '{}'", path.display()))?;
     let mut writer = std::io::BufWriter::new(file);
-    serde_json::to_writer_pretty(&mut writer, geojson)
-        .with_context(|| format!("failed to serialize GeoJSON for '{}'", path.display()))?;
+    serde_json::to_writer_pretty(&mut writer, value)
+        .with_context(|| format!("failed to serialize '{}'", path.display()))?;
     // An owned BufWriter flushes in Drop, where an ENOSPC on the final
     // chunk would vanish and a truncated file would be reported written.
     std::io::Write::flush(&mut writer)

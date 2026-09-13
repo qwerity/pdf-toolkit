@@ -248,6 +248,30 @@ pub fn propagate_document_tables(
             donors.push(table);
         }
     }
+    propagate_from(pages, results, constraints, &donors);
+}
+
+/// Places the still-unplaced pages from caller-supplied parcel polygons —
+/// the cadastre's statement of the boundary standing in for the table the
+/// dossier never printed. Same matching, same consensus, same credibility
+/// gate as a lent sibling table plus the stricter external one; the
+/// provenance travels with the table itself (`table.source`).
+pub fn propagate_external_tables(
+    pages: &[PageContent],
+    results: &mut [Result<GeoreferenceResult, GeoreferenceFailure>],
+    constraints: FitConstraints,
+    tables: &[ControlTable],
+) {
+    let donors: Vec<ControlTable> = tables.iter().filter(|t| t.is_usable()).cloned().collect();
+    propagate_from(pages, results, constraints, &donors);
+}
+
+fn propagate_from(
+    pages: &[PageContent],
+    results: &mut [Result<GeoreferenceResult, GeoreferenceFailure>],
+    constraints: FitConstraints,
+    donors: &[ControlTable],
+) {
     if donors.is_empty() {
         return;
     }
@@ -260,9 +284,10 @@ pub fn propagate_document_tables(
         if result.is_ok() {
             continue;
         }
-        if let Ok(mut placed) = georeference_page(&pages[index], &donors, constraints)
-            .or_else(|_| georeference_page(&pages[index], &donors, relaxed))
+        if let Ok(mut placed) = georeference_page(&pages[index], donors, constraints)
+            .or_else(|_| georeference_page(&pages[index], donors, relaxed))
             && borrowed_fit_is_credible(&placed)
+            && (!placed.table.is_external() || external_fit_is_credible(&placed))
         {
             placed.borrowed_table = true;
             *result = Ok(placed);
@@ -289,6 +314,19 @@ fn borrowed_fit_is_credible(result: &GeoreferenceResult) -> bool {
         || (inliers >= polygon.len()
             && result.fit.rmse <= CONFIDENT_RMSE_M
             && !ring_is_rectangular(&polygon))
+}
+
+/// The further evidence a caller-supplied polygon must show. A sibling
+/// table describes the very parcel every sheet of the dossier draws, so five
+/// matched corners settle it; an external polygon is matched against
+/// every unplaced page of the dossier — elevations, a table of contents —
+/// and five of fifteen corners at decimetre residual is what a facade's
+/// window grid produces. Most of the boundary, at a residual a plotted
+/// parcel actually shows, is the bar.
+fn external_fit_is_credible(result: &GeoreferenceResult) -> bool {
+    let inliers = result.fit.inliers.len();
+    let corners = crate::control::world_polygon(&result.table).len();
+    inliers * 3 >= corners * 2 && result.fit.rmse <= 2.0 * CONFIDENT_RMSE_M
 }
 
 /// Whether every corner of a quad sits within a few degrees of a right
@@ -390,7 +428,7 @@ pub fn control_page_bbox(page: &PageContent, table: &ControlTable) -> BBox {
 mod tests {
     use super::*;
     use crate::control::{ControlRow, TableSource};
-    use crate::crs::Projected;
+    use crate::crs::{Projected, ProjectedCrs};
     use pdf_geometry::model::{PaintMode, Rgb, SubPath, VectorPath};
 
     /// An irregular six-corner parcel in Gauss-Krüger zone 8, metres.
@@ -527,5 +565,69 @@ mod tests {
             results[2].is_err(),
             "a sheet without the parcel stays honestly unplaced"
         );
+    }
+
+    /// The cadastre's polygon, given as WGS 84, places a sheet that prints
+    /// no table — and a sheet drawing something else stays unplaced.
+    #[test]
+    fn an_external_parcel_polygon_places_a_tableless_sheet() {
+        let crs = ProjectedCrs::PulkovoGaussKruger { zone: 8 };
+        let ring: Vec<crate::crs::LonLat> = parcel_world()
+            .iter()
+            .map(|&(e, n)| {
+                crs.to_wgs84(Projected {
+                    northing: n,
+                    easting: e,
+                })
+                .unwrap()
+            })
+            .collect();
+        let external = ControlTable::from_wgs84_ring(&ring, "cadastre").expect("a ring");
+        assert!(matches!(external.source, TableSource::External { .. }));
+        assert_eq!(
+            external.crs, crs,
+            "the zone is recovered from the longitude"
+        );
+
+        let sheet = sheet_with_parcel(1.0 / 0.3528, 30.0, 420.0, 300.0);
+        let unrelated = {
+            let mut page = sheet_with_parcel(1.0, 0.0, 0.0, 0.0);
+            page.paths[0].subpaths[0].points = [
+                (100.0, 100.0),
+                (300.0, 100.0),
+                (300.0, 200.0),
+                (200.0, 200.0),
+                (200.0, 320.0),
+                (100.0, 320.0),
+                (100.0, 100.0),
+            ]
+            .iter()
+            .map(|&(x, y)| Point::new(x, y))
+            .collect();
+            page
+        };
+        let pages = [sheet, unrelated];
+        let mut results = vec![
+            Err(GeoreferenceFailure::NoControlTable),
+            Err(GeoreferenceFailure::NoControlTable),
+        ];
+        propagate_external_tables(
+            &pages,
+            &mut results,
+            FitConstraints::default(),
+            std::slice::from_ref(&external),
+        );
+
+        let placed = results[0]
+            .as_ref()
+            .expect("the sheet places from the polygon");
+        assert!(placed.borrowed_table && placed.table.is_external());
+        assert!(placed.fit.rmse < 0.1, "rmse {}", placed.fit.rmse);
+        assert!(
+            (placed.georeference.fitted_scale_denominator - 1000.0).abs() < 50.0,
+            "scale {}",
+            placed.georeference.fitted_scale_denominator
+        );
+        assert!(results[1].is_err(), "the L-shape does not match the parcel");
     }
 }

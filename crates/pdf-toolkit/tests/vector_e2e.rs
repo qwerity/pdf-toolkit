@@ -238,6 +238,65 @@ fn placed_pages_land_in_yerevan() {
     }
 }
 
+/// A dossier that prints no coordinate table anywhere places from the
+/// cadastre's own polygon for its parcel (`--parcel`): every plan sheet
+/// drawing the boundary, with all of its corners, at millimetre residual —
+/// and nothing else. The polygon lives beside the private corpus
+/// (`data/annotations/parcels/1.geojson`, exported from the cadastre
+/// mirror), so the test skips with it.
+#[test]
+fn a_cadastre_polygon_places_a_dossier_without_a_survey_table() {
+    let parcel = common::data_dir()
+        .join("annotations")
+        .join("parcels")
+        .join("1.geojson");
+    if !corpus_available("a_cadastre_polygon_places_a_dossier_without_a_survey_table")
+        || !parcel.is_file()
+    {
+        return;
+    }
+    let out = vector(&[as_str(&sample("1.pdf")), "--parcel", as_str(&parcel)]);
+    let placed: Vec<(u64, &str, f64, u64)> = out["pages"]
+        .as_array()
+        .expect("pages")
+        .iter()
+        .filter(|p| p["georeference"]["placed"] == true)
+        .map(|p| {
+            (
+                p["page_number"].as_u64().unwrap(),
+                p["georeference"]["source"].as_str().unwrap(),
+                f64_at(&p["georeference"], "rmse_m"),
+                p["georeference"]["control_points_used"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        placed.iter().map(|p| p.0).collect::<Vec<_>>(),
+        [2, 9, 10, 11, 12],
+        "the cadastral plan, the existing-situation sheet, the 1:2000 extract, the \
+         general plan and the typical-house sheet — never the elevations or the contents"
+    );
+    for (page, source, rmse, points) in placed {
+        assert_eq!(source, "parcel_polygon", "p{page}");
+        assert_eq!(points, 15, "p{page}: every corner of the polygon");
+        assert!(rmse <= 0.06, "p{page}: rmse {rmse}");
+    }
+    let general_plan = out["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["page_number"] == 11)
+        .unwrap();
+    assert!(
+        general_plan["geojson"]["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["properties"]["kind"] == "reference_parcel"),
+        "the polygon the sheet was placed from is in its collection, as a reference"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // the shape of the result
 // ---------------------------------------------------------------------------
@@ -273,6 +332,34 @@ fn a_placed_page_carries_its_geojson_inline_in_wgs84() {
             "coordinates are not WGS 84 degrees: {lon},{lat}"
         );
     }
+
+    // A placed page carries the subject parcel itself — the survey's own
+    // turning points as a polygon — tagged so a caller can find the boundary
+    // without guessing which drawn ring it is.
+    let parcels: Vec<&Value> = features
+        .iter()
+        .filter(|f| f["properties"]["kind"] == "survey_parcel")
+        .collect();
+    assert_eq!(
+        parcels.len(),
+        1,
+        "exactly one survey parcel per placed page"
+    );
+    let parcel = parcels[0];
+    assert_eq!(parcel["geometry"]["type"], "Polygon");
+    assert_eq!(parcel["properties"]["verified"], true);
+    assert_eq!(
+        parcel["properties"]["turning_points"], page["georeference"]["control_points_used"],
+        "the ring is the control table the fit was made on"
+    );
+    let ring = parcel["geometry"]["coordinates"][0]
+        .as_array()
+        .expect("outer ring");
+    assert_eq!(ring.first(), ring.last(), "the ring closes");
+    assert!(
+        parcel["properties"]["area_m2"].as_f64().expect("area") > 50.0,
+        "a Yerevan house parcel is bigger than a room"
+    );
 }
 
 #[test]

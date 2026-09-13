@@ -9,7 +9,9 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use pdf_geo::control::table_candidates_from_text_layer;
-use pdf_geometry::model::PageContent;
+use pdf_geometry::model::{PageContent, PaintMode};
+
+use crate::sheet::{self, SheetRole};
 
 /// Structural summary of one page.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +40,17 @@ pub struct PageFeatures {
     /// Whether a turning-point table was recoverable from the text layer.
     pub has_control_table: bool,
     pub control_rows: usize,
+    /// The sheet name printed in the title block, when the page has one.
+    pub sheet_title: Option<String>,
+    /// What that name says the sheet is.
+    pub sheet_role: Option<SheetRole>,
+    /// A level the title names (`+3,60 նիշով` → 3.6), metres.
+    pub sheet_level_m: Option<f64>,
+    /// Distinct level marks printed on the page (`+7,200`, `±0,000`).
+    pub level_marks: usize,
+    /// Painted fills, as opposed to strokes: a CAD plan is made of them,
+    /// an elevation of lines and hatch.
+    pub filled_paths: usize,
 }
 
 fn cadastral_regex() -> &'static Regex {
@@ -61,9 +74,13 @@ impl PageFeatures {
         let mut layers: Vec<&str> = Vec::new();
         let mut length = 0.0;
         let mut points = 0usize;
+        let mut filled = 0usize;
         for path in &page.paths {
             length += path.total_length();
             points += path.point_count();
+            if matches!(path.mode, PaintMode::Fill | PaintMode::FillStroke) {
+                filled += 1;
+            }
             if path.stroke.luminance() <= WHITE_CUTOFF {
                 let hex = path.stroke.to_hex();
                 if !colors.contains(&hex) {
@@ -79,6 +96,7 @@ impl PageFeatures {
 
         let text = page.concatenated_text();
         let tables = table_candidates_from_text_layer(page);
+        let title = sheet::sheet_title(page);
         Self {
             page_number: page.page_number,
             path_count: page.paths.len(),
@@ -95,6 +113,11 @@ impl PageFeatures {
             declared_scales: pdf_geo::control::declared_scale_denominators(page),
             has_control_table: !tables.is_empty(),
             control_rows: tables.first().map(|t| t.rows.len()).unwrap_or(0),
+            sheet_role: title.as_ref().and_then(|t| t.role),
+            sheet_level_m: title.as_ref().and_then(|t| t.level_m),
+            sheet_title: title.map(|t| t.title),
+            level_marks: sheet::level_marks(page).len(),
+            filled_paths: filled,
         }
     }
 }

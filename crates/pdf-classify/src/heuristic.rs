@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::features::PageFeatures;
+use super::sheet::SheetRole;
 
 /// What a page contains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,6 +23,9 @@ pub enum PageClass {
     CadastralPlan,
     /// A building floor plan: plan view, but of an interior, so not placeable.
     FloorPlan,
+    /// The roof plan: the building's outline from above, drawn on the
+    /// storey grid like a floor plan.
+    RoofPlan,
     /// An elevation or section: not a plan view at all.
     ElevationOrSection,
     /// Engineering detail, schedule, or construction diagram.
@@ -51,6 +55,7 @@ impl PageClass {
                 | PageClass::SitePlan
                 | PageClass::CadastralPlan
                 | PageClass::FloorPlan
+                | PageClass::RoofPlan
                 | PageClass::ElevationOrSection
                 | PageClass::TechnicalDetail
                 | PageClass::ScannedDrawing
@@ -89,6 +94,7 @@ impl PageClass {
             PageClass::SitePlan => "site_plan",
             PageClass::CadastralPlan => "cadastral_plan",
             PageClass::FloorPlan => "floor_plan",
+            PageClass::RoofPlan => "roof_plan",
             PageClass::ElevationOrSection => "elevation_or_section",
             PageClass::TechnicalDetail => "technical_detail",
             PageClass::ScannedDocument => "scanned_document",
@@ -118,6 +124,7 @@ impl PageClass {
             PageClass::SitePlan,
             PageClass::CadastralPlan,
             PageClass::FloorPlan,
+            PageClass::RoofPlan,
             PageClass::ElevationOrSection,
             PageClass::TechnicalDetail,
             PageClass::ScannedDocument,
@@ -158,6 +165,7 @@ mod tests {
         assert!(PageClass::CadastralPlan.is_mappable());
         for class in [
             PageClass::FloorPlan,
+            PageClass::RoofPlan,
             PageClass::ElevationOrSection,
             PageClass::TechnicalDetail,
             PageClass::ScannedDocument,
@@ -189,6 +197,11 @@ mod tests {
             declared_scales: Vec::new(),
             has_control_table: false,
             control_rows: 0,
+            sheet_title: None,
+            sheet_role: None,
+            sheet_level_m: None,
+            level_marks: 0,
+            filled_paths: 0,
         }
     }
 
@@ -233,6 +246,49 @@ mod tests {
         assert_eq!(verdict.class, PageClass::TopographicSurvey);
         assert_eq!(verdict.confidence, Confidence::Certain);
     }
+
+    /// The title block names the sheet; that settles a drawing's class
+    /// where its line work alone could not.
+    #[test]
+    fn a_titled_drawing_is_classified_by_its_title() {
+        let cases = [
+            (SheetRole::FloorPlan, PageClass::FloorPlan),
+            (SheetRole::RoofPlan, PageClass::RoofPlan),
+            (SheetRole::Elevation, PageClass::ElevationOrSection),
+            (SheetRole::Section, PageClass::ElevationOrSection),
+            (SheetRole::SitePlan, PageClass::SitePlan),
+            (SheetRole::SituationPlan, PageClass::CadastralPlan),
+            (SheetRole::Fence, PageClass::TechnicalDetail),
+        ];
+        for (role, class) in cases {
+            let mut f = features(1600, 200, 0.0);
+            f.sheet_role = Some(role);
+            let verdict = heuristic_label(&f);
+            assert_eq!(verdict.class, class, "{role:?}");
+            assert_eq!(verdict.confidence, Confidence::Certain, "{role:?}");
+        }
+    }
+
+    #[test]
+    fn a_title_does_not_turn_a_form_into_a_drawing() {
+        // The sheet index names every drawing; it is still a text page.
+        let mut f = features(9, 2400, 0.0);
+        f.sheet_role = Some(SheetRole::SheetIndex);
+        assert_eq!(heuristic_label(&f).class, PageClass::TextDocument);
+        // A render page carries a title block but is raster imagery.
+        let mut f = features(30, 100, 0.58);
+        f.sheet_role = Some(SheetRole::Views3d);
+        assert_eq!(heuristic_label(&f).class, PageClass::ScannedDocument);
+    }
+
+    #[test]
+    fn many_level_marks_on_an_untitled_drawing_suggest_an_elevation() {
+        let mut f = features(1600, 200, 0.0);
+        f.level_marks = 5;
+        let verdict = heuristic_label(&f);
+        assert_eq!(verdict.class, PageClass::ElevationOrSection);
+        assert_eq!(verdict.confidence, Confidence::Ambiguous);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -266,6 +322,23 @@ const SCAN_IMAGE_COVERAGE: f64 = 0.35;
 /// Characters of decoded text above which a page with no drawing is prose or a
 /// form rather than a near-blank sheet.
 const MIN_TEXT_PAGE_LENGTH: usize = 300;
+/// This many distinct level marks (`+3,600`) on a drawing and it is drawn
+/// in elevation: a plan names one level, a facade prints one per storey,
+/// parapet and eaves.
+const MIN_ELEVATION_LEVEL_MARKS: usize = 4;
+
+/// The class a title-block role names, for a page that is a drawing.
+fn class_for_role(role: SheetRole) -> Option<PageClass> {
+    match role {
+        SheetRole::FloorPlan => Some(PageClass::FloorPlan),
+        SheetRole::RoofPlan => Some(PageClass::RoofPlan),
+        SheetRole::Elevation | SheetRole::Section => Some(PageClass::ElevationOrSection),
+        SheetRole::SitePlan => Some(PageClass::SitePlan),
+        SheetRole::SituationPlan => Some(PageClass::CadastralPlan),
+        SheetRole::Fence => Some(PageClass::TechnicalDetail),
+        SheetRole::Views3d | SheetRole::SheetIndex => None,
+    }
+}
 
 /// Classifies a page from structural features alone.
 ///
@@ -319,6 +392,16 @@ pub fn heuristic_label(f: &PageFeatures) -> PageVerdict {
         );
     }
 
+    // The title block names the sheet in the office's own words, and that
+    // is a statement about the page rather than an inference from it.
+    if let Some(class) = f.sheet_role.and_then(class_for_role) {
+        return verdict(
+            class,
+            Confidence::Certain,
+            "the title block names the sheet's kind",
+        );
+    }
+
     // Cadastral identifiers only appear on drawings that sit in the cadastre's
     // own coordinate world, which is exactly the mappable set.
     if f.cadastral_codes >= 2 {
@@ -326,6 +409,14 @@ pub fn heuristic_label(f: &PageFeatures) -> PageVerdict {
             PageClass::CadastralPlan,
             Confidence::Ambiguous,
             "several cadastral parcel codes alongside substantial line work",
+        );
+    }
+
+    if f.level_marks >= MIN_ELEVATION_LEVEL_MARKS {
+        return verdict(
+            PageClass::ElevationOrSection,
+            Confidence::Ambiguous,
+            "several level marks: drawn in elevation, but untitled",
         );
     }
 

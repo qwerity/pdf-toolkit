@@ -3,6 +3,8 @@
 
 pub mod features;
 pub mod heuristic;
+pub mod sheet;
 
 pub use features::PageFeatures;
 pub use heuristic::{Confidence, PageClass, PageVerdict, heuristic_label};
+pub use sheet::{SheetRole, SheetTitle};

@@ -9,7 +9,7 @@
 use geojson::{FeatureCollection, GeometryValue, Position};
 use serde::Serialize;
 
-use pdf_classify::{Confidence, PageClass, PageFeatures, PageVerdict};
+use pdf_classify::{Confidence, PageClass, PageFeatures, PageVerdict, SheetRole};
 use pdf_geo::crs::{Projected, ProjectedCrs};
 use pdf_geo::geojson::ExportSummary;
 use pdf_geo::pipeline::{GeoreferenceFailure, GeoreferenceResult};
@@ -92,6 +92,19 @@ pub struct Features {
     pub declared_scales: Vec<f64>,
     pub has_control_table: bool,
     pub control_rows: usize,
+    /// The sheet name printed in the title block. Absent when none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sheet_title: Option<String>,
+    /// What the title says the sheet is. Absent when the title names no
+    /// known kind, or there is no title.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sheet_role: Option<SheetRole>,
+    /// The level the title names, metres. Absent when none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sheet_level_m: Option<f64>,
+    /// Distinct level marks printed on the page.
+    pub level_marks: usize,
+    pub filled_paths: usize,
 }
 
 /// Where a page sits on the ground, or why it does not.
@@ -221,6 +234,11 @@ pub(crate) fn classification(verdict: &PageVerdict, features: &PageFeatures) -> 
             declared_scales: features.declared_scales.clone(),
             has_control_table: features.has_control_table,
             control_rows: features.control_rows,
+            sheet_title: features.sheet_title.clone(),
+            sheet_role: features.sheet_role,
+            sheet_level_m: features.sheet_level_m,
+            level_marks: features.level_marks,
+            filled_paths: features.filled_paths,
         },
     }
 }

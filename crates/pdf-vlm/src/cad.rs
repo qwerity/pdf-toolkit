@@ -50,6 +50,8 @@ pub struct CadFixReport {
     pub geojson_file: Option<String>,
     /// The refined FeatureCollection, inline — same policy as `vector`.
     pub geojson: Value,
+    /// Every hosted call this run made, with tokens and estimated cost.
+    pub llm_usage: Vec<llm_providers::CallUsage>,
 }
 
 /// Renders one page, extracts its vector geometry, asks the model for fixes,
@@ -80,6 +82,7 @@ pub fn fix_page(
     let png = crate::render_page_png(document.pages(), page_number, DRAWING_RENDER_WIDTH_PX)?;
 
     let mut request = Request::new(prompt(&collection));
+    request.label = format!("cadfix page {page_number}");
     request.images_png.push(png);
     request.max_output_tokens = 16_000;
     request.effort = Some(Effort::Medium);
@@ -110,6 +113,7 @@ pub fn fix_page(
         warnings: outcome.warnings,
         geojson_file,
         geojson: collection,
+        llm_usage: client.calls(),
     })
 }
 

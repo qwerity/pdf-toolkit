@@ -26,7 +26,7 @@ use pdfium_render::prelude::Pdfium;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use llm_providers::{Client, Effort, Request, Tool};
+use llm_providers::{CallUsage, Client, Effort, Request, Tool};
 use pdf_core::page::open_document;
 use pdf_dossier::Answers;
 use pdf_vector::{DocumentVector, VectorOptions, extract_document};
@@ -42,6 +42,10 @@ const CANDIDATE_LIMIT: usize = 40;
 
 /// How thick a `fence` part's wall ring is drawn, in metres (or the
 /// anchor's units where the frame is not metric).
+/// How many times the model is asked before a reply with no structure is
+/// the run's answer.
+const ATTEMPTS: usize = 3;
+
 const FENCE_THICKNESS: f64 = 0.3;
 
 /// Inset factors and rise fractions for the two stepped rings a pitched
@@ -88,6 +92,8 @@ pub struct BuildingReport {
     pub measurements: Option<Value>,
 }
 
+    /// Every hosted call this run made, with tokens and estimated cost.
+    pub llm_usage: Vec<CallUsage>,
 /// One structure the model declared.
 #[derive(Debug, Serialize)]
 pub struct PartReport {
@@ -165,6 +171,7 @@ pub fn reconstruct(
     let mut request = Request::new(prompt(&vector, &selection, &candidates));
     for &number in &selection.all() {
         request.images_png.push(crate::render_page_png(
+    request.label = "building".to_string();
             pages,
             number,
             DRAWING_RENDER_WIDTH_PX,
@@ -177,10 +184,6 @@ pub fn reconstruct(
     request.max_output_tokens = 48_000;
     request.effort = Some(Effort::High);
     request.tools = vec![add_part_tool(), set_facts_tool()];
-    let reply = client
-        .ask(&request)
-        .with_context(|| format!("reconstruction request to '{}' failed", client.model()))?;
-
     let mut warnings: Vec<String> = vector.warnings.clone();
     if selection.missing_renders {
         warnings.push(
@@ -192,26 +195,47 @@ pub fn reconstruct(
     }
     let mut specs = Vec::new();
     let mut facts = None;
-    for call in &reply.tool_calls {
-        match call.name.as_str() {
-            "add_part" => match spec_from(&call.arguments, &candidates, specs.len()) {
-                Ok(spec) => specs.push(spec),
-                Err(reason) => warnings.push(format!("ignored a part: {reason}")),
-            },
-            "set_facts" => facts = Some(known_facts(&call.arguments)),
-            other => warnings.push(format!("ignored unknown tool call '{other}'")),
+
+    // A reply with no `add_part` call is asked again, up to `ATTEMPTS` times:
+    // on the corpus the model occasionally narrates its reading and stops
+    // before the tool call, and the same request a minute later declares the
+    // building. The retry says what went wrong last time; the prose of every
+    // failed attempt reaches `warnings`, and the run fails only when all of
+    // them came back empty.
+    let base_prompt = request.prompt.clone();
+    let mut last_text = String::new();
+    for attempt in 1..=ATTEMPTS {
+        if attempt > 1 {
+            eprintln!(
+                "building: attempt {}/{ATTEMPTS} proposed no structure; asking again",
+                attempt - 1
+            );
+            request.prompt = retry_prompt(&base_prompt, &last_text);
         }
-    }
-    if specs.is_empty() {
-        // Every reason is in the message: the rejected calls say what the
+        let reply = client
+            .ask(&request)
+            .with_context(|| format!("reconstruction request to '{}' failed", client.model()))?;
+        let mut rejected = Vec::new();
+        specs.clear();
+        facts = None;
+        for call in &reply.tool_calls {
+            match call.name.as_str() {
+                "add_part" => match spec_from(&call.arguments, &candidates, specs.len()) {
+                    Ok(spec) => specs.push(spec),
+                    Err(reason) => rejected.push(format!("ignored a part: {reason}")),
+                },
+                "set_facts" => facts = Some(known_facts(&call.arguments)),
+                other => rejected.push(format!("ignored unknown tool call '{other}'")),
+            }
+        }
+        if !specs.is_empty() {
+            warnings.extend(rejected);
+            break;
+        }
+        // Every reason is in the warning: the rejected calls say what the
         // model tried, and the prose says why it stopped.
-        let rejected: Vec<&str> = warnings
-            .iter()
-            .filter(|w| w.starts_with("ignored"))
-            .map(String::as_str)
-            .collect();
-        bail!(
-            "the model proposed no structure{}{}",
+        warnings.push(format!(
+            "attempt {attempt}/{ATTEMPTS}: the model proposed no structure{}{}",
             if rejected.is_empty() {
                 String::new()
             } else {
@@ -224,6 +248,18 @@ pub fn reconstruct(
             }
         );
     }
+        ));
+        last_text = reply.text;
+    }
+    if specs.is_empty() {
+        bail!(
+            "the model proposed no structure in {ATTEMPTS} attempts ({})",
+            warnings
+                .iter()
+                .filter(|w| w.starts_with("attempt "))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" | ")
 
     // Heights are metres; footprints should be too. Where the frame is
     // unscaled page units and the model read a printed sheet scale, the
@@ -369,6 +405,7 @@ pub fn reconstruct(
         measurements,
     })
 }
+        llm_usage: client.calls(),
 
 /// The parcel statement the anchor sheet carries: the surveyor's own ring
 /// first, else the caller's polygon the sheet was placed from (`--parcel`).
@@ -972,6 +1009,26 @@ fn resolve_outline(
     if score > allowance {
         return Err(format!(
             "outline page {page}: outline does not align with the candidate (mean corner distance {score:.2} m)"
+/// The prompt for a second or third attempt: the same brief, plus what the
+/// last reply did instead of declaring a structure and the instruction that
+/// this one must.
+fn retry_prompt(base: &str, last_text: &str) -> String {
+    let quoted = if last_text.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            " Your previous reply said only: \"{}\".",
+            last_text.trim().chars().take(400).collect::<String>()
+        )
+    };
+    format!(
+        "{base}\n\nYour previous reply made no add_part call.{quoted} A drawing set is submitted \
+         for a building, so at least one structure exists: this time call add_part for the \
+         main building on the candidate ring that best matches its footprint on the anchor \
+         sheet (a rough match is acceptable — say so in your text), then call set_facts."
+    )
+}
+
         ));
     }
 

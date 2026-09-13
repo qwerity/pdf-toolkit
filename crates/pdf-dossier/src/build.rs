@@ -904,6 +904,7 @@ fn emit_report(
         schema_version: SCHEMA_VERSION,
         document,
         source: analysis.source.clone(),
+        llm_usage: None,
         page_count: analysis.vector.page_count,
         generated_by: generated_by(answers.is_some()),
         stats,

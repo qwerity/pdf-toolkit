@@ -72,11 +72,22 @@ impl VlmClient {
         self.client.model()
     }
 
-    /// Asks the model to annotate one rendered page. Returns the page answer
-    /// plus display metadata for any person/org entities it read.
-    pub fn annotate_page(&self, png: &[u8]) -> Result<(PageAnswer, IndexMap<String, PersonMeta>)> {
+    /// Every call the vision pass made, for the report's `llm_usage`.
+    pub fn calls(&self) -> Vec<llm_providers::CallUsage> {
+        self.client.calls()
+    }
+
+    /// Asks the model to annotate one rendered page, `label` naming the call
+    /// in the usage record. Returns the page answer plus display metadata for
+    /// any person/org entities it read.
+    fn annotate_page(
+        &self,
+        png: &[u8],
+        label: &str,
+    ) -> Result<(PageAnswer, IndexMap<String, PersonMeta>)> {
         let mut request = Request::new(PAGE_PROMPT);
         request.images_png.push(png.to_vec());
+        request.label = label.to_string();
         let reply = self
             .client
             .ask(&request)
@@ -112,7 +123,7 @@ impl VlmClient {
                 self.model()
             );
             let annotated = render_page_png(pages, number, RENDER_WIDTH_PX)
-                .and_then(|png| self.annotate_page(&png));
+                .and_then(|png| self.annotate_page(&png, &format!("vlm page {number}")));
             match annotated {
                 Ok((answer, people)) => {
                     answers.pages.insert(number, answer);

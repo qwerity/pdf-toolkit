@@ -208,6 +208,7 @@ fn dossier(args: &DossierArgs) -> Result<()> {
             report = pdf_dossier::assemble(&analysis, &options)?;
             // The merged answers are what `building --answers` wants next, so
             // they are written beside the report's own files.
+            report.llm_usage = Some(serde_json::to_value(client.calls())?);
             if let Some(dir) = args.output.as_deref() {
                 report.answers_file = Some(write_answers(
                     dir,

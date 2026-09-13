@@ -126,6 +126,11 @@ pub struct DossierReport {
     /// that could not run does not look like a check that passed.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub warnings: Vec<String>,
+    /// Every hosted call the vision pass made (`--vlm`), with tokens and
+    /// estimated cost — the shared `llm_usage[]` shape. Absent when no
+    /// model was called.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_usage: Option<serde_json::Value>,
     /// With `--vlm` and `--output`: the merged vision-pass answers, written as
     /// `answers/<document>.json` relative to the output directory — the file
     /// `building --answers` takes. Absent otherwise.
@@ -443,6 +448,7 @@ mod tests {
             schema_version: SCHEMA_VERSION,
             document: "t".into(),
             source: "t.pdf".into(),
+            llm_usage: None,
             page_count: pages.len(),
             generated_by: String::new(),
             stats: Stats::default(),

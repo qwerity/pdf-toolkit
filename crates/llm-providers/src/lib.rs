@@ -29,6 +29,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
+use serde::Serialize;
 use serde_json::{Value, json};
 
 /// OpenAI's GPT-6 Astra: the strongest model available here for reading
@@ -64,6 +65,15 @@ impl Provider {
             Provider::OpenAi
         } else {
             Provider::Gemini
+        }
+    }
+
+    /// The provider's name as reports print it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Provider::Gemini => "gemini",
+            Provider::OpenAi => "openai",
+            Provider::OpenRouter => "openrouter",
         }
     }
 
@@ -133,6 +143,9 @@ pub struct Tool {
 /// may call.
 #[derive(Debug, Clone)]
 pub struct Request {
+    /// What this call is for, as the usage report names it (`building`,
+    /// `vlm page 7`). Empty when the caller did not say.
+    pub label: String,
     pub prompt: String,
     /// PNG-encoded images, sent before the prompt in page order.
     pub images_png: Vec<Vec<u8>>,
@@ -145,6 +158,7 @@ pub struct Request {
 impl Request {
     pub fn new(prompt: impl Into<String>) -> Self {
         Self {
+            label: String::new(),
             prompt: prompt.into(),
             images_png: Vec::new(),
             max_output_tokens: 4096,
@@ -224,6 +238,30 @@ pub fn model_price(model: &str) -> Option<ModelPrice> {
         .copied()
 }
 
+/// One hosted call's token usage and estimated cost, as every networked
+/// command reports it (`llm_usage[]` in `docs/json-api.md`).
+#[derive(Debug, Clone, Serialize)]
+pub struct CallUsage {
+    /// What the call was for, from [`Request::label`].
+    pub label: String,
+    pub model: String,
+    /// `gemini`, `openai` or `openrouter`.
+    pub provider: &'static str,
+    /// Whether the provider reported token counts; the counts are zero when
+    /// it did not, and `cost_usd` is absent.
+    pub usage_reported: bool,
+    /// Prompt tokens, the cached share included.
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    /// Reasoning tokens included, as providers bill them.
+    pub output_tokens: u64,
+    /// Estimated from `models.json` rates. Absent when the model is not
+    /// catalogued or the provider reported no usage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    pub elapsed_ms: u64,
+}
+
 /// What the model answered: prose, tool calls, or both.
 #[derive(Debug, Clone, Default)]
 pub struct Reply {
@@ -239,6 +277,8 @@ pub struct Client {
     model: String,
     api_key: String,
     agent: ureq::Agent,
+    /// Every call made through this client, for the report.
+    calls: std::sync::Mutex<Vec<CallUsage>>,
 }
 
 impl Client {
@@ -274,6 +314,7 @@ impl Client {
             model: model_spec.to_string(),
             api_key,
             agent: config.into(),
+            calls: std::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -286,11 +327,39 @@ impl Client {
     }
 
     /// Sends one request and returns the model's reply. The reply's token
-    /// usage and estimated cost are logged to stderr (`llm: …`).
+    /// usage and estimated cost are logged to stderr (`llm: …`) and kept
+    /// for [`Client::calls`].
     pub fn ask(&self, request: &Request) -> Result<Reply> {
+        let started = std::time::Instant::now();
         let reply = self.send(request)?;
         log_usage(&self.model, reply.usage.as_ref());
+        let usage = reply.usage.unwrap_or_default();
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(CallUsage {
+                label: request.label.clone(),
+                model: self.model.clone(),
+                provider: self.provider.as_str(),
+                usage_reported: reply.usage.is_some(),
+                input_tokens: usage.input_tokens,
+                cached_input_tokens: usage.cached_input_tokens,
+                output_tokens: usage.output_tokens,
+                cost_usd: reply
+                    .usage
+                    .and_then(|u| model_price(&self.model).map(|price| round6(u.cost(&price)))),
+                elapsed_ms: started.elapsed().as_millis() as u64,
+            });
         Ok(reply)
+    }
+
+    /// Every call this client has made, in order — what a command's
+    /// `llm_usage` reports.
+    pub fn calls(&self) -> Vec<CallUsage> {
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn send(&self, request: &Request) -> Result<Reply> {
@@ -620,6 +689,10 @@ fn chat_reply(reply: &Value) -> Result<Reply> {
         tool_calls,
         usage,
     })
+}
+
+fn round6(v: f64) -> f64 {
+    (v * 1e6).round() / 1e6
 }
 
 /// One stderr line per call: tokens and, where the catalog prices the

@@ -191,6 +191,14 @@ fn centroid(references: &[Reference]) -> LonLat {
     }
 }
 
+/// Metres per degree of longitude and of latitude at `lat` — the same
+/// ellipsoid radii a [`Placement`] is built on, so anything that converts
+/// ground metres by hand agrees with it.
+pub fn metres_per_degree(lat: f64) -> (f64, f64) {
+    let (meridian, parallel) = local_radii(lat);
+    (parallel.to_radians(), meridian.to_radians())
+}
+
 /// Metres per radian of latitude and of longitude at `lat`, from the ellipsoid's
 /// meridian and prime-vertical radii. Exact enough that the tangent plane
 /// contributes nothing measurable over a drawing a few hundred metres across.

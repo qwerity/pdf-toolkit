@@ -22,6 +22,8 @@ tempfile = "3"
 thiserror = "2.0"
 
 geojson = "1.0.0"
+earcutr = "0.5"
+geo = "0.33"
 base64 = "0.23"
 dotenvy = "0.15"
 indexmap = { version = "2", features = ["serde"] }
@@ -39,6 +41,7 @@ pdf-vector = { path = "crates/pdf-vector" }
 pdf-vlm = { path = "crates/pdf-vlm" }
 llm-providers = { path = "crates/llm-providers" }
 pdf-inspect = { path = "crates/pdf-inspect" }
+pdf-model = { path = "crates/pdf-model" }
 pdf-pages = { path = "crates/pdf-pages" }
 pdf-render = { path = "crates/pdf-render" }
 pdf-text = { path = "crates/pdf-text" }

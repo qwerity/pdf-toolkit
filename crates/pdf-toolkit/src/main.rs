@@ -7,8 +7,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use pdf_toolkit::cli::{
-    BuildingArgs, CadfixArgs, Cli, Command, CutArgs, DossierArgs, InspectArgs, RenderArgs, Source,
-    StructuredArgs, TextArgs, VectorArgs,
+    BuildingArgs, CadfixArgs, Cli, Command, CutArgs, DossierArgs, InspectArgs, ModelArgs,
+    RenderArgs, Source, StructuredArgs, TextArgs, VectorArgs,
 };
 use pdf_toolkit::error::{PdfError, Result as LibraryResult};
 use pdf_toolkit::{
@@ -18,7 +18,8 @@ use pdf_toolkit::{
 
 use crate::cli_output::{
     print_building_output, print_cadfix_output, print_document_info, print_dossier_output,
-    print_page_output, print_structured_output, print_text_output, print_vector_output,
+    print_model_output, print_page_output, print_structured_output, print_text_output,
+    print_vector_output,
 };
 
 fn main() -> ExitCode {
@@ -44,6 +45,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Dossier(args) => dossier(&args),
         Command::Cadfix(args) => cadfix(&args),
         Command::Building(args) => building(&args),
+        Command::Model(args) => model(&args),
     }
 }
 
@@ -206,9 +208,9 @@ fn dossier(args: &DossierArgs) -> Result<()> {
             combined.absorb(live);
             options.answers = Some(combined);
             report = pdf_dossier::assemble(&analysis, &options)?;
+            report.llm_usage = Some(serde_json::to_value(client.calls())?);
             // The merged answers are what `building --answers` wants next, so
             // they are written beside the report's own files.
-            report.llm_usage = Some(serde_json::to_value(client.calls())?);
             if let Some(dir) = args.output.as_deref() {
                 report.answers_file = Some(write_answers(
                     dir,
@@ -276,6 +278,32 @@ fn building(args: &BuildingArgs) -> Result<()> {
         args.output.as_deref(),
     )?;
     print_building_output(&report)
+}
+
+/// Reconstructs the building from its plan sheets, deterministically; a
+/// hosted model is consulted for the parameters only when asked, and even
+/// then its proposal is checked against the drawings before use.
+fn model(args: &ModelArgs) -> Result<()> {
+    args.validate()
+        .map_err(|message| anyhow::anyhow!(message))?;
+    let vector_options = vector_options(args.parcel.as_deref())?;
+    let proposer = match args.llm_params.as_deref() {
+        Some(model) => Some(pdf_vlm::params::Proposer::from_env(model, &args.input)?),
+        None => None,
+    };
+    let callback = proposer.as_ref().map(|p| p.callback());
+    let options = pdf_model::RunOptions {
+        params_file: args.params.as_deref(),
+        references: args.georeference.clone(),
+        vector_options,
+        output_dir: args.output.as_deref(),
+        proposer: callback.as_ref().map(|f| f as pdf_model::Proposer<'_>),
+    };
+    let mut report = pdf_model::run(&args.input, &options)?;
+    if let Some(proposer) = &proposer {
+        report.llm_usage = Some(serde_json::to_value(proposer.calls())?);
+    }
+    print_model_output(&report)
 }
 
 /// Writes one `<document>_p<NN>.geojson` per page, beside the JSON on stdout.

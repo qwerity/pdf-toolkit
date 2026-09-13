@@ -39,6 +39,11 @@ pub fn print_building_output(report: &pdf_vlm::building::BuildingReport) -> Resu
     print_json(serde_json::to_value(report).context("failed to serialize building output")?)
 }
 
+pub fn print_model_output(report: &pdf_model::ModelReport) -> Result<()> {
+    print_warnings(&report.warnings);
+    print_json(serde_json::to_value(report).context("failed to serialize model output")?)
+}
+
 pub fn print_structured_output(report: &StructuredExtractionReport) -> Result<()> {
     print_warnings(&report.warnings);
 

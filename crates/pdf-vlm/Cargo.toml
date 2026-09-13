@@ -10,6 +10,7 @@ llm-providers.workspace = true
 pdf-classify.workspace = true
 pdf-core.workspace = true
 pdf-dossier.workspace = true
+pdf-model.workspace = true
 pdf-render.workspace = true
 pdf-vector.workspace = true
 pdfium-render.workspace = true

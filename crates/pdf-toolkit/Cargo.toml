@@ -17,6 +17,7 @@ pdf-vector.workspace = true
 pdf-vlm.workspace = true
 llm-providers.workspace = true
 pdf-inspect.workspace = true
+pdf-model.workspace = true
 pdf-pages.workspace = true
 pdf-render.workspace = true
 pdf-text.workspace = true

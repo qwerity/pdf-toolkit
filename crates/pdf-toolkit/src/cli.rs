@@ -62,6 +62,12 @@ pub enum Command {
     /// a hosted model (experimental): footprints from extracted geometry,
     /// heights read off the elevations, extruded GeoJSON for a map.
     Building(BuildingArgs),
+    /// Reconstruct the building storey by storey from the CAD-exported plan
+    /// sheets, deterministically: walls, rooms and openings by fill colour,
+    /// storeys stacked on the printed grid, levels from the section —
+    /// `model.json`, glTF, and extruded GeoJSON placed on the map where the
+    /// dossier allows.
+    Model(ModelArgs),
 }
 
 /// The source document and the pages wanted from it.
@@ -236,6 +242,75 @@ pub struct BuildingArgs {
 }
 
 #[derive(ClapArgs, Debug)]
+pub struct ModelArgs {
+    /// Source PDF.
+    pub input: PathBuf,
+
+    /// A parameters file (the `params` block of a previous run, edited):
+    /// which pages are the floor plans and the roof plan, the plan scale,
+    /// the storey levels, the fill colours, the grid labels. Skips detection.
+    #[arg(long, value_name = "FILE")]
+    pub params: Option<PathBuf>,
+
+    /// Ask a hosted model to propose the parameters, shown the detected
+    /// ones and the drawing sheets; the proposal is checked against the
+    /// drawings before use. Bare `--llm-params` uses `gemini-3.8-flash`.
+    /// **This sends the drawing sheets to that provider.**
+    #[arg(
+        long = "llm-params",
+        value_name = "MODEL",
+        num_args = 0..=1,
+        default_missing_value = pdf_vlm::DEFAULT_MODEL
+    )]
+    pub llm_params: Option<String>,
+
+    /// A real-world reference placing the model, as
+    /// `local_x,local_y,longitude,latitude` in the model's own metres.
+    /// Repeat it: two or more settle position and rotation. Without them
+    /// the model is placed from a georeferenced sibling sheet drawing the
+    /// same outline, or stays in its own metres.
+    #[arg(
+        long = "georeference",
+        short = 'g',
+        value_parser = parse_reference_arg,
+        allow_hyphen_values = true
+    )]
+    pub georeference: Vec<Reference>,
+
+    /// A GeoJSON file of WGS 84 parcel polygon(s), matched by shape to the
+    /// dossier's site plan when it prints no coordinate table — what lets
+    /// the model be placed from that sheet.
+    #[arg(long, value_name = "FILE")]
+    pub parcel: Option<PathBuf>,
+
+    /// Also write `model/<document>.model.json`, `.glb`, `.geojson` and
+    /// `.params.json` under this directory. The same JSON is on stdout
+    /// either way.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+}
+
+impl ModelArgs {
+    /// Rejects a single reference, for the reason `vector` does.
+    pub fn validate(&self) -> Result<(), String> {
+        refuse_single_reference(&self.georeference, "rotation")
+    }
+}
+
+/// One reference fixes position but leaves the named freedoms open, so a
+/// placement built from it would be confidently wrong rather than refused.
+/// The check lives here so the message names the flag the user typed.
+fn refuse_single_reference(references: &[Reference], leaves: &str) -> Result<(), String> {
+    if references.len() == 1 {
+        return Err(format!(
+            "--georeference needs at least two references: one fixes position but leaves \
+             {leaves} undetermined"
+        ));
+    }
+    Ok(())
+}
+
+#[derive(ClapArgs, Debug)]
 pub struct VectorArgs {
     #[command(flatten)]
     pub source: Source,
@@ -276,19 +351,8 @@ pub struct VectorArgs {
 
 impl VectorArgs {
     /// Rejects a single reference up front.
-    ///
-    /// One reference fixes position but leaves rotation and scale free, so a
-    /// placement built from it would be confidently wrong rather than refused.
-    /// The check lives here so the message names the flag the user typed.
     pub fn validate(&self) -> Result<(), String> {
-        if self.georeference.len() == 1 {
-            return Err(
-                "--georeference needs at least two references: one fixes position but leaves \
-                 rotation and scale undetermined"
-                    .to_string(),
-            );
-        }
-        Ok(())
+        refuse_single_reference(&self.georeference, "rotation and scale")
     }
 }
 
@@ -306,6 +370,7 @@ impl Command {
             Self::Dossier(args) => &args.input,
             Self::Cadfix(args) => &args.input,
             Self::Building(args) => &args.input,
+            Self::Model(args) => &args.input,
         }
     }
 }
@@ -470,6 +535,7 @@ mod tests {
             vec!["dossier", "a.pdf"],
             vec!["cadfix", "a.pdf", "--page", "9"],
             vec!["building", "a.pdf"],
+            vec!["model", "a.pdf"],
         ];
 
         for args in cases {
@@ -592,6 +658,50 @@ mod tests {
         rejects(&["cadfix", "a.pdf", "--page", "9", "--answers", "x.json"]);
         rejects(&["building", "a.pdf", "--page", "9"]);
         rejects(&["dossier", "a.pdf", "--model", "gpt-6-astra"]);
+        rejects(&["model", "a.pdf", "--pages", "1"]);
+        rejects(&["model", "a.pdf", "--answers", "x.json"]);
+        rejects(&["model", "a.pdf", "--model", "gpt-6-astra"]);
+    }
+
+    #[test]
+    fn model_is_offline_unless_asked_and_refuses_one_reference() {
+        let Command::Model(args) = parse(&["model", "a.pdf"]).command else {
+            panic!("expected model");
+        };
+        assert!(args.llm_params.is_none() && args.params.is_none() && args.output.is_none());
+        args.validate().expect("no references is fine");
+
+        let Command::Model(args) = parse(&["model", "a.pdf", "--llm-params"]).command else {
+            panic!("expected model");
+        };
+        assert_eq!(args.llm_params.as_deref(), Some("gemini-3.8-flash"));
+
+        let Command::Model(args) = parse(&[
+            "model",
+            "a.pdf",
+            "--params",
+            "p.json",
+            "-g",
+            "-1,-2,44.5,40.1",
+            "-g",
+            "3,4,44.6,40.2",
+            "--parcel",
+            "parcel.geojson",
+            "-o",
+            "out",
+        ])
+        .command
+        else {
+            panic!("expected model");
+        };
+        assert_eq!(args.georeference.len(), 2);
+        assert_eq!(args.params.as_deref(), Some(std::path::Path::new("p.json")));
+        args.validate().expect("two references");
+
+        let Command::Model(args) = parse(&["model", "a.pdf", "-g", "0,0,44.5,40.1"]).command else {
+            panic!("expected model");
+        };
+        assert!(args.validate().is_err(), "one reference is refused");
     }
 
     #[test]

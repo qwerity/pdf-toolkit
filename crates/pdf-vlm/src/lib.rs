@@ -34,6 +34,7 @@ use pdf_render::{PngSize, render_page, write_png};
 pub mod building;
 pub mod cad;
 pub mod measure;
+pub mod params;
 
 pub use llm_providers::ASTRA_MODEL;
 
@@ -86,8 +87,8 @@ impl VlmClient {
         label: &str,
     ) -> Result<(PageAnswer, IndexMap<String, PersonMeta>)> {
         let mut request = Request::new(PAGE_PROMPT);
-        request.images_png.push(png.to_vec());
         request.label = label.to_string();
+        request.images_png.push(png.to_vec());
         let reply = self
             .client
             .ask(&request)

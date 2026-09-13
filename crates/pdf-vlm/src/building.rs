@@ -31,6 +31,8 @@ use pdf_core::page::open_document;
 use pdf_dossier::Answers;
 use pdf_vector::{DocumentVector, VectorOptions, extract_document};
 
+use pdf_model::geom::{point_segment_distance, rotate};
+
 use crate::DRAWING_RENDER_WIDTH_PX;
 use crate::measure::{self, Body, Parcel, ParcelReport, centroid, ring_area, ring_points, round7};
 
@@ -40,12 +42,12 @@ const PAGE_BUDGET: usize = 8;
 
 const CANDIDATE_LIMIT: usize = 40;
 
-/// How thick a `fence` part's wall ring is drawn, in metres (or the
-/// anchor's units where the frame is not metric).
 /// How many times the model is asked before a reply with no structure is
 /// the run's answer.
 const ATTEMPTS: usize = 3;
 
+/// How thick a `fence` part's wall ring is drawn, in metres (or the
+/// anchor's units where the frame is not metric).
 const FENCE_THICKNESS: f64 = 0.3;
 
 /// Inset factors and rise fractions for the two stepped rings a pitched
@@ -90,10 +92,10 @@ pub struct BuildingReport {
     /// together with `parcel`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub measurements: Option<Value>,
-}
-
     /// Every hosted call this run made, with tokens and estimated cost.
     pub llm_usage: Vec<CallUsage>,
+}
+
 /// One structure the model declared.
 #[derive(Debug, Serialize)]
 pub struct PartReport {
@@ -169,9 +171,9 @@ pub fn reconstruct(
     let document = open_document(pdfium, pdf_path).map_err(anyhow::Error::from)?;
     let pages = document.pages();
     let mut request = Request::new(prompt(&vector, &selection, &candidates));
+    request.label = "building".to_string();
     for &number in &selection.all() {
         request.images_png.push(crate::render_page_png(
-    request.label = "building".to_string();
             pages,
             number,
             DRAWING_RENDER_WIDTH_PX,
@@ -193,8 +195,6 @@ pub fn reconstruct(
                 .to_string(),
         );
     }
-    let mut specs = Vec::new();
-    let mut facts = None;
 
     // A reply with no `add_part` call is asked again, up to `ATTEMPTS` times:
     // on the corpus the model occasionally narrates its reading and stops
@@ -203,6 +203,8 @@ pub fn reconstruct(
     // failed attempt reaches `warnings`, and the run fails only when all of
     // them came back empty.
     let base_prompt = request.prompt.clone();
+    let mut specs = Vec::new();
+    let mut facts = None;
     let mut last_text = String::new();
     for attempt in 1..=ATTEMPTS {
         if attempt > 1 {
@@ -246,8 +248,6 @@ pub fn reconstruct(
             } else {
                 format!(": {}", reply.text.chars().take(300).collect::<String>())
             }
-        );
-    }
         ));
         last_text = reply.text;
     }
@@ -260,6 +260,8 @@ pub fn reconstruct(
                 .cloned()
                 .collect::<Vec<_>>()
                 .join(" | ")
+        );
+    }
 
     // Heights are metres; footprints should be too. Where the frame is
     // unscaled page units and the model read a printed sheet scale, the
@@ -403,9 +405,9 @@ pub fn reconstruct(
         parcel,
         measurements_file,
         measurements,
+        llm_usage: client.calls(),
     })
 }
-        llm_usage: client.calls(),
 
 /// The parcel statement the anchor sheet carries: the surveyor's own ring
 /// first, else the caller's polygon the sheet was placed from (`--parcel`).
@@ -880,25 +882,6 @@ fn principal_angle(centred: &[(f64, f64)]) -> f64 {
     0.5 * (2.0 * sxy).atan2(sxx - syy)
 }
 
-fn rotate(points: &[(f64, f64)], angle: f64) -> Vec<(f64, f64)> {
-    let (sin, cos) = angle.sin_cos();
-    points
-        .iter()
-        .map(|&(x, y)| (x * cos - y * sin, x * sin + y * cos))
-        .collect()
-}
-
-fn point_segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    let length_sq = dx * dx + dy * dy;
-    let s = if length_sq <= 1e-12 {
-        0.0
-    } else {
-        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / length_sq).clamp(0.0, 1.0)
-    };
-    ((p.0 - a.0 - s * dx).powi(2) + (p.1 - a.1 - s * dy).powi(2)).sqrt()
-}
-
 /// Mean distance from `from`'s vertices to the nearest segment of `onto`.
 fn mean_outline_distance(from: &[(f64, f64)], onto: &[(f64, f64)]) -> f64 {
     if from.is_empty() || onto.len() < 2 {
@@ -1009,6 +992,23 @@ fn resolve_outline(
     if score > allowance {
         return Err(format!(
             "outline page {page}: outline does not align with the candidate (mean corner distance {score:.2} m)"
+        ));
+    }
+
+    // Back into the anchor's frame, about the candidate's position.
+    let (sx, sy) = measure::scale_at(target_origin.1, geographic);
+    let placed_ring: Vec<Value> = aligned
+        .iter()
+        .map(|&(x, y)| {
+            json!([
+                round7(target_origin.0 + x / sx),
+                round7(target_origin.1 + y / sy)
+            ])
+        })
+        .collect();
+    Ok(Some((placed_ring, outline_area)))
+}
+
 /// The prompt for a second or third attempt: the same brief, plus what the
 /// last reply did instead of declaring a structure and the instruction that
 /// this one must.
@@ -1027,23 +1027,6 @@ fn retry_prompt(base: &str, last_text: &str) -> String {
          main building on the candidate ring that best matches its footprint on the anchor \
          sheet (a rough match is acceptable — say so in your text), then call set_facts."
     )
-}
-
-        ));
-    }
-
-    // Back into the anchor's frame, about the candidate's position.
-    let (sx, sy) = measure::scale_at(target_origin.1, geographic);
-    let placed_ring: Vec<Value> = aligned
-        .iter()
-        .map(|&(x, y)| {
-            json!([
-                round7(target_origin.0 + x / sx),
-                round7(target_origin.1 + y / sy)
-            ])
-        })
-        .collect();
-    Ok(Some((placed_ring, outline_area)))
 }
 
 fn add_part_tool() -> Tool {

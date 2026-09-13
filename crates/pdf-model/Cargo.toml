@@ -1,0 +1,20 @@
+[package]
+name = "pdf-model"
+description = "Deterministic 3D building reconstruction from a CAD-exported PDF drawing set: storeys from the plan sheets by fill colour, levels from the section, exported as model.json, glTF and map-native extruded GeoJSON."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+earcutr.workspace = true
+geo.workspace = true
+geojson.workspace = true
+indexmap.workspace = true
+pdf-classify.workspace = true
+pdf-geo.workspace = true
+pdf-geometry.workspace = true
+pdf-vector.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true

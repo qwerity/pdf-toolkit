@@ -189,6 +189,15 @@ see `.env.sample`) and sends the flagged pages' images to that provider.
 Like `cadfix` and `building`, it is networked and always opt-in; nothing
 else in the toolkit touches the network.
 
+Every page and group also carries a `trust` — `official` for the Cadastre
+Committee's own documents, `applicant`, `identity`, `unknown` — and the
+report lists every figure the pages state about the parcel (`facts[]`: codes,
+areas, registered buildings, owner, applicant, address, certificate number,
+the survey polygons) and compares each repeated one across pages with the
+official page as the reference (`checks[]`: agree, near miss, disagree,
+stated once, unreadable). A mismatch names both pages and both values and is
+never resolved by picking a side.
+
 The output shape is `docs/annotation-schema.md`; the command contract is the
 `dossier` section of `docs/json-api.md`.
 
@@ -247,6 +256,7 @@ scale from the title block.
 ```bash
 ./dist/pdf-toolkit model input.pdf -o out                  # model.json, .glb, .geojson, .params.json
 ./dist/pdf-toolkit model input.pdf --params out/model/input.params.json   # a reviewed parameter file
+./dist/pdf-toolkit model input.pdf --answers answers.json  # the dossier's labels name the plan sheets
 ./dist/pdf-toolkit model input.pdf --llm-params            # gemini-3.8-flash confirms the parameters
 ./dist/pdf-toolkit model input.pdf --parcel parcel.geojson # place it from the site plan matched to the cadastre
 ./dist/pdf-toolkit model input.pdf -g 0,0,44.51,40.15 -g 10,0,44.5101,40.15   # place it by hand
@@ -257,9 +267,15 @@ plan scale, the storey levels, the fill colours, the grid labels — are
 **detected from the document** (title blocks, printed scales, level marks,
 the plan's own fills, the lettered grid bubbles); `params_notes` lists every
 decision, and the `params` block is a valid `--params` file to review and
-edit. `--llm-params` asks a hosted model to confirm or correct them; the
-proposal is checked against the drawings before it is used. Geometry never
-comes from a parameter source.
+edit. `--answers` lends the dossier's page labels to sets whose title blocks
+the classifier cannot read (most offices' exports), and detection then
+falls back to the elevations' level marks for the storeys, to a sheet's
+drawing centre when it prints no grid labels, and to the outline of walls
+and rooms when it draws no envelope fill — each named in the notes.
+`--llm-params` asks a hosted model to confirm or correct the parameters; the
+proposal is checked against the drawings before it is used, and its
+accepted `params` block can be kept and passed back as `--params`. Geometry
+never comes from a parameter source.
 
 The model is **placed on the map** when a georeferenced sibling sheet draws
 the building's box (the site plan, placed from its table, a sibling's, or

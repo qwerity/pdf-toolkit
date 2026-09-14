@@ -6,7 +6,7 @@ document on stdout and nothing else**, so it can be driven from another program.
 This file is the contract. It is the reference for integrating the tool; if you
 are wiring it into a service, this is all you need.
 
-- Version described here: **0.10.0** (matches the package version)
+- Version described here: **0.11.1** (matches the package version)
 - Warnings and progress go to **stderr**; stdout is only ever the JSON document
 - Files written under `--output` are the same whether or not you parse stdout
 - Exit code is `0` on success and non-zero on failure. **A failed run prints no
@@ -628,7 +628,7 @@ changes its rates. Model quality on the annotation task is compared in
 {
   "document": "letter",
   "entities": [],
-  "generated_by": "pdf-toolkit 0.10.0 dossier: deterministic extraction (pdfium text, templates, rxing QR, vector classification and georeferencing); vision-pass answers pending",
+  "generated_by": "pdf-toolkit 0.11.1 dossier: deterministic extraction (pdfium text, templates, rxing QR, vector classification and georeferencing); vision-pass answers pending",
   "graph": {
     "edges": []
   },
@@ -655,10 +655,11 @@ changes its rates. Model quality on the annotation task is compared in
       "languages": [
         "en"
       ],
-      "page_number": 1
+      "page_number": 1,
+      "trust": "applicant"
     }
   ],
-  "schema_version": "0.2.0",
+  "schema_version": "0.3.0",
   "source": "letter.pdf",
   "stats": {
     "embedded_text": 1,
@@ -1336,7 +1337,7 @@ the model and the extruded FeatureCollection inline):
 | `placed` / `crs` | Whether the model is on the map; `geojson` is in `EPSG:4326` when placed and `local_metres` otherwise. `model` is always in local metres. |
 | `georeference` | How it was placed: `source` — `sheet_outline` (matched to the box on `page`, with `residual_m` the mean corner distance and `linework_residual_m` how close the placed slab sits to the sheet's other line work, the latter **absent** when the sheet draws nothing else nearby) \| `references` (`--georeference`, `residual_m` the fit's RMSE). `rotation_degrees` CCW from the model's x axis to east, `origin` the tangent-plane origin, and `transform` `{a, b, tx, ty}` — the model's metres to metres east/north of `origin` as `x' = a·x − b·y + tx`, `y' = b·x + a·y + ty` (`a² + b² = 1`); degrees follow from `origin` and the WGS 84 metres-per-degree at its latitude, which is how a consumer brings the parcel into the model's frame. **Absent** when not placed, with a `warnings` entry. |
 | `bounds` | The placed ground-floor slab's extent, `[[west, south], [east, north]]`. **Absent** when not placed. |
-| `sheets[]` | How each sheet was read: `role` `floor` \| `roof`, the grid `origin_page` in page units, `origin_source` — `axis_bubbles` (both labels sit in drawn circles) \| `axis_text` (no circle; the text position stood in, with a `warnings` entry) — and the fill counts by element type. |
+| `sheets[]` | How each sheet was read: `role` `floor` \| `roof`, the grid `origin_page` in page units, `origin_source` — `axis_bubbles` (both labels sit in drawn circles) \| `axis_text` (no circle; the text position stood in, with a `warnings` entry) \| `fill_centre` (no grid labels at all; the storey is aligned on the centre of its filled drawing, with a `warnings` entry) — and the fill counts by element type. A storey whose sheet the rules could not read, and a roof sheet likewise, are left out with a `warnings` entry rather than failing the run. |
 | `floors[]` | Per-storey counts and areas: `walls`, `glazing`, `door_gaps`, `rooms`, `rooms_area_m2` (sum of the room fills), `slab_area_m2` (envelope plus terraces), `rails`. |
 | `roof` | `page`, `area_m2`, `parapet_pieces`. **Absent** when the set has no roof plan. |
 | `stone_piers` | Ground-floor wall pieces outside the envelope. |

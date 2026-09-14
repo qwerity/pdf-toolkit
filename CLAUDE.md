@@ -133,7 +133,7 @@ to within 2 % of its area; a rule change that moves a wall shows up there.
 ## Running things
 
 ```sh
-cargo test --workspace                      # ~450 tests
+cargo test --workspace                      # ~340 tests
 PDF_TOOLKIT_REQUIRE_CORPUS=1 cargo test     # corpus tests must run, not skip
 cargo test -p pdf-toolkit --test scorecard -- --nocapture   # the extraction scorecard
 PDF_TOOLKIT_SCORECARD_UPDATE=1 cargo test -p pdf-toolkit --test scorecard  # accept new scores

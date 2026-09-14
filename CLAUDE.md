@@ -148,18 +148,21 @@ test would otherwise poison the global lock. The harness binds
 with the working directory at the *package* root, where the runtime's own
 relative `./dist/` lookup cannot see it.
 
-**The dossier corpus in `data/plan/` is private data**, and so are the
-reviewed annotations and vision-pass answers beside it
-(`data/annotations/`, `data/annotations/answers/`) that the `dossier`
-corpus tests replay. It is not
-committed, published or fetched from anywhere, and `data/` is gitignored
-in full — do not add a way to distribute it.
+**`data/` is the test data set, committed with the code.** `data/plan/` holds
+the fourteen real building-permit dossiers (plus the ArchiCAD sketch subset),
+`data/annotations/` the reviewed annotations the `dossier` tests replay, with
+the vision-pass answers, the cadastre parcels, the recorded `building` reports,
+the model golden and the accepted `model` parameters beside them, and
+`data/expected/` the scorecard ledgers. **It is personal data** — owners,
+addresses, identity documents — in a private repository: never publish it,
+never copy it into another repository, never quote a person or a parcel from
+it in a commit message or a doc. Only what no test reads is gitignored
+(`data/misc/`, regenerable GeoJSON exports, logs, the photographs).
 
-The corpus tests skip themselves when it is absent, so `cargo test` passes on a
-fresh clone. On a machine that holds the dossiers, run with
-`PDF_TOOLKIT_REQUIRE_CORPUS=1`: a silent skip there would drop the only tests
-that check the georeferencing is right. CI cannot hold the corpus, so CI cannot
-set it — those tests are verified where the data lives.
+The corpus tests skip themselves when the files are absent (a partial
+checkout), so `cargo test` still passes; `PDF_TOOLKIT_REQUIRE_CORPUS=1` turns
+that skip into a failure, and CI should set it now that the data ships with
+the clone.
 
 ## Releasing
 

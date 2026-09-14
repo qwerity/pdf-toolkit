@@ -1,7 +1,7 @@
 //! End-to-end tests for `model`, against the reference dossier of the
 //! corpus: `data/plan/4.pdf`, the ArchiCAD sketch set the reconstruction
-//! was developed on. Private data, gitignored; everything here skips when
-//! it is absent (see `common::corpus_available`).
+//! was developed on. Everything here skips when it is absent (see
+//! `common::corpus_available`).
 //!
 //! The library's own golden test (`crates/pdf-model/tests/golden.rs`) pins
 //! the geometry against the reference implementation's output; these pin

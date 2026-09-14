@@ -6,9 +6,9 @@
 //! exercise a Gauss-Krüger datum shift or a coordinate table that a CAD
 //! exporter turned into glyph outlines.
 //!
-//! **The dossiers are private data.** They are not committed, published or
-//! fetched, and `data/` is gitignored in full. Everything here skips
-//! itself when they are absent — see [`corpus_available`].
+//! **The dossiers are personal data**, committed as the test data set of a
+//! private repository. Everything here skips itself when they are absent —
+//! see [`corpus_available`].
 //!
 //! The centrepiece is [`known_placements_reproduce_to_the_millimetre`], which
 //! pins every page the corpus can place and the residual it places to. A
@@ -241,7 +241,7 @@ fn placed_pages_land_in_yerevan() {
 /// A dossier that prints no coordinate table anywhere places from the
 /// cadastre's own polygon for its parcel (`--parcel`): every plan sheet
 /// drawing the boundary, with all of its corners, at millimetre residual —
-/// and nothing else. The polygon lives beside the private corpus
+/// and nothing else. The polygon lives beside the corpus
 /// (`data/annotations/parcels/1.geojson`, exported from the cadastre
 /// mirror), so the test skips with it.
 #[test]

@@ -9,10 +9,10 @@
 //! pins what must hold *before* any vision pass: placements, decoded QR
 //! payloads, template-parsed entities, mis-encoding flags.
 //!
-//! **The corpus is private data** (see `data/` in `.gitignore`); everything
-//! here skips itself when it is absent, and `PDF_TOOLKIT_REQUIRE_CORPUS=1`
-//! turns the skip into a failure on machines that hold it — the same
-//! contract as `vector_e2e`.
+//! **The corpus is personal data**, committed as the test data set of a
+//! private repository; everything here skips itself when it is absent (a
+//! partial checkout), and `PDF_TOOLKIT_REQUIRE_CORPUS=1` turns the skip into
+//! a failure — the same contract as `vector_e2e`.
 
 mod cli;
 mod common;
@@ -46,9 +46,9 @@ fn corpus_available(test: &str) -> bool {
     common::corpus_available(test, &[corpus_pdf(3), annotation(3), answers(3)])
 }
 
-/// Expected values that are themselves excerpts of the private corpus — a
-/// real QR payload, certificate number, parcel code, person — live beside
-/// the corpus in `data/annotations/expected.json`, never in committed code.
+/// Expected values that are themselves excerpts of the corpus — a real QR
+/// payload, certificate number, parcel code, person — live beside the corpus
+/// in `data/annotations/expected.json`, never in code.
 fn expected(section: &str) -> Value {
     let path = common::data_dir().join("annotations").join("expected.json");
     let raw = std::fs::read_to_string(&path)

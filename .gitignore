@@ -1,6 +1,5 @@
 /.idea
 
-/data
 /target
 /dist
 /out/
@@ -10,3 +9,12 @@
 /artifacts
 
 .env
+
+# `data/` is the test data set and is committed: the corpus PDFs, the reviewed
+# annotations, the answers, the parcels, the recorded building reports, the
+# model golden and the accepted parameters, and the scorecard ledgers. Only
+# what no test reads stays out.
+/data/misc/
+/data/annotations/geojson/
+/data/annotations/building/logs/
+/data/plan/*.jpg

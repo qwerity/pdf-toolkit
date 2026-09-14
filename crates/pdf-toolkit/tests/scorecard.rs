@@ -11,7 +11,7 @@
 //! checks, the storey model — how much of what a person said is on the page
 //! does the toolkit now read, and is that more or less than last time?
 //!
-//! The ledgers live in the private corpus (`data/expected/<n>.json`,
+//! The ledgers live beside the corpus (`data/expected/<n>.json`,
 //! `scripts/seed-expected.py` seeds them from the reviewed annotations). The
 //! baseline — numbers only — is committed beside this file. A kind whose
 //! score falls below its baseline fails the test; a kind that rose is

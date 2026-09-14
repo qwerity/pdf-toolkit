@@ -584,15 +584,15 @@ annotations and vision-pass answers beside them (`data/annotations/`,
 `data/annotations/answers/`), and require the command to reproduce the
 annotations exactly.
 
-**Those dossiers are private data.** They are not committed, published or
-fetched from anywhere, and `data/` is gitignored in full. They exist only
-on machines that already hold them.
+**Those dossiers are committed as the test data set** (`data/`), and they are
+personal data in a private repository: never published, never copied
+elsewhere, never quoted. What no test reads — `data/misc/`, regenerable
+GeoJSON exports, logs, photographs — stays gitignored.
 
 Everything that needs them skips itself when they are absent, printing `SKIP`,
-so `cargo test` passes on a clone without them. On a machine that *does* hold
-the corpus, set `PDF_TOOLKIT_REQUIRE_CORPUS=1` — that turns a skip into a
-failure, so the only tests that check the georeferencing is right cannot be
-silently dropped.
+so `cargo test` passes on a partial checkout; `PDF_TOOLKIT_REQUIRE_CORPUS=1`
+turns a skip into a failure, so the only tests that check the georeferencing
+is right cannot be silently dropped.
 
 To enable them, copy the dossiers to `data/plan/` as `1.pdf`, `2.pdf`
 and so on. The `vector` tests read the directory rather than a fixed list, so

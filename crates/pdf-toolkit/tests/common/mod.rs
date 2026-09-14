@@ -85,20 +85,20 @@ fn bind_pdfium() -> Pdfium {
     })
 }
 
-/// The private test corpus root (`data/`): real building-permit
-/// submissions, gitignored in full, present only on machines that already
-/// hold them.
+/// The test corpus root (`data/`): real building-permit submissions,
+/// committed as the test data set (personal data; the repository is
+/// private).
 pub fn data_dir() -> std::path::PathBuf {
     workspace_root().join("data")
 }
 
-/// Whether the private corpus files a test needs are present, and what to do
-/// when they are not.
+/// Whether the corpus files a test needs are present, and what to do when
+/// they are not.
 ///
-/// A clone without them still gets a passing `cargo test`, with a loud SKIP
-/// line naming what was skipped. On a machine that *does* hold the corpus,
-/// a silent skip would drop the only tests that check real-corpus behaviour,
-/// so `PDF_TOOLKIT_REQUIRE_CORPUS=1` turns the skip into a failure there.
+/// A partial checkout still gets a passing `cargo test`, with a loud SKIP
+/// line naming what was skipped. A silent skip would drop the only tests
+/// that check real-corpus behaviour, so `PDF_TOOLKIT_REQUIRE_CORPUS=1` turns
+/// the skip into a failure — set it in CI.
 ///
 /// Returns false when the caller should return without asserting.
 #[must_use]
@@ -117,7 +117,7 @@ pub fn corpus_available(test: &str, required: &[std::path::PathBuf]) -> bool {
         missing.join(", ")
     );
     eprintln!(
-        "SKIP {test}: private corpus not present ({}). It is not distributed;          copy the data there to enable this test.",
+        "SKIP {test}: corpus files not present ({}); check out data/ to enable this test.",
         missing.join(", ")
     );
     false

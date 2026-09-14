@@ -10,11 +10,11 @@
 
 .env
 
-# `data/` is the test data set and is committed: the corpus PDFs, the reviewed
-# annotations, the answers, the parcels, the recorded building reports, the
+# `data/` is the test data set and is committed: the corpus PDFs and their
+# photographs, the reviewed annotations with the per-page GeoJSON they
+# reference, the answers, the parcels, the recorded building reports, the
 # model golden and the accepted parameters, and the scorecard ledgers. Only
-# what no test reads stays out.
-/data/misc/
+# unrelated files and run logs stay out.
 /data/annotations/geojson/
 /data/annotations/building/logs/
-/data/plan/*.jpg
+/data/misc/

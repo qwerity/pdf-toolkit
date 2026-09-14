@@ -157,7 +157,8 @@ the model golden and the accepted `model` parameters beside them, and
 addresses, identity documents — in a private repository: never publish it,
 never copy it into another repository, never quote a person or a parcel from
 it in a commit message or a doc. Only what no test reads is gitignored
-(`data/misc/`, regenerable GeoJSON exports, logs, the photographs).
+(`data/misc/`, run logs, and the per-page GeoJSON exports `dossier -o`
+regenerates).
 
 The corpus tests skip themselves when the files are absent (a partial
 checkout), so `cargo test` still passes; `PDF_TOOLKIT_REQUIRE_CORPUS=1` turns

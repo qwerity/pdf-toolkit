@@ -586,8 +586,8 @@ annotations exactly.
 
 **Those dossiers are committed as the test data set** (`data/`), and they are
 personal data in a private repository: never published, never copied
-elsewhere, never quoted. What no test reads — `data/misc/`, regenerable
-GeoJSON exports, logs, photographs — stays gitignored.
+elsewhere, never quoted. Only unrelated files (`data/misc/`), run logs and the
+regenerable per-page GeoJSON exports stay gitignored.
 
 Everything that needs them skips itself when they are absent, printing `SKIP`,
 so `cargo test` passes on a partial checkout; `PDF_TOOLKIT_REQUIRE_CORPUS=1`

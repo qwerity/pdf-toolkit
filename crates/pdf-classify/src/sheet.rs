@@ -13,7 +13,7 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use pdf_geometry::model::{PageContent, TextItem};
+use pdf_geometry::model::{PageContent, Point, TextItem};
 
 /// The kind of sheet a title names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,6 +226,36 @@ pub fn level_marks(page: &PageContent) -> Vec<f64> {
     marks
 }
 
+/// A level mark as printed: its value and where the run that prints it sits,
+/// for a reader that has to find the line the mark labels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlacedLevel {
+    /// Metres.
+    pub value: f64,
+    /// The run's baseline origin, page units.
+    pub origin: Point,
+    /// The run's font size, page units.
+    pub size: f64,
+}
+
+/// Every level mark on the page with the position of its run, in content
+/// order; a level printed twice is listed twice.
+pub fn placed_level_marks(page: &PageContent) -> Vec<PlacedLevel> {
+    page.texts
+        .iter()
+        .filter(|item| item.angle.abs() < 0.05)
+        .flat_map(|item| {
+            levels_in(&item.text)
+                .filter(|level| level.abs() < 100.0)
+                .map(move |value| PlacedLevel {
+                    value,
+                    origin: item.origin,
+                    size: item.size,
+                })
+        })
+        .collect()
+}
+
 /// The role a title names, by keyword.
 pub fn role_of(title: &str) -> Option<SheetRole> {
     let lower = title.to_lowercase();
@@ -369,6 +399,31 @@ mod tests {
             text("0 0 6 3", 10.0, 190.0),
         ]);
         assert_eq!(level_marks(&page), vec![-0.35, 0.0, 3.6, 6.7, 7.2, 7.75]);
+    }
+
+    #[test]
+    fn placed_level_marks_keep_each_run_and_its_position() {
+        let page = page(vec![
+            text("+7,200 +6,700", 994.0, 570.4),
+            text("+3,600", 994.0, 415.0),
+            text("+3,600", 10.0, 480.0),
+            text("+0,100 հատակի նիշ", 994.0, 308.6),
+            text("14 800", 10.0, 200.0),
+        ]);
+        let marks = placed_level_marks(&page);
+        let values: Vec<f64> = marks.iter().map(|m| m.value).collect();
+        assert_eq!(
+            values,
+            vec![7.2, 6.7, 3.6, 3.6, 0.1],
+            "every mark, in order"
+        );
+        assert_eq!(marks[2].origin, Point::new(994.0, 415.0));
+        assert_eq!(
+            marks[4].origin,
+            Point::new(994.0, 308.6),
+            "a mark with a label after it"
+        );
+        assert_eq!(marks[0].size, 11.66);
     }
 
     #[test]

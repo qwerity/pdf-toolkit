@@ -21,6 +21,7 @@
 
 pub mod detect;
 pub mod elements;
+pub mod elevation;
 pub mod geojson;
 pub mod geom;
 pub mod mesh;

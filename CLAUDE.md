@@ -31,9 +31,9 @@ Practical checklist when you touch output:
 3. If the shape changed incompatibly, bump `version` in the workspace
    `Cargo.toml`. It is how a caller detects a schema change, and a   caller may gate startup on the installed version matching its
    manifest. The reviewed dossiers in `data/annotations/<n>.json` carry the
-   version in `generated_by`, and `dossier_e2e` compares them exactly, so a
-   bump must refresh that stamp in all fourteen files (a `sed` on the
-   `pdf-toolkit <old> dossier` prefix) and re-run the gate.
+   version they were reviewed against in `generated_by`; `dossier_e2e`
+   ignores that version (it checks the output names the running one), so a
+   bump needs no refresh of the annotations.
 4. Add the change to `.github/release-notes/<tag>.md` — a caller reads the
    release, not the diff.
 5. Re-read the "Integration notes" section of the contract. It makes promises

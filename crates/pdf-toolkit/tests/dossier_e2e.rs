@@ -96,9 +96,20 @@ fn merged_dossier_reproduces_the_reviewed_annotations() {
         );
         let produced = run(&as_args(&argv)).expect_success().json();
 
-        let expected: Value =
+        let mut produced = produced;
+        let mut expected: Value =
             serde_json::from_str(&std::fs::read_to_string(&annotation).expect("read annotation"))
                 .expect("annotation parses");
+
+        let own_stamp = format!("pdf-toolkit {} dossier", env!("CARGO_PKG_VERSION"));
+        assert!(
+            produced["generated_by"]
+                .as_str()
+                .is_some_and(|s| s.starts_with(&own_stamp)),
+            "dossier {n}: generated_by must name the running version ({own_stamp})"
+        );
+        unversion_generated_by(&mut produced);
+        unversion_generated_by(&mut expected);
 
         assert_eq!(
             produced, expected,
@@ -106,6 +117,25 @@ fn merged_dossier_reproduces_the_reviewed_annotations() {
              intended, regenerate data/annotations/{n}.json and re-review the diff"
         );
     }
+}
+
+/// Drops the version from `generated_by` (`pdf-toolkit <version> dossier: …`).
+///
+/// The stamp in a reviewed annotation records the release it was reviewed
+/// against; a version bump changes no reading, so it must not invalidate the
+/// review. The running version is asserted separately on the produced side.
+fn unversion_generated_by(report: &mut Value) {
+    let Some(stamp) = report["generated_by"].as_str() else {
+        return;
+    };
+    let unversioned = match stamp
+        .strip_prefix("pdf-toolkit ")
+        .and_then(|rest| rest.split_once(' '))
+    {
+        Some((_version, rest)) => format!("pdf-toolkit {rest}"),
+        None => stamp.to_owned(),
+    };
+    report["generated_by"] = Value::String(unversioned);
 }
 
 /// What the deterministic pass alone must get right, pinned on dossier 2 —

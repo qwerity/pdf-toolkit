@@ -126,12 +126,15 @@ fn the_port_matches_the_reference_model() {
     let pieces: Vec<Polygon<f64>> = golden.floors[0]
         .walls
         .iter()
-        .chain(&golden.stone)
+        .chain(golden.stone.iter().map(|pier| &pier.polygon))
         .map(geom::from_polygon2d)
         .collect();
     let (walls, stone) = split_walls(&pieces, &envelope, true);
     golden.floors[0].walls = walls.iter().map(geom::to_polygon2d).collect();
-    golden.stone = stone.iter().map(geom::to_polygon2d).collect();
+    golden.stone = stone
+        .iter()
+        .map(|piece| geom::to_polygon2d(piece).into())
+        .collect();
 
     let mut worst: f64 = 0.0;
     for (g, o) in golden.floors.iter().zip(&ours.floors) {
@@ -243,8 +246,9 @@ fn the_port_matches_the_reference_model() {
         "the parapet lies on the roof: {off_roof} m² off it"
     );
     assert_eq!(golden.stone.len(), ours.stone.len(), "stone piers");
+    let our_piers: Vec<Polygon2D> = ours.stone.iter().map(|pier| pier.polygon.clone()).collect();
     for gp in &golden.stone {
-        let m = best_mismatch(gp, &ours.stone, shift);
+        let m = best_mismatch(&gp.polygon, &our_piers, shift);
         worst = worst.max(m);
         assert!(m < 0.02, "a stone pier differs by {:.1}%", m * 100.0);
     }

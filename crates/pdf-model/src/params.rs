@@ -87,6 +87,10 @@ pub struct Params {
     /// One-based page of the roof plan, when the set has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roof_page: Option<usize>,
+    /// One-based pages of the elevation sheets, which the stone piers'
+    /// heights are read from; empty when the set has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub elevation_pages: Vec<usize>,
     /// Top of the roof slab, metres.
     pub roof_level_m: f64,
     /// Top of the parapet, metres.
@@ -120,6 +124,7 @@ impl Params {
             scale_denominator: 75.0,
             floors: Vec::new(),
             roof_page: None,
+            elevation_pages: Vec::new(),
             roof_level_m: 7.2,
             parapet_level_m: 7.78,
             slab_thickness_m: 0.5,

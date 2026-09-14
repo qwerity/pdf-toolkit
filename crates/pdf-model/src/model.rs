@@ -78,8 +78,34 @@ pub struct Model {
     pub roof: Option<Roof>,
     /// The parts of the ground-floor walls outside the envelope, cut at it and
     /// without the slivers a wall drawn past it leaves: the stone piers seen in
-    /// the elevations, extruded from the plinth to the parapet.
-    pub stone: Vec<Polygon2D>,
+    /// the elevations, extruded from the plinth to their `top` — or to the
+    /// parapet when no elevation draws one.
+    pub stone: Vec<Stone>,
+}
+
+/// A stone pier: its footprint, and the level its face stands to when the
+/// elevations draw it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Stone {
+    #[serde(flatten)]
+    pub polygon: Polygon2D,
+    /// Top of the pier's face on the elevations that draw it, metres; absent
+    /// when none does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top: Option<f64>,
+    /// The elevation pages `top` was read from; absent with it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_pages: Vec<usize>,
+}
+
+impl From<Polygon2D> for Stone {
+    fn from(polygon: Polygon2D) -> Self {
+        Self {
+            polygon,
+            top: None,
+            top_pages: Vec::new(),
+        }
+    }
 }
 
 impl Polygon2D {

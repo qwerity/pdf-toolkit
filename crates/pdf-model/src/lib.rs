@@ -32,6 +32,7 @@ pub mod reconstruct;
 pub mod report;
 pub mod run;
 pub mod sheet;
+pub mod stone;
 
 use anyhow::{Context, Result};
 use pdf_geometry::PdfDocument;
@@ -116,13 +117,17 @@ pub fn reconstruct(document: &PdfDocument, params: &Params) -> Result<Reconstruc
         .iter()
         .map(|(params, sheet)| reconstruct::FloorInput { params, sheet })
         .collect();
-    let model = reconstruct::build(
+    let mut model = reconstruct::build(
         &inputs,
         roof.as_ref(),
         params,
         &document.id(),
         &mut warnings,
     )?;
+    // The piers' heights, off the elevations that draw them.
+    if let Some((_, ground)) = floor_sheets.first() {
+        stone::read_tops(document, params, ground, &mut model.stone, &mut warnings);
+    }
     Ok(Reconstruction {
         model,
         sheets,

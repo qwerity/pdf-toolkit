@@ -81,8 +81,8 @@ impl Element<'_> {
 }
 
 /// Everything the model extrudes, in drawing order: each storey's slab,
-/// walls, glazing and stroked rails; the stone piers from the plinth to the
-/// parapet; the roof slab and its parapet ring. `plinth_m` and
+/// walls, glazing and stroked rails; the stone piers from the plinth to their
+/// top, or to the parapet without one; the roof slab and its parapet. `plinth_m` and
 /// `rail_height_m` are parameters rather than model facts.
 pub fn elements(model: &Model, plinth_m: f64, rail_height_m: f64) -> Vec<Element<'_>> {
     let mut out: Vec<Element<'_>> = Vec::new();
@@ -132,10 +132,10 @@ pub fn elements(model: &Model, plinth_m: f64, rail_height_m: f64) -> Vec<Element
         .unwrap_or_else(|| model.roof.as_ref().map_or(ground, |r| r.parapet_z[1]));
     for pier in &model.stone {
         out.push(Element {
-            polygon: Cow::Borrowed(pier),
+            polygon: Cow::Borrowed(&pier.polygon),
             role: Role::Stone,
             floor: None,
-            z: [ground - plinth_m, parapet_top],
+            z: [ground - plinth_m, pier.top.unwrap_or(parapet_top)],
         });
     }
     if let Some(roof) = &model.roof {

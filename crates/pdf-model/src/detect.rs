@@ -171,6 +171,26 @@ pub fn detect(
     } else {
         notes.push("no roof plan sheet; the roof is omitted".into());
     }
+    // Elevations: the sheets the stone piers' heights are read from.
+    params.elevation_pages = sheets
+        .iter()
+        .filter(|s| {
+            s.role == Some(SheetRole::Elevation)
+                || (s.role.is_none() && s.class == PageClass::ElevationOrSection)
+        })
+        .map(|s| s.page)
+        .collect();
+    if !params.elevation_pages.is_empty() {
+        notes.push(format!(
+            "elevations: page(s) {}",
+            params
+                .elevation_pages
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     if let Some(&parapet) = elevation_marks.last()
         && parapet >= params.roof_level_m
     {

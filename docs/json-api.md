@@ -1256,6 +1256,12 @@ the model and the extruded FeatureCollection inline):
         0.251
       ]
     },
+    "elevation_pages": [
+      16,
+      17,
+      18,
+      19
+    ],
     "floors": [
       {
         "level_m": 0,
@@ -1284,6 +1290,7 @@ the model and the extruded FeatureCollection inline):
   "params_notes": [
     "roof level 7.2 from the roof plan's title (page 15)",
     "roof plan: page 15",
+    "elevations: page(s) 16, 17, 18, 19",
     "parapet level 7.78 from the highest level mark on the elevations",
     "slab thickness 0.50 from paired level marks on the section",
     "plinth 0.35 from the lowest level mark",
@@ -1343,7 +1350,7 @@ the model and the extruded FeatureCollection inline):
 
 | Field | Notes |
 |---|---|
-| `params` | The parameters the model was built from. `source` — `detected` (read off the document) \| `file` (`--params`) \| `model` (proposed by `--llm-params` and confirmed against the drawings). `floors[]` bottom first, one-based `page`, `level_m` / `top_m`; `roof_page` **absent** when the set has no roof plan; `colours` RGB in 0..1 with a per-channel `tolerance`; `axis` the grid labels the storeys are aligned on, `font_size` **absent** when not pinned. The block is a valid `--params` file. |
+| `params` | The parameters the model was built from. `source` — `detected` (read off the document) \| `file` (`--params`) \| `model` (proposed by `--llm-params` and confirmed against the drawings). `floors[]` bottom first, one-based `page`, `level_m` / `top_m`; `roof_page` **absent** when the set has no roof plan; `elevation_pages` the elevation sheets the stone piers' heights are read from, **absent** when the set has none; `colours` RGB in 0..1 with a per-channel `tolerance`; `axis` the grid labels the storeys are aligned on, `font_size` **absent** when not pinned. The block is a valid `--params` file. |
 | `params_notes` | One line per detection decision, in reading order. **Absent** for a `--params` file. |
 | `placed` / `crs` | Whether the model is on the map; `geojson` is in `EPSG:4326` when placed and `local_metres` otherwise. `model` is always in local metres. |
 | `georeference` | How it was placed: `source` — `sheet_outline` (matched to the box on `page`, with `residual_m` the mean corner distance and `linework_residual_m` how close the placed slab sits to the sheet's other line work, the latter **absent** when the sheet draws nothing else nearby) \| `references` (`--georeference`, `residual_m` the fit's RMSE). `rotation_degrees` CCW from the model's x axis to east, `origin` the tangent-plane origin, and `transform` `{a, b, tx, ty}` — the model's metres to metres east/north of `origin` as `x' = a·x − b·y + tx`, `y' = b·x + a·y + ty` (`a² + b² = 1`); degrees follow from `origin` and the WGS 84 metres-per-degree at its latitude, which is how a consumer brings the parcel into the model's frame. **Absent** when not placed, with a `warnings` entry. |
@@ -1352,7 +1359,7 @@ the model and the extruded FeatureCollection inline):
 | `floors[]` | Per-storey counts and areas: `walls`, `glazing`, `door_gaps`, `rooms`, `rooms_area_m2` (sum of the room fills), `slab_area_m2` (envelope plus terraces), `rails`. |
 | `roof` | `page`, `area_m2`, `parapet_pieces`. **Absent** when the set has no roof plan. |
 | `stone_piers` | How many stone pieces `model.stone` holds: the parts of the ground-floor walls outside the envelope, cut at it — a pier that runs on into the house is stone only outside, the rest a wall — and without the parts nowhere thicker than 10 cm, which are walls drawn past the envelope. |
-| `warnings` | Why the model is not placed, a rejected or failed parameter proposal, a sheet whose grid origin came from text, a roof plan that draws no parapet (a ring along the outline stands in); absent when none. |
+| `warnings` | Why the model is not placed, a rejected or failed parameter proposal, a sheet whose grid origin came from text, a roof plan that draws no parapet (a ring along the outline stands in), an elevation whose level marks or grid axes do not read, a stone pier whose elevations disagree on its top or that fewer than two elevations draw (it stands to the parapet); absent when none. |
 | `model_file` / `glb_file` / `geojson_file` / `params_file` | Present with `--output`: `model/<document>.model.json`, `.glb`, `.geojson`, `.params.json`, relative to that directory. |
 | `model` | The model itself, inline — the schema below. |
 | `geojson` | The extruded FeatureCollection, inline — the shape below. |
@@ -1373,7 +1380,11 @@ the terrace edges, upper floors only). `roof`: `outline`, `slab_z`,
 `parapet[]` (the band the roof plan draws, cut to the outline — or, when it
 draws none, a `parapet_width_m` ring along the outline), `parapet_z`;
 **absent** without a roof plan. `stone[]`: the
-piers, extruded by consumers from the plinth to the parapet. Any consumer
+piers, each polygon with `top` — the level its face stands to on the
+elevations that draw it — and the `top_pages` it was read from, extruded by
+consumers from the plinth to `top`, or to the parapet when `top` is **absent**
+(fewer than two elevations draw the pier — one alone may be a section filed as
+an elevation — or they disagree by more than 5 cm). Any consumer
 that can extrude a polygon between two z values rebuilds the building; the
 glTF writer and the GeoJSON below are two such consumers.
 
@@ -1382,7 +1393,8 @@ glTF writer and the GeoJSON below are two such consumers.
 One `Polygon` feature per element with `role` — `slab`, `wall`, `glazing`,
 `rail`, `stone`, `roof`, `parapet` — plus `base` and `height` (metres above
 ±0.000), `color` (`#rrggbb`), `area_m2`, and for storey elements `floor`
-(index) and `floor_name`. Ready for a Mapbox/MapLibre `fill-extrusion`
+(index) and `floor_name`; a `stone` feature's `height` is the pier's `top`,
+or the parapet without one. Ready for a Mapbox/MapLibre `fill-extrusion`
 layer, the same shape `building` emits. Rooms are carried flat
 (`role: "room"`, no `height`) with `level`, `area_m2` and a ready `label`
 for a map that names them. `metadata` carries `document`, `source`, `crs`,

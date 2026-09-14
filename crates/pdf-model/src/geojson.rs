@@ -169,8 +169,23 @@ mod tests {
                 rails: vec![vec![[10.0, 0.0], [10.0, 5.0]]],
             }],
             roof: None,
-            stone: vec![square(12.0, 0.0, 0.5)],
+            stone: vec![square(12.0, 0.0, 0.5).into()],
         }
+    }
+
+    #[test]
+    fn a_stone_pier_with_a_top_stands_to_it() {
+        let mut model = model();
+        model.stone[0].top = Some(4.8);
+        let fc = collection(&model, &Frame { placement: None }, 0.35, 1.1, json!({}));
+        let pier = fc
+            .features
+            .iter()
+            .find(|f| f.properties.as_ref().unwrap()["role"] == "stone")
+            .expect("the pier");
+        let properties = pier.properties.as_ref().unwrap();
+        assert_eq!(properties["base"], -0.35);
+        assert_eq!(properties["height"], 4.8);
     }
 
     #[test]

@@ -57,6 +57,10 @@ fn the_parameters_are_detected_from_the_sheets_themselves() {
     );
     assert_eq!(floors[1]["top_m"], 7.2);
     assert_eq!(params["roof_page"], 15);
+    assert_eq!(
+        params["elevation_pages"],
+        serde_json::json!([16, 17, 18, 19])
+    );
     assert_eq!(params["roof_level_m"], 7.2);
     assert_eq!(params["parapet_level_m"], 7.78);
     assert_eq!(params["slab_thickness_m"], 0.5);
@@ -126,6 +130,17 @@ fn the_storeys_and_roof_are_summarised_and_carried_inline() {
     // The two stone walls either side, cut at the envelope; the five 3 cm
     // strips of wall drawn past it are not piers.
     assert_eq!(report["stone_piers"], 2);
+    // Their height, off the facades that draw them: each puts the top of the
+    // stone at +4.800 (the +4,850 mark on facade 1-3 is the wall above it).
+    for pier in report["model"]["stone"].as_array().expect("stone") {
+        assert_eq!(pier["top"], 4.8, "{pier}");
+        assert!(
+            pier["top_pages"]
+                .as_array()
+                .is_some_and(|pages| pages.len() >= 2),
+            "read from more than one facade: {pier}"
+        );
+    }
     let model = &report["model"];
     assert_eq!(model["units"], "m");
     assert_eq!(model["levels"]["parapet"], 7.78);

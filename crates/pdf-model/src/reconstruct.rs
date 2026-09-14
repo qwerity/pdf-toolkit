@@ -91,7 +91,11 @@ pub fn build(
             }
         };
         if index == 0 {
-            model.stone = built.outside.iter().map(geom::to_polygon2d).collect();
+            model.stone = built
+                .outside
+                .iter()
+                .map(|piece| geom::to_polygon2d(piece).into())
+                .collect();
         }
         model.floors.push(built.floor);
     }

@@ -292,12 +292,25 @@ fn model(args: &ModelArgs) -> Result<()> {
         None => None,
     };
     let callback = proposer.as_ref().map(|p| p.callback());
+    let hints = match &args.answers {
+        Some(path) => {
+            let answers = pdf_dossier::Answers::load(path)?;
+            pdf_model::SheetHints::from_labels(
+                answers
+                    .pages
+                    .iter()
+                    .map(|(page, answer)| (*page, answer.labels.as_slice())),
+            )
+        }
+        None => pdf_model::SheetHints::default(),
+    };
     let options = pdf_model::RunOptions {
         params_file: args.params.as_deref(),
         references: args.georeference.clone(),
         vector_options,
         output_dir: args.output.as_deref(),
         proposer: callback.as_ref().map(|f| f as pdf_model::Proposer<'_>),
+        hints,
     };
     let mut report = pdf_model::run(&args.input, &options)?;
     if let Some(proposer) = &proposer {

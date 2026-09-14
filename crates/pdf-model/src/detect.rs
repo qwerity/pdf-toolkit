@@ -12,7 +12,7 @@
 //! carries a note saying where it came from, so a reviewer can see what
 //! was read and what fell back to the office template.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{Result, anyhow};
 use pdf_classify::PageClass;
@@ -36,6 +36,10 @@ pub struct Detection {
 const SLAB_GAP_M: std::ops::RangeInclusive<f64> = 0.15..=0.8;
 /// A wall colour is dark; an envelope fill is light but not white.
 const WALL_MAX_LUMINANCE: f64 = 0.55;
+/// Two storey levels read off the elevations are at least this far apart (m).
+const MIN_STOREY_M: f64 = 2.4;
+/// The storey height assumed when nothing on the drawings states one (m).
+const DEFAULT_STOREY_M: f64 = 3.0;
 const ENVELOPE_LUMINANCE: std::ops::Range<f64> = 0.8..0.995;
 
 /// What one sheet says about itself, gathered from the vector pass.
@@ -48,14 +52,48 @@ struct SheetFacts {
     scale: Option<f64>,
 }
 
-fn facts(vector: &DocumentVector) -> Vec<SheetFacts> {
+/// Sheet roles a caller knows from elsewhere — the dossier's reviewed or
+/// vision-pass labels — for sets whose title blocks the classifier cannot
+/// read. A hint fills in a role the sheet does not state; it never
+/// overrides one it does.
+#[derive(Debug, Clone, Default)]
+pub struct SheetHints {
+    pub roles: HashMap<usize, SheetRole>,
+}
+
+impl SheetHints {
+    /// From answer-style labels per page: `floor_plan`, `roof_plan`,
+    /// `elevation_or_section`, `site_plan`.
+    pub fn from_labels<'a>(pages: impl IntoIterator<Item = (usize, &'a [String])>) -> Self {
+        let mut roles = HashMap::new();
+        for (page, labels) in pages {
+            let role = labels.iter().find_map(|l| match l.as_str() {
+                "floor_plan" => Some(SheetRole::FloorPlan),
+                "roof_plan" => Some(SheetRole::RoofPlan),
+                "elevation_or_section" => Some(SheetRole::Elevation),
+                "site_plan" | "general_plan" => Some(SheetRole::SitePlan),
+                _ => None,
+            });
+            if let Some(role) = role {
+                roles.insert(page, role);
+            }
+        }
+        Self { roles }
+    }
+}
+
+fn facts(vector: &DocumentVector, hints: &SheetHints) -> Vec<SheetFacts> {
     vector
         .pages
         .iter()
         .map(|p| SheetFacts {
             page: p.page_number,
             class: p.classification.class,
-            role: p.classification.features.sheet_role,
+            role: p
+                .classification
+                .features
+                .sheet_role
+                .or_else(|| hints.roles.get(&p.page_number).copied()),
             title: p.classification.features.sheet_title.clone(),
             level_m: p.classification.features.sheet_level_m,
             scale: p
@@ -75,11 +113,27 @@ pub fn detect(
     document: &PdfDocument,
     vector: &DocumentVector,
     template: &Params,
+    hints: &SheetHints,
 ) -> Result<Detection> {
     let mut params = template.clone();
     params.source = ParamsSource::Detected;
     let mut notes = Vec::new();
-    let sheets = facts(vector);
+    let sheets = facts(vector, hints);
+    let hinted: Vec<usize> = sheets
+        .iter()
+        .filter(|s| hints.roles.contains_key(&s.page))
+        .map(|s| s.page)
+        .collect();
+    if !hinted.is_empty() {
+        notes.push(format!(
+            "sheet roles for page(s) {} taken from the answers' labels",
+            hinted
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
 
     // Storeys: the floor plans, ordered by the level their titles name.
     let mut floors: Vec<&SheetFacts> = sheets
@@ -144,15 +198,60 @@ pub fn detect(
         ));
     }
 
+    // Plans whose titles name no level: the elevations' marks name the
+    // storeys — climbing from the ground, each the first mark a storey's
+    // height above the last — and the roof is the first mark above the top
+    // storey when its own sheet names none.
+    let titled = floors.iter().filter(|f| f.level_m.is_some()).count();
+    let mut derived: Vec<Option<f64>> = vec![None; floors.len()];
+    if titled == 0 && !elevation_marks.is_empty() {
+        let mut current = 0.0;
+        derived[0] = Some(0.0);
+        for slot in derived.iter_mut().skip(1) {
+            let next = elevation_marks
+                .iter()
+                .copied()
+                .find(|m| *m >= current + MIN_STOREY_M)
+                .unwrap_or(current + DEFAULT_STOREY_M);
+            *slot = Some(next);
+            current = next;
+        }
+        if roof_sheet.is_some_and(|r| r.level_m.is_none()) || roof_sheet.is_none() {
+            let roof = elevation_marks
+                .iter()
+                .copied()
+                .find(|m| *m >= current + MIN_STOREY_M)
+                .unwrap_or(current + DEFAULT_STOREY_M);
+            let parapet_height = template.parapet_level_m - template.roof_level_m;
+            params.roof_level_m = roof;
+            params.parapet_level_m = elevation_marks
+                .iter()
+                .copied()
+                .find(|m| *m > roof)
+                .unwrap_or(roof + parapet_height.max(0.1));
+        }
+        notes.push(format!(
+            "storey levels {} and roof level {} from the elevations' level marks (the plan titles name none)",
+            derived
+                .iter()
+                .flatten()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            params.roof_level_m
+        ));
+    }
+
     params.floors = Vec::new();
+    let level_of = |index: usize| -> Option<f64> { floors[index].level_m.or(derived[index]) };
     let top_of = |index: usize| -> f64 {
-        floors
-            .get(index + 1)
-            .and_then(|next| next.level_m)
+        (index + 1 < floors.len())
+            .then(|| level_of(index + 1))
+            .flatten()
             .unwrap_or(params.roof_level_m)
     };
     for (index, sheet) in floors.iter().enumerate() {
-        let level_m = sheet.level_m.unwrap_or_else(|| {
+        let level_m = level_of(index).unwrap_or_else(|| {
             // A plan without a level in its title: stack it on the one below.
             params
                 .floors
@@ -161,9 +260,9 @@ pub fn detect(
         });
         let mut top_m = top_of(index);
         if top_m <= level_m {
-            top_m = level_m + 3.0;
+            top_m = level_m + DEFAULT_STOREY_M;
             notes.push(format!(
-                "page {}: no storey above and no roof level; assuming 3 m",
+                "page {}: no storey above and no roof level; assuming {DEFAULT_STOREY_M} m",
                 sheet.page
             ));
         }

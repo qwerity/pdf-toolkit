@@ -3,7 +3,7 @@
 extraction SHOULD produce — from the reviewed annotations and one run of the
 binary, for the documents that have no ledger yet.
 
-    python3 scripts/seed-expected.py [--force] [n ...]
+    python3 scripts/seed-expected.py [--force] [--refresh=model,building] [n ...]
 
 The ledger is what the scorecard test (`crates/pdf-toolkit/tests/scorecard.rs`)
 grades the toolkit against. Seeding copies the current output, so a fresh
@@ -75,7 +75,28 @@ def seed(n):
         ],
         "model": None,
     }
-    model = run_json(["model", os.path.join("data", "plan", f"{n}.pdf")])
+    model_args = ["model", os.path.join("data", "plan", f"{n}.pdf")]
+    params = os.path.join(ANNOTATIONS, "model", f"{n}.params.json")
+    answers = os.path.join(ANNOTATIONS, "answers", f"{n}.json")
+    if os.path.exists(params):
+        model_args += ["--params", params]
+    elif os.path.exists(answers):
+        model_args += ["--answers", answers]
+    parcel = os.path.join(ANNOTATIONS, "parcels", f"{n}.geojson")
+    if os.path.exists(parcel):
+        model_args += ["--parcel", parcel]
+    model = run_json(model_args)
+    building_path = os.path.join(ANNOTATIONS, "building", f"{n}.json")
+    ledger["building"] = None
+    if os.path.exists(building_path) and os.path.getsize(building_path) > 0:
+        building = json.load(open(building_path))
+        ledger["building"] = {
+            "placed": building.get("placed"),
+            "parts": [
+                {"name": p.get("name"), "height_m": p.get("height_m"), "footprint_area": p.get("footprint_area")}
+                for p in building.get("parts", [])
+            ],
+        }
     if model:
         ledger["model"] = {
             "placed": model["placed"],
@@ -91,22 +112,39 @@ def seed(n):
     return ledger
 
 
+def refresh_sections(path, sections):
+    """Re-seed only `sections` (e.g. model, building) of an existing ledger, keeping the
+    rest — including a person's corrections — as they are."""
+    ledger = json.load(open(path))
+    fresh = seed(int(ledger["document"]))
+    for section in sections:
+        ledger[section] = fresh.get(section)
+        ledger.setdefault("reviewed", {})[section] = False
+    json.dump(ledger, open(path, "w"), ensure_ascii=False, indent=2)
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     force = "--force" in sys.argv
+    refresh = next((a[len("--refresh="):].split(",") for a in sys.argv if a.startswith("--refresh=")), None)
     os.makedirs(EXPECTED, exist_ok=True)
     numbers = [int(a) for a in args] or sorted(
         int(f[:-4]) for f in os.listdir(PLAN) if f.endswith(".pdf") and f[:-4].isdigit()
     )
     for n in numbers:
         path = os.path.join(EXPECTED, f"{n}.json")
+        if os.path.exists(path) and refresh:
+            refresh_sections(path, refresh)
+            print(f"{n}: sections {', '.join(refresh)} re-seeded")
+            continue
         if os.path.exists(path) and not force:
             print(f"{n}: ledger exists, kept")
             continue
         ledger = seed(n)
         json.dump(ledger, open(path, "w"), ensure_ascii=False, indent=2)
         print(f"{n}: seeded ({len(ledger['pages'])} pages, {len(ledger['facts'])} facts, "
-              f"{len(ledger['checks'])} checks, model {'yes' if ledger['model'] else 'no'})")
+              f"{len(ledger['checks'])} checks, model {'yes' if ledger['model'] else 'no'}, "
+              f"building {'yes' if ledger.get('building') else 'no'})")
 
 
 if __name__ == "__main__":

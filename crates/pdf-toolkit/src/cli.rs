@@ -283,6 +283,12 @@ pub struct ModelArgs {
     #[arg(long, value_name = "FILE")]
     pub parcel: Option<PathBuf>,
 
+    /// Reviewed or vision-pass answers (`docs/annotation-schema.md`): their
+    /// page labels name the floor plans, the roof plan and the elevations
+    /// for a set whose title blocks the classifier cannot read.
+    #[arg(long, value_name = "FILE")]
+    pub answers: Option<PathBuf>,
+
     /// Also write `model/<document>.model.json`, `.glb`, `.geojson` and
     /// `.params.json` under this directory. The same JSON is on stdout
     /// either way.
@@ -525,6 +531,12 @@ mod tests {
     }
 
     #[test]
+    fn model_takes_the_answers_file() {
+        let cli = parse(&["model", "a.pdf", "--answers", "x.json"]);
+        assert!(matches!(cli.command, Command::Model(ref m) if m.answers.is_some()));
+    }
+
+    #[test]
     fn every_command_names_its_input() {
         let cases = [
             vec!["inspect", "a.pdf"],
@@ -659,7 +671,6 @@ mod tests {
         rejects(&["building", "a.pdf", "--page", "9"]);
         rejects(&["dossier", "a.pdf", "--model", "gpt-6-astra"]);
         rejects(&["model", "a.pdf", "--pages", "1"]);
-        rejects(&["model", "a.pdf", "--answers", "x.json"]);
         rejects(&["model", "a.pdf", "--model", "gpt-6-astra"]);
     }
 

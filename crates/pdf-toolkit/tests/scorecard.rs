@@ -43,6 +43,7 @@ const KINDS: &[&str] = &[
     "facts",
     "checks",
     "model",
+    "building",
 ];
 
 fn baseline_path() -> PathBuf {
@@ -299,9 +300,23 @@ fn score_model(expected: &Value, model: Option<&Value>) -> Option<f64> {
     let Some(found) = model else {
         return Some(0.0);
     };
+    let found_floors = found["floors"].as_array().cloned().unwrap_or_default();
+    // A ledger that only knows what the drawings PRINT — the storey count and
+    // the ground floor's footprint — states them as scalars; a ledger seeded
+    // from an accepted run states every storey.
+    if let Some(count) = want["floors"].as_u64() {
+        let mut hits = vec![f64::from(found_floors.len() as u64 == count)];
+        if let Some(area) = want["ground_slab_area_m2"].as_f64() {
+            let ground = found_floors
+                .first()
+                .and_then(|f| f["slab_area_m2"].as_f64())
+                .is_some_and(|a| within(a, area, 0.1, 1.0));
+            hits.push(f64::from(ground));
+        }
+        return mean(&hits);
+    }
     let mut hits: Vec<f64> = vec![f64::from(found["placed"] == want["placed"])];
     let want_floors = want["floors"].as_array()?;
-    let found_floors = found["floors"].as_array().cloned().unwrap_or_default();
     hits.push(f64::from(want_floors.len() == found_floors.len()));
     for (w, f) in want_floors.iter().zip(&found_floors) {
         for (key, fraction, floor) in [
@@ -337,10 +352,49 @@ fn score_model(expected: &Value, model: Option<&Value>) -> Option<f64> {
     mean(&hits)
 }
 
+/// The hosted `building` reconstruction, scored from its RECORDED report
+/// (`data/annotations/building/<n>.json`, written by a run someone paid for
+/// and reviewed) rather than a live call: the model's massing is graded
+/// against what the drawings print — one part per building, its height to
+/// 0.3 m, its footprint to ten percent, and whether it was placed.
+fn score_building(expected: &Value, recorded: Option<&Value>) -> Option<f64> {
+    let want = expected.get("building")?;
+    if want.is_null() {
+        return None;
+    }
+    let Some(found) = recorded else {
+        return Some(0.0);
+    };
+    let mut hits: Vec<f64> = vec![f64::from(found["placed"] == want["placed"])];
+    let want_parts = want["parts"].as_array()?;
+    let found_parts = found["parts"].as_array().cloned().unwrap_or_default();
+    hits.push(f64::from(want_parts.len() == found_parts.len()));
+    for w in want_parts {
+        let best = found_parts
+            .iter()
+            .filter(|f| f["name"] == w["name"] || found_parts.len() == 1)
+            .map(|f| {
+                let height = f["height_m"]
+                    .as_f64()
+                    .zip(w["height_m"].as_f64())
+                    .is_some_and(|(a, b)| within(a, b, 0.0, 0.3));
+                let footprint = f["footprint_area"]
+                    .as_f64()
+                    .zip(w["footprint_area"].as_f64())
+                    .is_some_and(|(a, b)| within(a, b, 0.1, 1.0));
+                (f64::from(height) + f64::from(footprint)) / 2.0
+            })
+            .fold(0.0, f64::max);
+        hits.push(best);
+    }
+    mean(&hits)
+}
+
 fn score_document(
     expected: &Value,
     dossier: &Value,
     model: Option<&Value>,
+    building: Option<&Value>,
 ) -> BTreeMap<&'static str, f64> {
     let mut scores = BTreeMap::new();
     let mut put = |kind: &'static str, score: Option<f64>| {
@@ -359,6 +413,7 @@ fn score_document(
     put("facts", score_facts(expected, dossier));
     put("checks", score_checks(expected, dossier));
     put("model", score_model(expected, model));
+    put("building", score_building(expected, building));
     scores
 }
 
@@ -379,10 +434,39 @@ fn run_dossier(n: u32, out: &Path) -> Value {
     run_argv(&argv).expect_success().json()
 }
 
+/// The storey model from the recorded parameters where a reviewed run
+/// accepted some (`data/annotations/model/<n>.params.json` — the hosted
+/// proposal, checked and kept, so the reconstruction stays deterministic),
+/// else from detection with the answers' page labels.
 fn run_model(n: u32) -> Option<Value> {
-    let argv = vec!["model".to_string(), format!("data/plan/{n}.pdf")];
+    let annotations = common::data_dir().join("annotations");
+    let params = annotations.join("model").join(format!("{n}.params.json"));
+    let answers = annotations.join("answers").join(format!("{n}.json"));
+    let parcel = annotations.join("parcels").join(format!("{n}.geojson"));
+    let mut argv = vec!["model".to_string(), format!("data/plan/{n}.pdf")];
+    if params.is_file() {
+        argv.push("--params".into());
+        argv.push(params.to_str().expect("utf-8").into());
+    } else if answers.is_file() {
+        argv.push("--answers".into());
+        argv.push(answers.to_str().expect("utf-8").into());
+    }
+    if parcel.is_file() {
+        argv.push("--parcel".into());
+        argv.push(parcel.to_str().expect("utf-8").into());
+    }
     let run = run_argv(&argv);
     run.succeeded().then(|| run.json())
+}
+
+/// The recorded `building` report, when a run was kept.
+fn recorded_building(n: u32) -> Option<Value> {
+    let path = common::data_dir()
+        .join("annotations")
+        .join("building")
+        .join(format!("{n}.json"));
+    let kept = std::fs::metadata(&path).is_ok_and(|m| m.len() > 0);
+    kept.then(|| read_json(&path))
 }
 
 #[test]
@@ -396,10 +480,8 @@ fn extractions_score_no_worse_than_the_baseline() {
                     .is_file()
         })
         .collect();
-    if ledgers.is_empty() {
-        if !common::corpus_available("scorecard", &[expected_path(1)]) {
-            return;
-        }
+    if ledgers.is_empty() && !common::corpus_available("scorecard", &[expected_path(1)]) {
+        return;
     }
     let out = tempfile::tempdir().expect("temp dir");
 
@@ -411,9 +493,13 @@ fn extractions_score_no_worse_than_the_baseline() {
             .get("model")
             .filter(|m| !m.is_null())
             .and_then(|_| run_model(*n));
+        let building = expected
+            .get("building")
+            .filter(|b| !b.is_null())
+            .and_then(|_| recorded_building(*n));
         documents.insert(
             n.to_string(),
-            score_document(&expected, &dossier, model.as_ref()),
+            score_document(&expected, &dossier, model.as_ref(), building.as_ref()),
         );
     }
 
@@ -429,10 +515,11 @@ fn extractions_score_no_worse_than_the_baseline() {
     }
 
     let baseline_file = baseline_path();
-    let baseline = baseline_file
-        .is_file()
-        .then(|| read_json(&baseline_file))
-        .unwrap_or_else(|| json!({ "kinds": {}, "documents": {} }));
+    let baseline = if baseline_file.is_file() {
+        read_json(&baseline_file)
+    } else {
+        json!({ "kinds": {}, "documents": {} })
+    };
 
     // The table: one row per kind, the baseline beside the new score.
     eprintln!("\nextraction scorecard ({} documents)", documents.len());

@@ -18,7 +18,7 @@ use pdf_geometry::PdfDocument;
 use pdf_vector::{DocumentVector, VectorOptions, extract_document, write_pretty_json};
 use serde_json::json;
 
-use crate::detect::{Detection, detect};
+use crate::detect::{Detection, SheetHints, detect};
 use crate::geojson::{self, Frame};
 use crate::params::{Params, ParamsSource};
 use crate::place::{self, ModelPlacement};
@@ -42,6 +42,9 @@ pub struct RunOptions<'a> {
     pub vector_options: VectorOptions,
     pub output_dir: Option<&'a Path>,
     pub proposer: Option<Proposer<'a>>,
+    /// Sheet roles known from the dossier's labels, for sets whose title
+    /// blocks the classifier cannot read (`--answers`).
+    pub hints: SheetHints,
 }
 
 /// Runs the pipeline over one document.
@@ -55,26 +58,46 @@ pub fn run(path: &Path, options: &RunOptions<'_>) -> Result<ModelReport> {
     let (params, params_notes, prebuilt) = match options.params_file {
         Some(file) => (Params::load(file)?, Vec::new(), None),
         None => {
-            let detection = detect(&document, &vector, &Params::archicad_template())?;
+            let detection = detect(
+                &document,
+                &vector,
+                &Params::archicad_template(),
+                &options.hints,
+            )?;
             match options.proposer {
-                Some(propose) => {
-                    proposed_or_detected(&document, detection, &vector, propose, &mut warnings)
-                }
+                Some(propose) => proposed_or_detected(
+                    &document,
+                    detection,
+                    &vector,
+                    propose,
+                    &options.hints,
+                    &mut warnings,
+                ),
                 None => (detection.params, detection.notes, None),
             }
         }
     };
 
-    let Reconstruction { model, sheets } = match prebuilt {
+    let Reconstruction {
+        model,
+        sheets,
+        warnings: build_warnings,
+    } = match prebuilt {
         Some(built) => built,
         None => reconstruct(&document, &params)?,
     };
+    warnings.extend(build_warnings);
     for sheet in &sheets {
-        if sheet.origin_source == crate::OriginSource::AxisText {
-            warnings.push(format!(
+        match sheet.origin_source {
+            crate::OriginSource::AxisText => warnings.push(format!(
                 "page {}: no circle around the grid labels; origin taken from the text position",
                 sheet.page
-            ));
+            )),
+            crate::OriginSource::FillCentre => warnings.push(format!(
+                "page {}: no grid labels; the storey is aligned on the centre of its drawing",
+                sheet.page
+            )),
+            crate::OriginSource::AxisBubbles => {}
         }
     }
 
@@ -175,6 +198,7 @@ fn proposed_or_detected(
     detection: Detection,
     vector: &DocumentVector,
     propose: Proposer<'_>,
+    hints: &SheetHints,
     warnings: &mut Vec<String>,
 ) -> (Params, Vec<String>, Option<Reconstruction>) {
     let proposal = match propose(&detection, vector) {
@@ -189,7 +213,7 @@ fn proposed_or_detected(
             return (detection.params, detection.notes, None);
         }
     };
-    match check_proposal(document, &proposal, vector) {
+    match check_proposal(document, &proposal, vector, hints) {
         Ok(built) => {
             let mut notes = detection.notes;
             notes
@@ -212,14 +236,19 @@ fn check_proposal(
     document: &PdfDocument,
     params: &Params,
     vector: &DocumentVector,
+    hints: &SheetHints,
 ) -> Result<Reconstruction, String> {
     params.validate().map_err(|e| e.to_string())?;
+    // A page the classifier read as a drawing, or one the dossier's labels
+    // say is a plan sheet — the classifier is blind to most offices' title
+    // blocks, and the hints exist for exactly that.
     let is_drawing = |page: usize| {
-        vector
-            .pages
-            .iter()
-            .find(|p| p.page_number == page)
-            .is_some_and(|p| p.classification.is_drawing)
+        hints.roles.contains_key(&page)
+            || vector
+                .pages
+                .iter()
+                .find(|p| p.page_number == page)
+                .is_some_and(|p| p.classification.is_drawing)
     };
     for floor in &params.floors {
         if !is_drawing(floor.page) {

@@ -1114,7 +1114,7 @@ earlier prototype; on the reference document every polygon matches the
 prototype's output to within 0.1 % of its area.
 
 ```
-pdf-toolkit model input.pdf [--params p.json] [--llm-params [MODEL]] [--parcel parcel.geojson] [-g lx,ly,lon,lat]… [-o dir]
+pdf-toolkit model input.pdf [--params p.json] [--answers a.json] [--llm-params [MODEL]] [--parcel parcel.geojson] [-g lx,ly,lon,lat]… [-o dir]
 ```
 
 What a drawing set does not print as geometry is a **parameter**: which
@@ -1133,6 +1133,23 @@ must be plan sheets, the levels must stack, the building it yields must be
 building-sized — falling back to detection with a `warnings` entry
 otherwise. It is networked and opt-in like every model call. **Coordinates
 never come from a parameter source**; only these numbers do.
+
+`--answers a.json` (the dossier's reviewed or vision-pass answers) lends its
+page labels — `floor_plan`, `roof_plan`, `elevation_or_section` — to sheets
+whose title blocks the classifier cannot read, which is most offices' exports
+outside the ArchiCAD reference set. Detection then has three fallbacks it
+names in `params_notes` and `warnings`: storey and roof levels read off the
+elevations' level marks when the plan titles state none (each storey the
+first mark at least 2.4 m above the last); a storey aligned on the centre of
+its filled drawing when the sheet prints no grid labels
+(`sheets[].origin_source: "fill_centre"`); and a building box derived from
+the outline of the walls and rooms when the sheet draws no envelope fill.
+Each is approximate where the drawing is unusual — a set whose "floor
+plans" include existing-state or ceiling plans gets too many storeys — which
+is what `--llm-params` is for: the proposal names the plan pages, the levels,
+the scale and the colours, is checked against the drawings, and its accepted
+`params` block can be kept and passed back as `--params` so the
+reconstruction stays deterministic.
 
 The model is **placed on the map** when the dossier allows: the ground
 floor's envelope is matched by shape (rotation and translation, both

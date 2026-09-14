@@ -32,6 +32,10 @@ pub enum OriginSource {
     AxisBubbles,
     /// No circle around a label; its estimated text centre is used instead.
     AxisText,
+    /// The sheet prints no grid labels at all: the centre of its filled
+    /// drawing is the origin, so storeys stack on their own centres. Right
+    /// for a building whose storeys share an outline, approximate otherwise.
+    FillCentre,
 }
 
 /// One sheet's fills in metres, plus how it was placed in the frame.
@@ -51,7 +55,13 @@ impl Sheet {
     /// cannot be found: without it the sheet cannot be aligned to its
     /// siblings and a model built from it would stack wrongly.
     pub fn read(content: &PageContent, params: &Params) -> Result<Self> {
-        let (origin, origin_source) = axis_origin(content, &params.axis)?;
+        let (origin, origin_source) = match axis_origin(content, &params.axis) {
+            Ok(found) => found,
+            Err(error) => {
+                let centre = fill_centre(content).ok_or(error)?;
+                (centre, OriginSource::FillCentre)
+            }
+        };
         let mm_per_point = params.mm_per_point();
         let to_world = |p: &Point| -> (f64, f64) {
             (
@@ -104,6 +114,18 @@ impl Sheet {
         self.envelopes
             .iter()
             .max_by(|a, b| a.unsigned_area().total_cmp(&b.unsigned_area()))
+    }
+
+    /// A building box for a sheet that draws none: the outline of its walls
+    /// and rooms together, gaps closed and holes filled. Approximate where
+    /// the box would have shown a terrace the plan leaves unfilled.
+    pub fn derived_envelope(&self) -> Option<Polygon<f64>> {
+        let fills: Vec<&Polygon<f64>> = self.walls.iter().chain(&self.rooms).collect();
+        if fills.is_empty() {
+            return None;
+        }
+        let joined = geom::close(&geom::union_all(fills), DERIVED_ENVELOPE_CLOSE_M);
+        geom::largest(joined).map(|p| geom::exterior_only(&p))
     }
 
     /// Envelope-coloured areas hugging the box without overlapping it: the
@@ -252,6 +274,38 @@ pub fn axis_bubbles(content: &PageContent) -> Vec<AxisBubble> {
 
 /// The grid intersection the model is drawn about.
 ///
+/// Gaps narrower than twice this (m) close when a building box is derived
+/// from the walls and rooms: a doorway, a window opening.
+const DERIVED_ENVELOPE_CLOSE_M: f64 = 0.6;
+
+/// A filled subpath smaller than this (page units²) is a symbol, not the
+/// drawing; the origin fallback ignores it.
+const FILL_CENTRE_MIN_AREA: f64 = 400.0;
+
+/// The centre of the bounding box of the page's filled drawing — the
+/// origin when the sheet prints no grid labels to align on.
+fn fill_centre(content: &PageContent) -> Option<Point> {
+    let mut min = (f64::INFINITY, f64::INFINITY);
+    let mut max = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for path in &content.paths {
+        if !matches!(path.mode, PaintMode::Fill | PaintMode::FillStroke) {
+            continue;
+        }
+        for subpath in &path.subpaths {
+            if subpath.signed_area().abs() < FILL_CENTRE_MIN_AREA {
+                continue;
+            }
+            for p in &subpath.points {
+                min = (min.0.min(p.x), min.1.min(p.y));
+                max = (max.0.max(p.x), max.1.max(p.y));
+            }
+        }
+    }
+    min.0
+        .is_finite()
+        .then(|| Point::new((min.0 + max.0) / 2.0, (min.1 + max.1) / 2.0))
+}
+
 /// The column axis is the label's bottom-most bubble (grids are lettered
 /// along the bottom edge, and a section mark can reuse the digit higher up);
 /// the row axis is the label's left-most one. Bubbles beat bare text, and a

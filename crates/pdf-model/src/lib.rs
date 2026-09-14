@@ -37,6 +37,7 @@ use pdf_geometry::PdfDocument;
 use serde::Serialize;
 
 pub use detect::Detection;
+pub use detect::SheetHints;
 pub use model::Model;
 pub use params::{FloorParams, Params, ParamsSource};
 pub use report::ModelReport;
@@ -62,6 +63,9 @@ pub struct SheetReport {
 pub struct Reconstruction {
     pub model: Model,
     pub sheets: Vec<SheetReport>,
+    /// What the rules had to work around: a derived building box, a roof
+    /// sheet that could not be read.
+    pub warnings: Vec<String>,
 }
 
 /// Reads the sheets the parameters name and builds the model.
@@ -74,25 +78,55 @@ pub fn reconstruct(document: &PdfDocument, params: &Params) -> Result<Reconstruc
         Sheet::read(&content, params)
     };
     let mut sheets = Vec::new();
+    let mut warnings = Vec::new();
+    // A sheet the rules cannot read — no grid labels and no filled drawing
+    // to align on — costs that storey or the roof, not the model.
     let mut floor_sheets = Vec::new();
     for floor in &params.floors {
-        let sheet = read(floor.page)?;
-        sheets.push(report(&sheet, "floor"));
-        floor_sheets.push(sheet);
+        match read(floor.page) {
+            Ok(sheet) => {
+                sheets.push(report(&sheet, "floor"));
+                floor_sheets.push((floor, sheet));
+            }
+            Err(error) => warnings.push(format!(
+                "page {}: storey skipped, the sheet could not be read: {error:#}",
+                floor.page
+            )),
+        }
     }
-    let roof = params.roof_page.map(read).transpose()?;
-    if let Some(sheet) = &roof {
-        sheets.push(report(sheet, "roof"));
+    if floor_sheets.is_empty() {
+        anyhow::bail!("no floor plan sheet could be read: {}", warnings.join("; "));
     }
+    let roof = match params.roof_page.map(read) {
+        Some(Ok(sheet)) => {
+            sheets.push(report(&sheet, "roof"));
+            Some(sheet)
+        }
+        Some(Err(error)) => {
+            warnings.push(format!(
+                "roof omitted, the sheet could not be read: {error:#}"
+            ));
+            None
+        }
+        None => None,
+    };
 
-    let inputs: Vec<reconstruct::FloorInput<'_>> = params
-        .floors
+    let inputs: Vec<reconstruct::FloorInput<'_>> = floor_sheets
         .iter()
-        .zip(&floor_sheets)
         .map(|(params, sheet)| reconstruct::FloorInput { params, sheet })
         .collect();
-    let model = reconstruct::build(&inputs, roof.as_ref(), params, &document.id())?;
-    Ok(Reconstruction { model, sheets })
+    let model = reconstruct::build(
+        &inputs,
+        roof.as_ref(),
+        params,
+        &document.id(),
+        &mut warnings,
+    )?;
+    Ok(Reconstruction {
+        model,
+        sheets,
+        warnings,
+    })
 }
 
 fn report(sheet: &Sheet, role: &'static str) -> SheetReport {

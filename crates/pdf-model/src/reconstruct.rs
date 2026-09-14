@@ -54,6 +54,7 @@ pub fn build(
     roof: Option<&Sheet>,
     params: &Params,
     source: &str,
+    warnings: &mut Vec<String>,
 ) -> Result<Model> {
     let mut model = Model {
         units: "m".into(),
@@ -66,14 +67,33 @@ pub fn build(
         stone: Vec::new(),
     };
     for (index, input) in floors.iter().enumerate() {
-        let built = build_floor(input, index == 0, params)?;
+        // A storey whose sheet carries none of the fills the rules read is
+        // left out with a warning; the model is the storeys that could be built.
+        let built = match build_floor(input, index == 0, params, warnings) {
+            Ok(built) => built,
+            Err(error) => {
+                warnings.push(format!(
+                    "page {}: storey skipped: {error:#}",
+                    input.sheet.page
+                ));
+                continue;
+            }
+        };
         if index == 0 {
             model.stone = built.outside.iter().map(geom::to_polygon2d).collect();
         }
         model.floors.push(built.floor);
     }
+    if model.floors.is_empty() {
+        return Err(anyhow!("no storey could be built: {}", warnings.join("; ")));
+    }
     if let Some(sheet) = roof {
-        model.roof = Some(build_roof(sheet, params)?);
+        // A roof sheet that draws no outline the rules can read leaves the
+        // model without a roof rather than without a model.
+        match build_roof(sheet, params) {
+            Ok(roof) => model.roof = Some(roof),
+            Err(error) => warnings.push(format!("roof omitted: {error:#}")),
+        }
     }
     Ok(model)
 }
@@ -95,11 +115,32 @@ fn levels(params: &Params) -> IndexMap<String, f64> {
     levels
 }
 
-fn build_floor(input: &FloorInput<'_>, is_ground: bool, params: &Params) -> Result<FloorBuild> {
+fn build_floor(
+    input: &FloorInput<'_>,
+    is_ground: bool,
+    params: &Params,
+    warnings: &mut Vec<String>,
+) -> Result<FloorBuild> {
     let sheet = input.sheet;
-    let envelope = sheet
-        .envelope()
-        .ok_or_else(|| anyhow!("page {}: no envelope-coloured fill", sheet.page))?;
+    let derived = if sheet.envelope().is_none() {
+        let outline = sheet.derived_envelope().ok_or_else(|| {
+            anyhow!(
+                "page {}: no envelope-coloured fill and no walls or rooms to outline",
+                sheet.page
+            )
+        })?;
+        warnings.push(format!(
+            "page {}: no envelope-coloured fill; the building box is the outline of the walls and rooms",
+            sheet.page
+        ));
+        Some(outline)
+    } else {
+        None
+    };
+    let envelope = derived
+        .as_ref()
+        .or_else(|| sheet.envelope())
+        .expect("an envelope, drawn or derived");
     let terraces = sheet.side_terraces(envelope);
     let walls_u = geom::union_all(&sheet.walls);
     let footprint = geom::union_all(std::iter::once(envelope).chain(terraces.iter()));
@@ -199,8 +240,14 @@ fn build_floor(input: &FloorInput<'_>, is_ground: bool, params: &Params) -> Resu
 /// strips and quarter-circle corners the roof sheet draws around it, closed
 /// into one ring; the parapet is a ring of that outline.
 fn build_roof(sheet: &Sheet, params: &Params) -> Result<Roof> {
-    let envelope = sheet
+    let derived = sheet
         .envelope()
+        .is_none()
+        .then(|| sheet.derived_envelope())
+        .flatten();
+    let envelope = derived
+        .as_ref()
+        .or_else(|| sheet.envelope())
         .ok_or_else(|| anyhow!("page {}: no envelope-coloured fill", sheet.page))?;
     let mut parts: Vec<Polygon<f64>> = vec![envelope.clone()];
     parts.extend(sheet.side_terraces(envelope));
@@ -300,6 +347,7 @@ mod tests {
             },
             true,
             &params,
+            &mut Vec::new(),
         )
         .unwrap();
         let floor = built.floor;
@@ -339,6 +387,7 @@ mod tests {
             },
             false,
             &params,
+            &mut Vec::new(),
         )
         .unwrap();
         assert!(built.outside.is_empty());

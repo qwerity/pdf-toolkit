@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use pdf_classify::PageClass;
 use pdf_model::Detection;
 use pdf_model::params::{FloorParams, Params};
@@ -26,6 +26,9 @@ use crate::DRAWING_RENDER_WIDTH_PX;
 
 /// The most sheets shown: plans, roof, the section, elevations.
 const PAGE_BUDGET: usize = 8;
+/// How many times the model is asked before a reply with no `set_params`
+/// call is a failure.
+const ATTEMPTS: usize = 3;
 
 /// A configured connection to one model, bound to a document.
 pub struct Proposer {
@@ -74,25 +77,38 @@ impl Proposer {
         request.effort = Some(Effort::High);
         request.tools = vec![set_params_tool()];
         eprintln!("model params: pages {pages:?} -> {}", self.client.model());
-        let reply = self
-            .client
-            .ask(&request)
-            .with_context(|| format!("parameter request to '{}' failed", self.client.model()))?;
-        let call = reply
-            .tool_calls
-            .iter()
-            .find(|c| c.name == "set_params")
-            .ok_or_else(|| {
-                anyhow!(
-                    "the model made no set_params call{}",
-                    if reply.text.is_empty() {
-                        String::new()
-                    } else {
-                        format!(": {}", reply.text.chars().take(300).collect::<String>())
-                    }
-                )
+        let base_prompt = request.prompt.clone();
+        let mut last_text = String::new();
+        for attempt in 1..=ATTEMPTS {
+            if attempt > 1 {
+                // A reply in prose is an answer to the wrong question: ask
+                // again, quoting it, insisting on the call.
+                request.prompt = format!(
+                    "{base_prompt}\n\nYour previous reply made no set_params call; it said: \
+                     \"{}\". Reply ONLY by calling set_params once, with every field.",
+                    last_text.chars().take(300).collect::<String>()
+                );
+                eprintln!("model params: attempt {attempt}/{ATTEMPTS}, the reply made no call");
+            }
+            let reply = self.client.ask(&request).with_context(|| {
+                format!("parameter request to '{}' failed", self.client.model())
             })?;
-        params_from(&call.arguments, &detection.params)
+            if let Some(call) = reply.tool_calls.iter().find(|c| c.name == "set_params") {
+                return params_from(&call.arguments, &detection.params);
+            }
+            last_text = reply.text.clone();
+        }
+        bail!(
+            "the model made no set_params call in {ATTEMPTS} attempts{}",
+            if last_text.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; last reply: {}",
+                    last_text.chars().take(300).collect::<String>()
+                )
+            }
+        )
     }
 }
 

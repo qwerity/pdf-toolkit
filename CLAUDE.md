@@ -174,6 +174,7 @@ the clone.
 ./build.sh                                  # dist/ bundle for this machine
 ./build.sh linux --with-artifacts           # plus artifacts/*.tar.gz + .sha256
 SKIP_BUILD=1 ./build.sh --with-artifacts    # repackage without re-running cargo
+SKIP_TESTS=1 ./build.sh --with-artifacts    # checks, clippy and build, no cargo test
 ```
 
 `build.sh` runs `cargo fmt --check`, `clippy -D warnings`, `cargo test` and

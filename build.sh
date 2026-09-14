@@ -14,6 +14,7 @@ Pass --with-artifacts to also write release archives and SHA-256 checksum files 
 Environment variables:
 - RELEASE_TAG   Optional label used in archive names. Defaults to v<Cargo.toml version>.
 - SKIP_BUILD    Set to 1 to skip the Cargo validation/build pipeline.
+- SKIP_TESTS    Set to 1 to run the checks and build without `cargo test`.
 EOF
 }
 
@@ -245,8 +246,16 @@ run_cargo_pipeline() {
     cargo fmt -- --check \
         && cargo check --workspace --all-targets --all-features \
         && cargo clippy --workspace --all-targets --all-features -- -D warnings \
-        && cargo test --workspace --all-features \
+        && run_cargo_tests \
         && cargo build --locked --release --package "${BINARY_CRATE}"
+}
+
+run_cargo_tests() {
+    if [[ "${SKIP_TESTS:-0}" == "1" ]]; then
+        echo "   Skipping cargo test because SKIP_TESTS=1"
+        return 0
+    fi
+    cargo test --workspace --all-features
 }
 
 main() {

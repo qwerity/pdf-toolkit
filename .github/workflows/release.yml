@@ -119,10 +119,14 @@ jobs:
         with:
           shared-key: release
 
+      # Tests are off for the release build for now: the corpus-backed e2e suites take
+      # minutes per platform and are gated locally by build.sh before a tag is cut. The
+      # checks, clippy and the locked release build still run.
       - name: Build Release Bundle
         shell: bash
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          SKIP_TESTS: "1"
         run: |
           bash ./build.sh "${{ matrix.platform }}" --with-artifacts
 

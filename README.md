@@ -46,6 +46,7 @@ Optional environment variables:
 
 - `RELEASE_TAG`: overrides the archive version label
 - `SKIP_BUILD=1`: skips the Cargo validation/build pipeline
+- `SKIP_TESTS=1`: keeps the checks, clippy and the release build but skips `cargo test` (what the release workflow sets)
 
 The build script downloads the matching PDFium binary and places it next to the executable in `./dist`.
 

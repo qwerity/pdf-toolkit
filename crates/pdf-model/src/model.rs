@@ -74,7 +74,8 @@ pub struct Model {
     /// Absent when the set has no roof plan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roof: Option<Roof>,
-    /// Ground-floor wall pieces outside the envelope: the stone piers seen in
+    /// The parts of the ground-floor walls outside the envelope, cut at it and
+    /// without the slivers a wall drawn past it leaves: the stone piers seen in
     /// the elevations, extruded from the plinth to the parapet.
     pub stone: Vec<Polygon2D>,
 }

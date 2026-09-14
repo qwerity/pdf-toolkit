@@ -123,7 +123,9 @@ fn the_storeys_and_roof_are_summarised_and_carried_inline() {
     assert_eq!(floors[1]["rails"], 6);
     assert!((floors[0]["slab_area_m2"].as_f64().unwrap() - 87.79).abs() < 0.05);
     assert!((report["roof"]["area_m2"].as_f64().unwrap() - 100.87).abs() < 0.05);
-    assert_eq!(report["stone_piers"], 7);
+    // The two stone walls either side, cut at the envelope; the five 3 cm
+    // strips of wall drawn past it are not piers.
+    assert_eq!(report["stone_piers"], 2);
     let model = &report["model"];
     assert_eq!(model["units"], "m");
     assert_eq!(model["levels"]["parapet"], 7.78);

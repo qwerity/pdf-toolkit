@@ -1107,12 +1107,14 @@ sheets, **deterministically**: every wall, room and envelope on a vector plan
 is a filled path with the fill colour of its element type, the sheets are
 printed at a known scale, and the storeys are aligned on the printed grid.
 Openings are what the envelope minus the rooms minus the walls leaves —
-edge pieces are glazing, interior pieces door gaps; ground-floor wall pieces
-outside the envelope are the stone piers; terrace edges become railings; the
-roof plan gives the roof outline and a parapet ring. No rendering, no
-tracing, and — unless asked — no model call. The Rust port of the
-earlier prototype; on the reference document every polygon matches the
-prototype's output to within 0.1 % of its area.
+edge pieces are glazing, interior pieces door gaps; the parts of the
+ground-floor walls outside the envelope are the stone piers, less the slivers
+under 10 cm a wall drawn past the envelope leaves; terrace edges become
+railings; the roof plan gives the roof outline and a parapet ring. No
+rendering, no tracing, and — unless asked — no model call. The Rust port of
+the earlier prototype; on the reference document every polygon matches the
+prototype's output to within 0.1 % of its area, once the stone rule (the
+prototype kept whole pieces) is applied to the prototype's ground floor.
 
 ```
 pdf-toolkit model input.pdf [--params p.json] [--answers a.json] [--llm-params [MODEL]] [--parcel parcel.geojson] [-g lx,ly,lon,lat]… [-o dir]
@@ -1182,7 +1184,7 @@ the model and the extruded FeatureCollection inline):
     {
       "door_gaps": 6,
       "glazing": 10,
-      "level_m": 0.0,
+      "level_m": 0,
       "name": "+0,00 նիշով հարկի հատակագիծ",
       "page": 13,
       "rails": 0,
@@ -1190,7 +1192,7 @@ the model and the extruded FeatureCollection inline):
       "rooms_area_m2": 72.52,
       "slab_area_m2": 87.79,
       "top_m": 3.6,
-      "walls": 12
+      "walls": 13
     },
     {
       "door_gaps": 8,
@@ -1217,7 +1219,13 @@ the model and the extruded FeatureCollection inline):
     "placed": true,
     "residual_m": 0.0036,
     "rotation_degrees": 227.13,
-    "source": "sheet_outline"
+    "source": "sheet_outline",
+    "transform": {
+      "a": -0.680337217099822,
+      "b": -0.7328992229692085,
+      "tx": 1.239633377739945,
+      "ty": 5.671490905290517
+    }
   },
   "glb_file": "model/4.glb",
   "model_file": "model/4.model.json",
@@ -1234,9 +1242,9 @@ the model and the extruded FeatureCollection inline):
         0.953
       ],
       "room": [
-        1.0,
-        1.0,
-        1.0
+        1,
+        1,
+        1
       ],
       "tolerance": 0.02,
       "wall": [
@@ -1247,7 +1255,7 @@ the model and the extruded FeatureCollection inline):
     },
     "floors": [
       {
-        "level_m": 0.0,
+        "level_m": 0,
         "name": "+0,00 նիշով հարկի հատակագիծ",
         "page": 13,
         "top_m": 3.6
@@ -1265,7 +1273,7 @@ the model and the extruded FeatureCollection inline):
     "rail_height_m": 1.1,
     "roof_level_m": 7.2,
     "roof_page": 15,
-    "scale_denominator": 75.0,
+    "scale_denominator": 75,
     "slab_thickness_m": 0.5,
     "source": "detected"
   },
@@ -1326,7 +1334,7 @@ the model and the extruded FeatureCollection inline):
     }
   ],
   "source": "data/plan/4.pdf",
-  "stone_piers": 7
+  "stone_piers": 2
 }
 ```
 
@@ -1340,7 +1348,7 @@ the model and the extruded FeatureCollection inline):
 | `sheets[]` | How each sheet was read: `role` `floor` \| `roof`, the grid `origin_page` in page units, `origin_source` — `axis_bubbles` (both labels sit in drawn circles) \| `axis_text` (no circle; the text position stood in, with a `warnings` entry) \| `fill_centre` (no grid labels at all; the storey is aligned on the centre of its filled drawing, with a `warnings` entry) — and the fill counts by element type. A storey whose sheet the rules could not read, and a roof sheet likewise, are left out with a `warnings` entry rather than failing the run. |
 | `floors[]` | Per-storey counts and areas: `walls`, `glazing`, `door_gaps`, `rooms`, `rooms_area_m2` (sum of the room fills), `slab_area_m2` (envelope plus terraces), `rails`. |
 | `roof` | `page`, `area_m2`, `parapet_pieces`. **Absent** when the set has no roof plan. |
-| `stone_piers` | Ground-floor wall pieces outside the envelope. |
+| `stone_piers` | How many stone pieces `model.stone` holds: the parts of the ground-floor walls outside the envelope, cut at it — a pier that runs on into the house is stone only outside, the rest a wall — and without the parts nowhere thicker than 10 cm, which are walls drawn past the envelope. |
 | `warnings` | Why the model is not placed, a rejected or failed parameter proposal, a sheet whose grid origin came from text; absent when none. |
 | `model_file` / `glb_file` / `geojson_file` / `params_file` | Present with `--output`: `model/<document>.model.json`, `.glb`, `.geojson`, `.params.json`, relative to that directory. |
 | `model` | The model itself, inline — the schema below. |

@@ -3,14 +3,21 @@
 //! against `data/annotations/model/4.json`, the Python pipeline's
 //! `model.json`. Both are private corpus data and gitignored; the test
 //! skips without them unless `PDF_TOOLKIT_REQUIRE_CORPUS` is set.
+//!
+//! One rule departs from the reference on purpose: it called every
+//! ground-floor wall piece lying mostly outside the building box a stone pier,
+//! whole, where the port cuts the walls at the box and drops the slivers
+//! (`reconstruct::split_walls`). The test applies that rule to the reference's
+//! ground floor and compares everything else polygon for polygon as before.
 
 use std::path::{Path, PathBuf};
 
-use geo::{Area, BooleanOps, BoundingRect};
+use geo::{Area, BooleanOps, BoundingRect, Polygon};
 use pdf_geometry::PdfDocument;
 use pdf_model::geom;
 use pdf_model::model::{Model, Polygon2D};
 use pdf_model::params::{FloorParams, Params};
+use pdf_model::reconstruct::split_walls;
 
 fn workspace() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -53,25 +60,29 @@ fn area(p: &Polygon2D) -> f64 {
     p.area_m2()
 }
 
+/// A port polygon moved into the reference's frame.
+fn shifted(polygon: &Polygon2D, shift: (f64, f64)) -> Polygon2D {
+    Polygon2D {
+        outer: polygon
+            .outer
+            .iter()
+            .map(|p| [p[0] + shift.0, p[1] + shift.1])
+            .collect(),
+        holes: polygon
+            .holes
+            .iter()
+            .map(|h| h.iter().map(|p| [p[0] + shift.0, p[1] + shift.1]).collect())
+            .collect(),
+    }
+}
+
 /// Symmetric-difference area between a golden polygon and the best-matching
 /// port polygon (after `shift`), relative to the golden area.
 fn best_mismatch(golden: &Polygon2D, ours: &[Polygon2D], shift: (f64, f64)) -> f64 {
     let g = geom::from_polygon2d(golden);
     ours.iter()
         .map(|o| {
-            let shifted = Polygon2D {
-                outer: o
-                    .outer
-                    .iter()
-                    .map(|p| [p[0] + shift.0, p[1] + shift.1])
-                    .collect(),
-                holes: o
-                    .holes
-                    .iter()
-                    .map(|h| h.iter().map(|p| [p[0] + shift.0, p[1] + shift.1]).collect())
-                    .collect(),
-            };
-            let s = geom::from_polygon2d(&shifted);
+            let s = geom::from_polygon2d(&shifted(o, shift));
             g.xor(&s).unsigned_area() / g.unsigned_area().max(1e-9)
         })
         .fold(f64::INFINITY, f64::min)
@@ -87,7 +98,7 @@ fn the_port_matches_the_reference_model() {
     let Some((pdf, golden_path)) = corpus() else {
         return;
     };
-    let golden: Model =
+    let mut golden: Model =
         serde_json::from_str(&std::fs::read_to_string(golden_path).unwrap()).unwrap();
     let document = PdfDocument::open(&pdf).unwrap();
     let ours = pdf_model::reconstruct(&document, &sketch_params())
@@ -106,6 +117,18 @@ fn the_port_matches_the_reference_model() {
         shift.0.abs() < 0.05 && shift.1.abs() < 0.05,
         "origins agree to 5 cm: {shift:?}"
     );
+    // The stone rule on the reference's ground floor: its walls and its whole
+    // stone pieces, cut at the port's envelope moved into the reference frame.
+    let envelope = geom::from_polygon2d(&shifted(&ours.floors[0].envelope, shift));
+    let pieces: Vec<Polygon<f64>> = golden.floors[0]
+        .walls
+        .iter()
+        .chain(&golden.stone)
+        .map(geom::from_polygon2d)
+        .collect();
+    let (walls, stone) = split_walls(&pieces, &envelope, true);
+    golden.floors[0].walls = walls.iter().map(geom::to_polygon2d).collect();
+    golden.stone = stone.iter().map(geom::to_polygon2d).collect();
 
     let mut worst: f64 = 0.0;
     for (g, o) in golden.floors.iter().zip(&ours.floors) {

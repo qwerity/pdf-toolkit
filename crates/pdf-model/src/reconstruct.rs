@@ -4,11 +4,11 @@
 //! Every rule is a set operation on exact fills. Openings are what is left
 //! of the envelope after the rooms and the walls are subtracted; a piece on
 //! the envelope's edge is exterior glazing, an interior piece a door gap.
-//! Ground-floor wall pieces outside the envelope are the stone piers the
-//! elevations show. Nothing here is estimated from a rendering.
+//! The parts of the ground-floor walls outside the envelope are the stone
+//! piers the elevations show. Nothing here is estimated from a rendering.
 
 use anyhow::{Result, anyhow};
-use geo::{Area, BoundingRect, Buffer, Polygon};
+use geo::{Area, BooleanOps, BoundingRect, Buffer, Polygon};
 use indexmap::IndexMap;
 
 use crate::geom;
@@ -22,6 +22,10 @@ const OPENING_SLIVER_M: f64 = 0.01;
 const MIN_OPENING_M2: f64 = 0.02;
 /// An opening this close to the envelope edge is exterior glazing.
 const EDGE_TOUCH_M: f64 = 0.02;
+/// A part of a ground-floor wall outside the envelope with nothing thicker
+/// than twice this (m) is a wall drawn past the envelope, not a pier: the
+/// reference set's are 3 cm, its piers 40 cm.
+const STONE_SLIVER_M: f64 = 0.05;
 /// A room fill must be at least this big (m²); smaller white fills are
 /// furniture and fixtures.
 const MIN_ROOM_M2: f64 = 1.0;
@@ -171,20 +175,9 @@ fn build_floor(
         }
     }
 
-    // Walls inside the box are the storey's; ground-floor pieces outside it
-    // are the stone piers. Upper-floor pieces outside are still walls.
-    let mut inside = Vec::new();
-    let mut outside = Vec::new();
-    for piece in geom::parts(walls_u) {
-        if geom::intersection_area(&piece, envelope) > 0.5 * piece.unsigned_area() {
-            inside.push(piece);
-        } else {
-            outside.push(piece);
-        }
-    }
-    if !is_ground {
-        inside.append(&mut outside);
-    }
+    // Walls inside the box are the storey's; on the ground floor what lies
+    // outside it is stone.
+    let (inside, outside) = split_walls(&geom::parts(walls_u), envelope, is_ground);
 
     let slab = geom::largest(footprint)
         .map(|p| geom::exterior_only(&p))
@@ -234,6 +227,34 @@ fn build_floor(
         },
         outside,
     })
+}
+
+/// Splits a storey's wall pieces into its walls and, on the ground floor, the
+/// stone. Each piece is cut at the envelope: what lies inside is wall — so a
+/// partition a pier runs on into stays a partition — and a part outside is
+/// stone unless nothing of it is thicker than twice [`STONE_SLIVER_M`], which
+/// is a wall drawn a few centimetres past the envelope. An outside part keeps
+/// its exact outline; it is tested, not eroded. Upper storeys have no stone:
+/// their pieces outside the envelope are walls.
+pub fn split_walls(
+    pieces: &[Polygon<f64>],
+    envelope: &Polygon<f64>,
+    is_ground: bool,
+) -> (Vec<Polygon<f64>>, Vec<Polygon<f64>>) {
+    if !is_ground {
+        return (pieces.to_vec(), Vec::new());
+    }
+    let mut walls = Vec::new();
+    let mut stone = Vec::new();
+    for piece in pieces {
+        walls.extend(geom::parts(piece.intersection(envelope)));
+        stone.extend(
+            geom::parts(piece.difference(envelope))
+                .into_iter()
+                .filter(|part| !geom::parts(part.buffer(-STONE_SLIVER_M)).is_empty()),
+        );
+    }
+    (walls, stone)
 }
 
 /// The roof outline is the envelope, its curved sides and the white edge
@@ -424,5 +445,33 @@ mod tests {
         assert!(parapet > 4.0 && parapet < 6.0, "a 0.15 m ring: {parapet}");
         assert_eq!(roof.slab_z, [6.7, 7.2]);
         assert_eq!(roof.parapet_z, [7.2, 7.78]);
+    }
+
+    #[test]
+    fn stone_is_the_part_outside_the_envelope_and_not_a_sliver() {
+        let envelope = rect(0.0, 0.0, 10.0, 6.0);
+        // A 40 cm pier running 2 m out of the box and 1.5 m into it, a wall
+        // drawn 3 cm past the east side, and a wall well inside.
+        let pieces = vec![
+            rect(-2.0, 2.8, 1.5, 3.2),
+            rect(9.6, 4.0, 10.03, 4.6),
+            rect(3.0, 0.0, 3.4, 6.0),
+        ];
+        let (walls, stone) = split_walls(&pieces, &envelope, true);
+        assert_eq!(stone.len(), 1, "the pier's outside part alone: {stone:?}");
+        assert!(
+            (stone[0].unsigned_area() - 0.8).abs() < 1e-6,
+            "2 m by 40 cm, its outline exact: {}",
+            stone[0].unsigned_area()
+        );
+        let wall_area: f64 = walls.iter().map(|p| p.unsigned_area()).sum();
+        assert!(
+            (wall_area - (0.6 + 0.24 + 2.4)).abs() < 1e-6,
+            "the pier's 1.5 m inside, the east wall to the envelope, the inner wall: {wall_area}"
+        );
+
+        let (upper_walls, upper_stone) = split_walls(&pieces, &envelope, false);
+        assert!(upper_stone.is_empty(), "no stone above the ground floor");
+        assert_eq!(upper_walls, pieces, "upper-floor pieces stay whole");
     }
 }

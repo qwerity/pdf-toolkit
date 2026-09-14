@@ -1110,11 +1110,14 @@ Openings are what the envelope minus the rooms minus the walls leaves —
 edge pieces are glazing, interior pieces door gaps; the parts of the
 ground-floor walls outside the envelope are the stone piers, less the slivers
 under 10 cm a wall drawn past the envelope leaves; terrace edges become
-railings; the roof plan gives the roof outline and a parapet ring. No
-rendering, no tracing, and — unless asked — no model call. The Rust port of
-the earlier prototype; on the reference document every polygon matches the
-prototype's output to within 0.1 % of its area, once the stone rule (the
-prototype kept whole pieces) is applied to the prototype's ground floor.
+railings; the roof plan gives the roof outline and the parapet it draws — its
+7–15 cm white bands joined into a ring on the roof, or a ring along the outline
+with a `warnings` entry when it draws none. No rendering, no tracing, and —
+unless asked — no model call. The Rust port of the earlier prototype; on
+the reference document every polygon matches the prototype's output to within
+0.1 % of its area, once the stone rule (the prototype kept whole pieces) is
+applied to the prototype's ground floor — except the parapet, which the
+prototype ringed along the outline.
 
 ```
 pdf-toolkit model input.pdf [--params p.json] [--answers a.json] [--llm-params [MODEL]] [--parcel parcel.geojson] [-g lx,ly,lon,lat]… [-o dir]
@@ -1349,7 +1352,7 @@ the model and the extruded FeatureCollection inline):
 | `floors[]` | Per-storey counts and areas: `walls`, `glazing`, `door_gaps`, `rooms`, `rooms_area_m2` (sum of the room fills), `slab_area_m2` (envelope plus terraces), `rails`. |
 | `roof` | `page`, `area_m2`, `parapet_pieces`. **Absent** when the set has no roof plan. |
 | `stone_piers` | How many stone pieces `model.stone` holds: the parts of the ground-floor walls outside the envelope, cut at it — a pier that runs on into the house is stone only outside, the rest a wall — and without the parts nowhere thicker than 10 cm, which are walls drawn past the envelope. |
-| `warnings` | Why the model is not placed, a rejected or failed parameter proposal, a sheet whose grid origin came from text; absent when none. |
+| `warnings` | Why the model is not placed, a rejected or failed parameter proposal, a sheet whose grid origin came from text, a roof plan that draws no parapet (a ring along the outline stands in); absent when none. |
 | `model_file` / `glb_file` / `geojson_file` / `params_file` | Present with `--output`: `model/<document>.model.json`, `.glb`, `.geojson`, `.params.json`, relative to that directory. |
 | `model` | The model itself, inline — the schema below. |
 | `geojson` | The extruded FeatureCollection, inline — the shape below. |
@@ -1367,7 +1370,9 @@ box as drawn), `slab` (envelope plus terraces, exterior only) with `slab_z`
 `[bottom, top]`, `walls[]`, `glazing[]` with `glazing_z`, `door_gaps[]`,
 `rooms[]` (`area` in m² plus the polygon), `rails[]` (open polylines along
 the terrace edges, upper floors only). `roof`: `outline`, `slab_z`,
-`parapet[]`, `parapet_z`; **absent** without a roof plan. `stone[]`: the
+`parapet[]` (the band the roof plan draws, cut to the outline — or, when it
+draws none, a `parapet_width_m` ring along the outline), `parapet_z`;
+**absent** without a roof plan. `stone[]`: the
 piers, extruded by consumers from the plinth to the parapet. Any consumer
 that can extrude a polygon between two z values rebuilds the building; the
 glTF writer and the GeoJSON below are two such consumers.

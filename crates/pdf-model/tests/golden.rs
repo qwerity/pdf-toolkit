@@ -4,11 +4,14 @@
 //! `model.json`. Both are private corpus data and gitignored; the test
 //! skips without them unless `PDF_TOOLKIT_REQUIRE_CORPUS` is set.
 //!
-//! One rule departs from the reference on purpose: it called every
+//! Two rules depart from the reference on purpose. It called every
 //! ground-floor wall piece lying mostly outside the building box a stone pier,
 //! whole, where the port cuts the walls at the box and drops the slivers
-//! (`reconstruct::split_walls`). The test applies that rule to the reference's
-//! ground floor and compares everything else polygon for polygon as before.
+//! (`reconstruct::split_walls`): the test applies that rule to the reference's
+//! ground floor. And it ringed the roof outline with a 15 cm parapet, where the
+//! port reads the parapet the roof sheet draws: the test checks that the port's
+//! is one ring on the roof rather than comparing areas. Everything else is
+//! compared polygon for polygon as before.
 
 use std::path::{Path, PathBuf};
 
@@ -226,11 +229,18 @@ fn the_port_matches_the_reference_model() {
         roof_mismatch * 100.0
     );
     assert_eq!((gr.slab_z, gr.parapet_z), (or.slab_z, or.parapet_z));
-    let parapet_g: f64 = gr.parapet.iter().map(area).sum();
-    let parapet_o: f64 = or.parapet.iter().map(area).sum();
+    // The second departure: the reference ringed the outline, the port reads
+    // the parapet the roof sheet draws. Whichever it found, it is one ring on
+    // the roof.
+    assert_eq!(or.parapet.len(), 1, "one parapet: {:?}", or.parapet.len());
+    let ring = geom::from_polygon2d(&or.parapet[0]);
+    assert_eq!(ring.interiors().len(), 1, "the parapet is a ring");
+    let off_roof = ring
+        .difference(&geom::from_polygon2d(&or.outline))
+        .unsigned_area();
     assert!(
-        (parapet_g - parapet_o).abs() < 0.05,
-        "parapet area {parapet_g} vs {parapet_o}"
+        off_roof < 1e-3,
+        "the parapet lies on the roof: {off_roof} m² off it"
     );
     assert_eq!(golden.stone.len(), ours.stone.len(), "stone piers");
     for gp in &golden.stone {

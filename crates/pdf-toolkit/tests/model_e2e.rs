@@ -137,6 +137,30 @@ fn the_storeys_and_roof_are_summarised_and_carried_inline() {
             .len()
             >= 4
     );
+    // The parapet the roof plan draws, 37 cm in from the roof's curved edges —
+    // not a ring along the edge, and so no warning about one.
+    let roof = &model["roof"];
+    let parapet = roof["parapet"].as_array().expect("parapet");
+    assert_eq!(parapet.len(), 1, "one drawn ring");
+    let least = |polygon: &Value, axis: usize| {
+        polygon["outer"]
+            .as_array()
+            .expect("outer ring")
+            .iter()
+            .map(|p| p[axis].as_f64().expect("coordinate"))
+            .fold(f64::INFINITY, f64::min)
+    };
+    for axis in [0, 1] {
+        let inset = least(&parapet[0], axis) - least(&roof["outline"], axis);
+        assert!(
+            (0.3..0.45).contains(&inset),
+            "axis {axis}: the parapet is {inset} m in from the edge"
+        );
+    }
+    assert!(report["warnings"].as_array().is_none_or(|w| {
+        w.iter()
+            .all(|w| !w.as_str().unwrap_or("").contains("parapet"))
+    }));
     let sheets = report["sheets"].as_array().expect("sheets");
     assert!(sheets.iter().all(|s| s["origin_source"] == "axis_bubbles"));
 }

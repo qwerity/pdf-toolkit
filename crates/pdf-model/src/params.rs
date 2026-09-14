@@ -96,7 +96,8 @@ pub struct Params {
     /// Depth of the ground slab below ±0.000, metres.
     pub plinth_m: f64,
     pub rail_height_m: f64,
-    /// Width of the parapet ring around the roof outline, metres.
+    /// Width of the ring along the roof outline that stands in for a parapet
+    /// the roof plan does not draw, metres.
     pub parapet_width_m: f64,
     pub colours: FillColours,
     pub axis: AxisParams,

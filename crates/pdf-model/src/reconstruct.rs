@@ -12,7 +12,7 @@ use geo::{Area, BooleanOps, BoundingRect, Buffer, Polygon};
 use indexmap::IndexMap;
 
 use crate::geom;
-use crate::model::{Floor, Model, Polygon2D, Roof, Room};
+use crate::model::{Floor, Model, Roof, Room};
 use crate::params::{FloorParams, Params};
 use crate::sheet::Sheet;
 
@@ -38,6 +38,13 @@ const ROOF_CLOSE_M: f64 = 0.03;
 const ROOF_EDGE_AREA_M2: std::ops::Range<f64> = 0.3..8.0;
 const ROOF_EDGE_MIN_WIDTH_M: f64 = 0.15;
 const ROOF_EDGE_REACH_M: f64 = 1.0;
+/// A parapet the roof sheet draws is a white band this thick (m): the roof's
+/// hatching is thinner, its edge strips thicker.
+const PARAPET_BAND_M: std::ops::Range<f64> = 0.07..0.15;
+/// Gaps narrower than twice this (m) between a drawn parapet's pieces are closed.
+const PARAPET_CLOSE_M: f64 = 0.02;
+/// A drawn parapet goes round at least this share of the roof's area.
+const PARAPET_MIN_ENCLOSED: f64 = 0.7;
 
 /// A storey's parameters with its sheet read in.
 pub struct FloorInput<'a> {
@@ -94,7 +101,7 @@ pub fn build(
     if let Some(sheet) = roof {
         // A roof sheet that draws no outline the rules can read leaves the
         // model without a roof rather than without a model.
-        match build_roof(sheet, params) {
+        match build_roof(sheet, params, warnings) {
             Ok(roof) => model.roof = Some(roof),
             Err(error) => warnings.push(format!("roof omitted: {error:#}")),
         }
@@ -259,8 +266,10 @@ pub fn split_walls(
 
 /// The roof outline is the envelope, its curved sides and the white edge
 /// strips and quarter-circle corners the roof sheet draws around it, closed
-/// into one ring; the parapet is a ring of that outline.
-fn build_roof(sheet: &Sheet, params: &Params) -> Result<Roof> {
+/// into one ring. The parapet is the one the sheet draws ([`drawn_parapet`]);
+/// a sheet that draws none gets a ring of `parapet_width_m` along the outline,
+/// with a warning, since that ring is the template's and not the drawing's.
+fn build_roof(sheet: &Sheet, params: &Params, warnings: &mut Vec<String>) -> Result<Roof> {
     let derived = sheet
         .envelope()
         .is_none()
@@ -288,27 +297,53 @@ fn build_roof(sheet: &Sheet, params: &Params) -> Result<Roof> {
     let outline = geom::largest(joined)
         .map(|p| geom::exterior_only(&p))
         .ok_or_else(|| anyhow!("page {}: empty roof", sheet.page))?;
-    let parapet: Vec<Polygon2D> = geom::parts(geo::BooleanOps::difference(
-        &outline,
-        &outline.buffer(-params.parapet_width_m),
-    ))
-    .iter()
-    .map(geom::to_polygon2d)
-    .collect();
+    let parapet = match drawn_parapet(sheet, &outline) {
+        Some(ring) => vec![ring],
+        None => {
+            warnings.push(format!(
+                "page {}: the roof plan draws no parapet; a {:.2} m ring along the roof's edge stands in",
+                sheet.page, params.parapet_width_m
+            ));
+            geom::parts(outline.difference(&outline.buffer(-params.parapet_width_m)))
+        }
+    };
     Ok(Roof {
         outline: geom::to_polygon2d(&outline),
         slab_z: [
             params.roof_level_m - params.slab_thickness_m,
             params.roof_level_m,
         ],
-        parapet,
+        parapet: parapet.iter().map(geom::to_polygon2d).collect(),
         parapet_z: [params.roof_level_m, params.parapet_level_m],
     })
+}
+
+/// The parapet the roof sheet draws: its white bands [`PARAPET_BAND_M`] thick
+/// that lie on the roof, joined where they meet and cut to the outline — when
+/// they make one ring round most of the roof. The roof's hatching is too thin
+/// to count and its edge strips too thick.
+fn drawn_parapet(sheet: &Sheet, outline: &Polygon<f64>) -> Option<Polygon<f64>> {
+    let banded = |fill: &Polygon<f64>| {
+        !geom::parts(fill.buffer(-PARAPET_BAND_M.start / 2.0)).is_empty()
+            && geom::parts(fill.buffer(-PARAPET_BAND_M.end / 2.0)).is_empty()
+    };
+    let bands: Vec<&Polygon<f64>> = sheet
+        .rooms
+        .iter()
+        .filter(|fill| geom::intersection_area(fill, outline) > 0.5 * fill.unsigned_area())
+        .filter(|fill| banded(fill))
+        .collect();
+    let joined = geom::close(&geom::union_all(bands), PARAPET_CLOSE_M);
+    let ring = geom::largest(joined.intersection(outline))?;
+    let enclosed = geom::exterior_only(&ring).unsigned_area();
+    (!ring.interiors().is_empty() && enclosed > PARAPET_MIN_ENCLOSED * outline.unsigned_area())
+        .then_some(ring)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Polygon2D;
     use crate::params::FloorParams;
     use crate::sheet::OriginSource;
     use pdf_geometry::model::Point;
@@ -429,12 +464,13 @@ mod tests {
     }
 
     #[test]
-    fn the_roof_closes_its_parts_and_rings_a_parapet() {
+    fn the_roof_closes_its_parts_and_rings_a_parapet_it_does_not_draw() {
         let params = params();
         let mut sheet = house();
         // A 0.3 m edge strip along the north side, 2 cm away.
         sheet.rooms = vec![rect(0.0, 6.02, 10.0, 6.32)];
-        let roof = build_roof(&sheet, &params).unwrap();
+        let mut warnings = Vec::new();
+        let roof = build_roof(&sheet, &params, &mut warnings).unwrap();
         let outline = geom::from_polygon2d(&roof.outline);
         assert!(
             (outline.unsigned_area() - 63.2).abs() < 0.05,
@@ -443,8 +479,45 @@ mod tests {
         );
         let parapet: f64 = roof.parapet.iter().map(Polygon2D::area_m2).sum();
         assert!(parapet > 4.0 && parapet < 6.0, "a 0.15 m ring: {parapet}");
+        assert!(
+            warnings.iter().any(|w| w.contains("draws no parapet")),
+            "the stand-in ring is named: {warnings:?}"
+        );
         assert_eq!(roof.slab_z, [6.7, 7.2]);
         assert_eq!(roof.parapet_z, [7.2, 7.78]);
+    }
+
+    #[test]
+    fn a_parapet_the_roof_plan_draws_is_read_where_it_is_drawn() {
+        let params = params();
+        let mut sheet = house();
+        // A 10 cm parapet band 40 cm in from the 10 x 6 box, four strips
+        // overlapping at the corners, among the roof's 5 cm hatching.
+        sheet.rooms = vec![
+            rect(0.4, 0.4, 9.6, 0.5),
+            rect(0.4, 5.5, 9.6, 5.6),
+            rect(0.4, 0.4, 0.5, 5.6),
+            rect(9.5, 0.4, 9.6, 5.6),
+            rect(2.0, 1.0, 2.05, 5.0),
+            rect(3.0, 1.0, 3.05, 5.0),
+        ];
+        let mut warnings = Vec::new();
+        let roof = build_roof(&sheet, &params, &mut warnings).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(roof.parapet.len(), 1, "one ring: {:?}", roof.parapet);
+        let ring = geom::from_polygon2d(&roof.parapet[0]);
+        assert_eq!(ring.interiors().len(), 1, "a ring, not a strip");
+        let drawn = 9.2 * 5.2 - 9.0 * 5.0;
+        assert!(
+            (ring.unsigned_area() - drawn).abs() < 0.01,
+            "the drawn band, not a ring at the edge: {}",
+            ring.unsigned_area()
+        );
+        let bounds = ring.bounding_rect().unwrap();
+        assert!(
+            (bounds.min().x - 0.4).abs() < 1e-3 && (bounds.min().y - 0.4).abs() < 1e-3,
+            "40 cm in from the edge: {bounds:?}"
+        );
     }
 
     #[test]

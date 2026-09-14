@@ -56,6 +56,8 @@ pub struct Floor {
 pub struct Roof {
     pub outline: Polygon2D,
     pub slab_z: [f64; 2],
+    /// The parapet the roof plan draws, on the roof; a ring of
+    /// `parapet_width_m` along the outline when it draws none.
     pub parapet: Vec<Polygon2D>,
     pub parapet_z: [f64; 2],
 }

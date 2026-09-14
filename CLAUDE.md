@@ -98,6 +98,23 @@ is opt-in per invocation and routes through it. `pdf-model` never depends on
 `pdf-vlm`: the model proposes parameters through a callback the CLI injects,
 so the reconstruction crate stays offline and testable on its own.
 
+**Every extraction is scored, and the score may only go up.**
+`crates/pdf-toolkit/tests/scorecard.rs` grades each kind of reading on the
+corpus — page classification, labels, routing, trust, entities, groups, the
+request block, georeferencing, the facts, the cross-page checks, the storey
+model — against a per-document ledger of what a person says is on the page
+(`data/expected/<n>.json`, private; `scripts/seed-expected.py` seeds one from
+the reviewed annotation, a person then corrects it), and compares every
+number with the committed baseline (`tests/scorecard/baseline.json`, numbers
+only). A kind that scores below its baseline fails the test; a kind that
+rose is reported; `PDF_TOOLKIT_SCORECARD_UPDATE=1 cargo test --test scorecard`
+makes the new numbers the baseline. The golden tests beside it say whether
+the output changed at all; this one says whether it got better or worse,
+per extraction, per document. **A ledger entry is truth, not output**: when
+the toolkit is wrong, fix the ledger to what the page says and let the score
+show the gap (two such entries are in the baseline today: a mis-read digit
+in dossier 10's entity, an unread hectare figure on dossier 14 p16).
+
 **The reference reconstruction is pinned by a golden test.**
 `crates/pdf-model/tests/golden.rs` diffs the port's output on
 `data/plan/4-sketch.pdf` against `data/annotations/model/4.json`, the Python
@@ -116,8 +133,11 @@ to within 2 % of its area; a rule change that moves a wall shows up there.
 ## Running things
 
 ```sh
-cargo test --workspace                      # ~400 tests
+cargo test --workspace                      # ~450 tests
 PDF_TOOLKIT_REQUIRE_CORPUS=1 cargo test     # corpus tests must run, not skip
+cargo test -p pdf-toolkit --test scorecard -- --nocapture   # the extraction scorecard
+PDF_TOOLKIT_SCORECARD_UPDATE=1 cargo test -p pdf-toolkit --test scorecard  # accept new scores
+python3 scripts/seed-expected.py            # ledgers for documents that have none
 ./build.sh                                  # dist/ bundle; runs the full gate
 ```
 

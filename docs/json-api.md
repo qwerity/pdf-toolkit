@@ -6,7 +6,7 @@ document on stdout and nothing else**, so it can be driven from another program.
 This file is the contract. It is the reference for integrating the tool; if you
 are wiring it into a service, this is all you need.
 
-- Version described here: **0.12.0** (matches the package version)
+- Version described here: **0.13.0** (matches the package version)
 - Warnings and progress go to **stderr**; stdout is only ever the JSON document
 - Files written under `--output` are the same whether or not you parse stdout
 - Exit code is `0` on success and non-zero on failure. **A failed run prints no
@@ -633,7 +633,7 @@ changes its rates. Model quality on the annotation task is compared in
 {
   "document": "letter",
   "entities": [],
-  "generated_by": "pdf-toolkit 0.12.0 dossier: deterministic extraction (pdfium text, templates, rxing QR, vector classification and georeferencing); vision-pass answers pending",
+  "generated_by": "pdf-toolkit 0.13.0 dossier: deterministic extraction (pdfium text, templates, rxing QR, vector classification and georeferencing); vision-pass answers pending",
   "graph": {
     "edges": []
   },

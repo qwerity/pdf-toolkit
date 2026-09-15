@@ -254,6 +254,15 @@ minus the rooms minus the walls leaves behind: edge pieces are glazing,
 interior pieces door gaps. Levels come from the section's level marks, the
 scale from the title block.
 
+The other sheets add what a plan cannot show. The roof plan draws the
+parapet. The elevations, set against the model by their level marks and grid
+bubbles, give the stone piers their tops. A section that cuts a slab gives
+the profile of the band its edge ends in, and the strips the plans draw
+beside the slab say which edges the band runs along. The callouts on the
+elevations, the sections and the roof plan name what each part is made of,
+and the glTF and the GeoJSON are coloured by it. Where those sheets are
+missing or disagree, the model is built as the plans alone give it.
+
 ```bash
 ./dist/pdf-toolkit model input.pdf -o out                  # model.json, .glb, .geojson, .params.json
 ./dist/pdf-toolkit model input.pdf --params out/model/input.params.json   # a reviewed parameter file
@@ -263,8 +272,9 @@ scale from the title block.
 ./dist/pdf-toolkit model input.pdf -g 0,0,44.51,40.15 -g 10,0,44.5101,40.15   # place it by hand
 ```
 
-The parameters — which sheets are the floor plans and the roof plan, the
-plan scale, the storey levels, the fill colours, the grid labels — are
+The parameters — which sheets are the floor plans, the roof plan, the
+elevations and the sections, the plan scale, the storey levels, the fill
+colours, the grid labels — are
 **detected from the document** (title blocks, printed scales, level marks,
 the plan's own fills, the lettered grid bubbles); `params_notes` lists every
 decision, and the `params` block is a valid `--params` file to review and

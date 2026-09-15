@@ -32,6 +32,7 @@ pub mod reconstruct;
 pub mod report;
 pub mod run;
 pub mod sheet;
+pub mod slab_edge;
 pub mod stone;
 
 use anyhow::{Context, Result};

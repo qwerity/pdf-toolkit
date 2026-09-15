@@ -10,6 +10,7 @@ use pdf_geometry::PdfDocument;
 use pdf_model::elevation::{self, ModelAxis, PlanAxes};
 use pdf_model::params::{FloorParams, Params};
 use pdf_model::sheet::Sheet;
+use pdf_model::slab_edge::{self, ChamferFace};
 
 fn document() -> Option<PdfDocument> {
     let pdf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/plan/4.pdf");
@@ -23,11 +24,8 @@ fn document() -> Option<PdfDocument> {
     }
 }
 
-#[test]
-fn the_facades_and_the_section_read_their_levels_and_axes() {
-    let Some(document) = document() else {
-        return;
-    };
+/// The plan's grid axes, off the ground-floor plan.
+fn plan_axes(document: &PdfDocument) -> PlanAxes {
     let mut params = Params::archicad_template();
     params.floors = vec![FloorParams {
         page: 13,
@@ -37,7 +35,15 @@ fn the_facades_and_the_section_read_their_levels_and_axes() {
     }];
     let plan = document.page_content(13).expect("the ground-floor plan");
     let origin = Sheet::read(&plan, &params).expect("the plan reads").origin;
-    let axes = PlanAxes::read(&plan, origin, params.mm_per_point() / 1000.0);
+    PlanAxes::read(&plan, origin, params.mm_per_point() / 1000.0)
+}
+
+#[test]
+fn the_facades_and_the_section_read_their_levels_and_axes() {
+    let Some(document) = document() else {
+        return;
+    };
+    let axes = plan_axes(&document);
     let cm = |v: Option<f64>| v.map(|v| (v * 100.0).round() / 100.0);
     assert_eq!(cm(axes.coordinate(ModelAxis::X, "2")), Some(4.0));
     assert_eq!(cm(axes.coordinate(ModelAxis::X, "3")), Some(11.0));
@@ -86,4 +92,41 @@ fn the_facades_and_the_section_read_their_levels_and_axes() {
         "{:?}",
         facade.across
     );
+}
+
+#[test]
+fn the_section_cuts_both_slabs_ending_in_a_chamfered_band() {
+    let Some(document) = document() else {
+        return;
+    };
+    let axes = plan_axes(&document);
+    let content = document.page_content(20).expect("section 1-1");
+    let section =
+        elevation::read(&content, SheetRole::Section, 75.0, &axes).expect("section 1-1 reads");
+    let near = |value: f64, expected: f64, within: f64| (value - expected).abs() <= within;
+    // The +3,600 slab's band stands 0.10 above the floor and its top slopes;
+    // the roof's stands 0.10 above the roof and its underside slopes.
+    for (slab, face, bottom, top) in [
+        ([3.1, 3.6], ChamferFace::Top, 3.1, 3.7),
+        ([6.7, 7.2], ChamferFace::Bottom, 6.7, 7.3),
+    ] {
+        let edge = slab_edge::read_profile(&content, &section, slab)
+            .unwrap_or_else(|| panic!("the slab at {slab:?} ends in a band"));
+        assert_eq!(edge.face, face, "{edge:?}");
+        assert!(
+            near(edge.bottom, bottom, 0.01) && near(edge.top, top, 0.01),
+            "{edge:?}"
+        );
+        assert!(
+            near(edge.depth_m, 0.4, 0.005)
+                && near(edge.tip_m, 0.2, 0.005)
+                && near(edge.chamfer_m, 0.33, 0.005),
+            "{edge:?}"
+        );
+        // The tips stand 0.40 past the plan's slab ends at x -2.50 and 12.50.
+        assert!(
+            near(edge.tips[0], -2.9, 0.01) && near(edge.tips[1], 12.9, 0.01),
+            "{edge:?}"
+        );
+    }
 }

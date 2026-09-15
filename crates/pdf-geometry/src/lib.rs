@@ -18,5 +18,5 @@ pub mod model;
 pub mod textrun;
 
 pub use document::PdfDocument;
-pub use interpreter::{Interpreter, Limits};
+pub use interpreter::{Interpreter, Limits, matrix_from, page_resources};
 pub use model::{BBox, Matrix, PageContent, PaintMode, Point, Rgb, SubPath, TextItem, VectorPath};

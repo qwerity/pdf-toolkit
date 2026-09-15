@@ -712,6 +712,62 @@ fn the_previous_flag_surface_is_no_longer_accepted() {
 }
 
 // ---------------------------------------------------------------------------
+// downsample
+// ---------------------------------------------------------------------------
+
+#[test]
+fn downsample_reports_the_documented_keys_and_writes_the_output() {
+    let output = fixtures().dir.join("downsample_image.pdf");
+    let report = json_argv(&argv::downsample(
+        as_str(&fixtures().image),
+        as_str(&output),
+        "200",
+    ));
+
+    assert_keys(
+        &report,
+        &[
+            "input",
+            "output",
+            "pages",
+            "target_dpi",
+            "threshold_dpi",
+            "jpeg_quality",
+            "bytes_before",
+            "bytes_after",
+            "written",
+            "images",
+            "downsampled",
+            "unchanged",
+            "warnings",
+        ],
+    );
+    assert_keys(&report["images"], &["total", "downsampled", "unchanged"]);
+    assert_eq!(report["pages"], 1);
+    assert_eq!(report["target_dpi"], 200);
+    assert_eq!(report["threshold_dpi"], 220);
+    // A 4 px image drawn 400 pt wide is far below any threshold, so the
+    // input's own bytes are what gets written. PDFium stores the fixture's
+    // image with a soft mask, which is sized with it: two images.
+    assert_eq!(report["written"], "original");
+    assert_eq!(report["images"]["total"], 2);
+    assert_eq!(report["unchanged"]["below_threshold"], 2);
+    assert_eq!(
+        std::fs::read(&output).expect("output written"),
+        std::fs::read(&fixtures().image).expect("fixture readable")
+    );
+}
+
+#[test]
+fn downsample_refuses_to_overwrite_its_input_and_prints_no_json() {
+    let input = as_str(&fixtures().image);
+    let run = run_argv(&argv::downsample(input, input, "200")).expect_failure();
+
+    assert!(run.stdout.trim().is_empty(), "a failed run prints no JSON");
+    assert!(run.stderr.contains("Error:"), "stderr: {}", run.stderr);
+}
+
+// ---------------------------------------------------------------------------
 // the surface itself
 // ---------------------------------------------------------------------------
 

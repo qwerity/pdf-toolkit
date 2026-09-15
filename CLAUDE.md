@@ -56,15 +56,16 @@ The serialisable types are all in one place, which makes this easy to check:
 | `cadfix` output | `crates/pdf-vlm/src/cad.rs` |
 | `building` output | `crates/pdf-vlm/src/building.rs` |
 | `model` output | `crates/pdf-model/src/report.rs` |
+| `downsample` output and `unchanged` reasons | `crates/pdf-downsample/src/report.rs` |
 | `model` parameters (`params` / `--params`) | `crates/pdf-model/src/params.rs` |
 | `model.json` schema | `crates/pdf-model/src/model.rs` |
 | `SheetRole` (`classification.features.sheet_role`) | `crates/pdf-classify/src/sheet.rs` |
 
 ## What this tool is
 
-Ten commands over one PDF: `inspect`, `cut`, `render`, `text`, `structured`,
-`vector`, `dossier`, `model`, and the experimental hosted-model pair `cadfix`
-and `building`. `model` is the deterministic storey-by-storey reconstruction
+Eleven commands over one PDF: `inspect`, `cut`, `render`, `text`, `structured`,
+`vector`, `dossier`, `model`, `downsample`, and the experimental hosted-model
+pair `cadfix` and `building`. `model` is the deterministic storey-by-storey reconstruction
 (`crates/pdf-model`, the Rust port of the earlier prototype); its only
 networked corner is the opt-in `--llm-params` parameter proposal, which
 routes through `pdf-vlm` like everything else that talks to a model. `README.md` explains the pipeline and the crate layout;

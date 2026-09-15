@@ -68,6 +68,9 @@ pub enum Command {
     /// `model.json`, glTF, and extruded GeoJSON placed on the map where the
     /// dossier allows.
     Model(ModelArgs),
+    /// Shrink the PDF by resampling raster images drawn above a resolution,
+    /// leaving text, fonts and vector content byte-identical.
+    Downsample(DownsampleArgs),
 }
 
 /// The source document and the pages wanted from it.
@@ -362,6 +365,56 @@ impl VectorArgs {
     }
 }
 
+#[derive(ClapArgs, Debug)]
+pub struct DownsampleArgs {
+    /// Source PDF.
+    pub input: PathBuf,
+
+    /// The PDF to write. Must not be the input.
+    #[arg(short, long)]
+    pub output: PathBuf,
+
+    /// Resolution to resample to, in pixels per displayed inch.
+    #[arg(long, default_value_t = 200, value_parser = parse_dpi)]
+    pub dpi: u32,
+
+    /// Only images drawn above this resolution are resampled. Defaults to
+    /// 10 % above `--dpi`; must not be below it.
+    #[arg(long = "threshold-dpi", value_parser = parse_dpi)]
+    pub threshold_dpi: Option<u32>,
+
+    /// JPEG quality, 1–100, for images the PDF stores as JPEG. Losslessly
+    /// stored images stay lossless.
+    #[arg(
+        long,
+        default_value_t = pdf_downsample::DEFAULT_JPEG_QUALITY,
+        value_parser = clap::value_parser!(u8).range(1..=100)
+    )]
+    pub quality: u8,
+}
+
+impl DownsampleArgs {
+    /// Rejects a threshold below the target, which would ask to enlarge images.
+    pub fn validate(&self) -> Result<(), String> {
+        match self.threshold_dpi {
+            Some(threshold) if threshold < self.dpi => Err(format!(
+                "--threshold-dpi {threshold} is below --dpi {}; images are only ever made smaller",
+                self.dpi
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn options(&self) -> pdf_downsample::DownsampleOptions {
+        let defaults = pdf_downsample::DownsampleOptions::new(self.dpi);
+        pdf_downsample::DownsampleOptions {
+            threshold_dpi: self.threshold_dpi.unwrap_or(defaults.threshold_dpi),
+            jpeg_quality: self.quality,
+            ..defaults
+        }
+    }
+}
+
 impl Command {
     /// The source PDF, whichever command was asked for. Used by the one
     /// check that applies to all of them: that the input exists and is a file.
@@ -377,6 +430,7 @@ impl Command {
             Self::Cadfix(args) => &args.input,
             Self::Building(args) => &args.input,
             Self::Model(args) => &args.input,
+            Self::Downsample(args) => &args.input,
         }
     }
 }
@@ -493,6 +547,17 @@ fn parse_page_number(raw: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("'{raw}' is not a one-based page number"))
 }
 
+/// Resolutions a page image is meaningfully resampled to: below 36 dpi text is
+/// unreadable, above 2400 nothing is ever drawn that finely.
+fn parse_dpi(value: &str) -> std::result::Result<u32, String> {
+    let dpi = value.parse::<u32>().map_err(|error| error.to_string())?;
+    if (36..=2400).contains(&dpi) {
+        Ok(dpi)
+    } else {
+        Err(format!("dpi must be between 36 and 2400, got {dpi}"))
+    }
+}
+
 fn parse_scale(value: &str) -> std::result::Result<f32, String> {
     let scale = value.parse::<f32>().map_err(|error| error.to_string())?;
 
@@ -557,6 +622,47 @@ mod tests {
                 "for {args:?}"
             );
         }
+    }
+
+    #[test]
+    fn downsample_needs_an_output_and_defaults_to_200_dpi() {
+        rejects(&["downsample", "a.pdf"]);
+        let Command::Downsample(args) = parse(&["downsample", "a.pdf", "-o", "b.pdf"]).command
+        else {
+            panic!("expected downsample");
+        };
+        let options = args.options();
+        assert_eq!(
+            (
+                options.target_dpi,
+                options.threshold_dpi,
+                options.jpeg_quality
+            ),
+            (200, 220, 85)
+        );
+        assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn downsample_rejects_out_of_range_values_and_a_threshold_below_the_target() {
+        rejects(&["downsample", "a.pdf", "-o", "b.pdf", "--dpi", "10"]);
+        rejects(&["downsample", "a.pdf", "-o", "b.pdf", "--quality", "0"]);
+        rejects(&["downsample", "a.pdf", "-o", "b.pdf", "--quality", "101"]);
+        let Command::Downsample(args) = parse(&[
+            "downsample",
+            "a.pdf",
+            "-o",
+            "b.pdf",
+            "--dpi",
+            "300",
+            "--threshold-dpi",
+            "150",
+        ])
+        .command
+        else {
+            panic!("expected downsample");
+        };
+        assert!(args.validate().is_err());
     }
 
     #[test]

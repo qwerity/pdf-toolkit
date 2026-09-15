@@ -38,6 +38,7 @@ pdf-toolkit <command> <input.pdf> [options]
 | `dossier` | Whole-dossier annotation: labels, routing, QR payloads, entities, groups, graph | with `--output` |
 | `cadfix` | *(experimental, networked)* Model-proposed CAD refinement of one page's vector geometry | with `--output` |
 | `building` | *(experimental, networked)* 3D building massing read from the drawings, as extruded GeoJSON | with `--output` |
+| `downsample` | A smaller copy of the PDF: raster images drawn above a resolution are resampled; text, fonts and vector content are carried through byte-identical | yes (`--output`, one PDF) |
 
 ### Options
 
@@ -55,6 +56,10 @@ pdf-toolkit <command> <input.pdf> [options]
 | `--vlm` | `dossier` | In-process vision pass. Bare `--vlm` uses `gemini-3.8-flash`; see below |
 | `--page` | `cadfix` | The one page holding the drawing to refine |
 | `--model` | `cadfix`, `building` | Hosted model; defaults to `gemini-3.8-flash`, like `--vlm`. Same spec grammar. |
+| `--output`, `-o` | `downsample` | **Required.** The PDF file to write (not a directory). Naming the input is refused. |
+| `--dpi` | `downsample` | Resolution to resample to, pixels per displayed inch, `36`–`2400`. Default `200`. |
+| `--threshold-dpi` | `downsample` | Only images drawn above this are resampled. Default 10 % above `--dpi` (`220` for `200`); below `--dpi` is refused. |
+| `--quality` | `downsample` | JPEG quality `1`–`100` for images the PDF stores as JPEG. Default `85`. |
 
 An option that does not apply to a command does not exist on it, and using it is
 a usage error rather than a silently ignored flag.
@@ -1453,6 +1458,86 @@ both omit it entirely when no model was called. Copied from a real
 `dossier --vlm` run (one entry per flagged page):
 
 ```json
+## `downsample`
+
+Writes a smaller copy of the PDF by resampling its raster images, and nothing
+else. Content streams, fonts and their `ToUnicode` maps are carried through
+byte-identical, so text extraction reads the same characters from the output
+as from the input. That is the difference from a general rewriter such as
+Ghostscript's `pdfwrite`, which re-embeds fonts and can lose a ligature's
+Unicode mapping ("offices" extracted as "ofÏces").
+
+Resolution is measured against the size each image is **drawn** at — pixels
+over the area of its largest placement, through the CTM and any form
+XObjects — not a DPI stored in the file. An image drawn on several pages keeps
+enough pixels for its largest placement; a soft mask is resampled with its
+image. A JPEG stays a JPEG (grey, RGB, Adobe CMYK and Adobe YCCK, in the layout
+it had); anything stored losslessly stays lossless, so resampling is the only
+loss introduced.
+
+From a run on a 12-page planning handbook (`downsampled` cut to one entry,
+paths shortened):
+
+```json
+{
+  "input": "handbook.pdf",
+  "output": "/abs/out/handbook.200dpi.pdf",
+  "pages": 12,
+  "target_dpi": 200,
+  "threshold_dpi": 220,
+  "jpeg_quality": 85,
+  "bytes_before": 17855319,
+  "bytes_after": 7994546,
+  "written": "downsampled",
+  "images": { "total": 83, "downsampled": 51, "unchanged": 32 },
+  "downsampled": [
+    {
+      "object": "10 0",
+      "pages": [2],
+      "from_px": [3092, 1490],
+      "to_px": [1500, 723],
+      "effective_dpi": 412.3,
+      "bytes_before": 89939,
+      "bytes_after": 75106,
+      "encoding": "flate"
+    }
+  ],
+  "unchanged": { "below_threshold": 11, "color_space": 3, "no_gain": 17, "not_placed": 1 },
+  "warnings": []
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `input`, `output` | The paths as given on the command line. |
+| `bytes_before`, `bytes_after` | Size of the input and of the file written. `bytes_after` is never larger. |
+| `written` | `downsampled` — the rewritten document; `original` — the input's own bytes, because no image was resampled or the rewrite was not smaller. Either way `output` exists. |
+| `images` | Image XObjects in the document: `total` = `downsampled` + `unchanged`. Inline images are not counted and never touched. |
+| `downsampled[]` | One entry per resampled image, in object order. `object` is `"<number> <generation>"`; `pages` the one-based pages that draw it; `effective_dpi` pixels over its largest drawn area, one decimal; `encoding` `jpeg` \| `flate`. |
+| `unchanged` | Count per reason an image was left as it is. A reason with no images is **absent**. |
+| `warnings` | A page whose content stream could not be parsed; its images count as `not_placed`. Also on stderr. |
+
+### `unchanged` reasons
+
+| Reason | Meaning |
+|---|---|
+| `below_threshold` | Drawn at or below `threshold_dpi`, or already no larger than the target size. |
+| `not_placed` | No page's content draws it (a pattern fill, an annotation appearance, an unused object), so its display size is unknown. |
+| `no_gain` | Resampled, but the result was not smaller than the stored image. |
+| `image_mask` | A 1-bit stencil mask. |
+| `color_key_mask` | A colour-key `/Mask` array, which lossy samples would break. |
+| `bits_per_component` | Not 8 bits per component. |
+| `color_space` | Indexed, Separation, DeviceN, Lab, or unreadable: resampling would mean converting. |
+| `unsupported_filter` | JPEG 2000, JBIG2, CCITT, or a filter chain around a JPEG. |
+| `unsupported_cmyk_jpeg` | A four-channel JPEG without an Adobe CMYK or YCCK marker, whose ink direction readers disagree about. |
+| `too_large` | Decoded samples over 1 GiB. |
+| `matte_pair` | Could be resampled, but it is an image or a `/Matte` soft mask whose partner is left as it is; the two must stay the same pixel size, so both are kept. |
+| `decode_failed` | The stream did not decode to the size its dictionary declares. |
+
+An encrypted input fails the run: rewriting it would drop its protection.
+
+---
+
 {
   "label": "vlm page 5",
   "model": "gemini-3.8-flash",

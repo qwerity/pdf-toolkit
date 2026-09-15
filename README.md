@@ -69,6 +69,7 @@ pdf-toolkit <COMMAND> <INPUT> [OPTIONS]
   model       storey-by-storey 3D reconstruction from the plan sheets (deterministic)
   cadfix      model-proposed CAD refinement of one page   (experimental, networked)
   building    3D building massing from the drawings       (experimental, networked)
+  downsample  a smaller PDF: raster images resampled, text and fonts untouched
 ```
 
 ### inspect
@@ -107,6 +108,42 @@ With neither sizing option, `render` uses scale `2.0`.
 default) or `--concat` is given, and reports it under `concat`. A selection of
 specific pages without `--concat` writes one file per page, reported under
 `pages`.
+
+### downsample
+
+Writes a smaller copy of the PDF by resampling the raster images drawn above
+a resolution. Nothing else is rewritten: content streams, fonts and their
+`ToUnicode` maps are carried through byte-identical, so the output's text layer
+extracts exactly as the input's does.
+
+```bash
+./dist/pdf-toolkit downsample input.pdf -o smaller.pdf                  # 200 dpi
+./dist/pdf-toolkit downsample input.pdf -o smaller.pdf --dpi 150 --quality 80
+```
+
+An image's resolution is its pixels over the size it is **drawn** at, so a
+scan and a thumbnail of the same pixels are treated differently, and an image
+whose drawn size cannot be established is left alone. JPEGs stay JPEGs (grey,
+RGB, Adobe CMYK and YCCK), lossless images stay lossless, and colour spaces are
+never converted — palettes, spot colours, JPEG 2000 and JBIG2 are reported and
+left as they are. The file written is never larger than the input.
+
+Measured on six planning documents at 200 dpi, against
+`gs -sDEVICE=pdfwrite` with the same resolution and threshold:
+
+| document | original | `downsample` | Ghostscript | text layer after `downsample` |
+|---|---|---|---|---|
+| 16-sheet scanned plan set | 94.9 MB | 33.2 MB | 31.3 MB | identical |
+| 27-page copier scan | 57.2 MB | 12.3 MB | 13.3 MB | identical |
+| 66-page EIR, lossless figures | 104.4 MB | 75.7 MB | 11.4 MB | identical |
+| 28-page print-to-PDF element | 35.2 MB | 35.2 MB | 25.2 MB | identical |
+| 21-page photo study, CMYK | 41.7 MB | 33.9 MB | 37.0 MB | identical |
+| 12-page handbook | 17.9 MB | 8.0 MB | 7.3 MB | identical (Ghostscript: "offices" → "ofÏces") |
+
+Page renders at 1536 px on the long edge score SSIM ≥ 0.990 against the
+original on every document (first, middle and last page). Ghostscript is
+smaller where it turns lossless photographs into JPEGs; `downsample` does not
+change how an image is stored.
 
 ### vector
 
@@ -581,6 +618,7 @@ depended on without it.
 | `pdf-inspect` | per-page metadata and the vision-pass routing signals |
 | `pdf-pages` | cutting and concatenation |
 | `pdf-dossier` | the whole-dossier annotation for the `dossier` command |
+| `pdf-downsample` | resampling raster images for the `downsample` command, leaving everything else byte-identical |
 | `pdf-vlm` | the opt-in hosted-vision passes: page annotation, CAD refinement, building massing |
 | `llm-providers` | hosted-model transport: Gemini / OpenAI / OpenRouter, vision input, parallel tool calls |
 | `pdf-toolkit` | the CLI, plus the facade that re-exports all of the above |
@@ -593,6 +631,7 @@ core -> {render, text} -> inspect -> pages ----+
 geometry -> geo -> classify -> vector ---------+--> toolkit
 {core, render, inspect, vector} -> dossier ----+
 {dossier, vector, llm-providers} -> vlm -------+
+geometry -> downsample ------------------------+
 ```
 
 `llm-providers` depends on no other workspace crate: it is transport, and

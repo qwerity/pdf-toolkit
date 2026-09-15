@@ -23,18 +23,25 @@ thiserror = "2.0"
 
 geojson = "1.0.0"
 earcutr = "0.5"
+fast_image_resize = "6.1"
+flate2 = "1.1"
 geo = "0.33"
 base64 = "0.23"
 dotenvy = "0.15"
 indexmap = { version = "2", features = ["serde"] }
+jpeg-encoder = "0.7"
+rayon = "1.12"
 lopdf = { version = "0.45.0", default-features = false, features = ["chrono"] }
 regex = "1.13"
 rxing = { version = "0.9", default-features = false, features = ["encoding_rs", "decoders", "multi_barcode_readers", "qrcode"] }
 ureq = { version = "3.4", features = ["json"] }
+zune-core = "0.5"
+zune-jpeg = "0.5"
 
 pdf-classify = { path = "crates/pdf-classify" }
 pdf-core = { path = "crates/pdf-core" }
 pdf-dossier = { path = "crates/pdf-dossier" }
+pdf-downsample = { path = "crates/pdf-downsample" }
 pdf-geo = { path = "crates/pdf-geo" }
 pdf-geometry = { path = "crates/pdf-geometry" }
 pdf-vector = { path = "crates/pdf-vector" }

@@ -149,6 +149,18 @@ pub mod argv {
         ]
     }
 
+    /// Resample raster images into a new PDF at `dpi`.
+    pub fn downsample(input: &str, output: &str, dpi: &str) -> Vec<String> {
+        vec![
+            "downsample".into(),
+            input.into(),
+            "--output".into(),
+            output.into(),
+            "--dpi".into(),
+            dpi.into(),
+        ]
+    }
+
     /// Whole-dossier annotation, deterministic passes only.
     pub fn dossier(input: &str) -> Vec<String> {
         vec!["dossier".into(), input.into()]

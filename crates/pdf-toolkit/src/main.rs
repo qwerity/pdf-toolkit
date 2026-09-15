@@ -7,8 +7,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use pdf_toolkit::cli::{
-    BuildingArgs, CadfixArgs, Cli, Command, CutArgs, DossierArgs, InspectArgs, ModelArgs,
-    RenderArgs, Source, StructuredArgs, TextArgs, VectorArgs,
+    BuildingArgs, CadfixArgs, Cli, Command, CutArgs, DossierArgs, DownsampleArgs, InspectArgs,
+    ModelArgs, RenderArgs, Source, StructuredArgs, TextArgs, VectorArgs,
 };
 use pdf_toolkit::error::{PdfError, Result as LibraryResult};
 use pdf_toolkit::{
@@ -18,8 +18,8 @@ use pdf_toolkit::{
 
 use crate::cli_output::{
     print_building_output, print_cadfix_output, print_document_info, print_dossier_output,
-    print_model_output, print_page_output, print_structured_output, print_text_output,
-    print_vector_output,
+    print_downsample_output, print_model_output, print_page_output, print_structured_output,
+    print_text_output, print_vector_output,
 };
 
 fn main() -> ExitCode {
@@ -46,6 +46,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Cadfix(args) => cadfix(&args),
         Command::Building(args) => building(&args),
         Command::Model(args) => model(&args),
+        Command::Downsample(args) => downsample(&args),
     }
 }
 
@@ -317,6 +318,18 @@ fn model(args: &ModelArgs) -> Result<()> {
         report.llm_usage = Some(serde_json::to_value(proposer.calls())?);
     }
     print_model_output(&report)
+}
+
+/// Resamples the document's raster images and writes the smaller PDF.
+///
+/// Like `vector`, it reads the file with `lopdf` rather than PDFium: PDFium
+/// cannot save a document without regenerating the content streams it
+/// touched, and leaving those untouched is the point.
+fn downsample(args: &DownsampleArgs) -> Result<()> {
+    args.validate()
+        .map_err(|message| anyhow::anyhow!(message))?;
+    let report = pdf_downsample::downsample(&args.input, &args.output, &args.options())?;
+    print_downsample_output(&report)
 }
 
 /// Writes one `<document>_p<NN>.geojson` per page, beside the JSON on stdout.

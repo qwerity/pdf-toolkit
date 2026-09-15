@@ -1,0 +1,21 @@
+[package]
+name = "pdf-downsample"
+description = "Shrinks a PDF by resampling its raster images to a target resolution, leaving text, fonts and vector content byte-identical."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pdf-geometry.workspace = true
+anyhow.workspace = true
+flate2.workspace = true
+fast_image_resize.workspace = true
+jpeg-encoder.workspace = true
+lopdf.workspace = true
+rayon.workspace = true
+serde.workspace = true
+zune-core.workspace = true
+zune-jpeg.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

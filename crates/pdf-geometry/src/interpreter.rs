@@ -621,7 +621,8 @@ fn num(operands: &[Object], i: usize) -> Option<f64> {
         .map(f64::from)
 }
 
-fn matrix_from(operands: &[Object]) -> Option<Matrix> {
+/// The six operands of `cm`, or the entries of a `/Matrix` array, as a matrix.
+pub fn matrix_from(operands: &[Object]) -> Option<Matrix> {
     if operands.len() < 6 {
         return None;
     }
@@ -781,7 +782,7 @@ fn resolve_dict(doc: &Document, resources: &Dictionary, key: &[u8]) -> Option<Di
 
 /// Collects the page's own `/Resources` plus any inherited from its ancestors,
 /// with the nearest definition winning.
-fn page_resources(doc: &Document, page_id: ObjectId) -> Dictionary {
+pub fn page_resources(doc: &Document, page_id: ObjectId) -> Dictionary {
     let mut merged = Dictionary::new();
     let Ok((own, inherited_ids)) = doc.get_page_resources(page_id) else {
         return merged;

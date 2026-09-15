@@ -50,16 +50,65 @@ pub struct Floor {
     pub rooms: Vec<Room>,
     /// Balcony railings as open polylines along the terrace edges.
     pub rails: Vec<Ring>,
+    /// The band the slab's edge ends in, when a section cuts one and a plan
+    /// draws where it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge: Option<SlabEdge>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Roof {
+    /// The envelope, the terraces and the edge strips the roof plan draws,
+    /// less the edge band when one is read.
     pub outline: Polygon2D,
     pub slab_z: [f64; 2],
     /// The parapet the roof plan draws, on the roof; a ring of
     /// `parapet_width_m` along the outline when it draws none.
     pub parapet: Vec<Polygon2D>,
     pub parapet_z: [f64; 2],
+    /// The band the roof's edge ends in, as for a storey's slab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge: Option<SlabEdge>,
+}
+
+/// Which face of a slab's edge band slopes from its tip to full height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChamferFace {
+    /// The top slopes: the tip stands on the band's underside.
+    Top,
+    /// The underside slopes: the tip hangs from the band's top.
+    Bottom,
+}
+
+/// One stretch of an edge band: `inner` along the slab's edge, `outer` along
+/// the band's tip, each vertex of one facing the same vertex of the other.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EdgeRun {
+    pub inner: Ring,
+    pub outer: Ring,
+}
+
+/// The band a slab's edge ends in: where it runs, and the profile a section
+/// cuts it with. A consumer that can slope lofts each run — the tip along
+/// `outer`, full height `chamfer_m` in from it — and one that cannot extrudes
+/// it in steps, as the glTF and the GeoJSON do.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlabEdge {
+    pub runs: Vec<EdgeRun>,
+    /// `[bottom, top]` of the band at full height, metres.
+    pub z: [f64; 2],
+    /// From the tip to the slab's edge, metres.
+    pub depth_m: f64,
+    /// The band's height at its tip, metres.
+    pub tip_m: f64,
+    /// How far in from the tip the sloping face reaches full height, metres.
+    pub chamfer_m: f64,
+    pub face: ChamferFace,
+    /// The section the profile was read from.
+    pub section_page: usize,
+    /// The plan whose strips placed the runs.
+    pub plan_page: usize,
 }
 
 /// The whole building.

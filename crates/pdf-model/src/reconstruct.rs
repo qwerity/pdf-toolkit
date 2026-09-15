@@ -235,6 +235,7 @@ fn build_floor(
                 })
                 .collect(),
             rails,
+            edge: None,
         },
         outside,
     })
@@ -319,6 +320,7 @@ fn build_roof(sheet: &Sheet, params: &Params, warnings: &mut Vec<String>) -> Res
         ],
         parapet: parapet.iter().map(geom::to_polygon2d).collect(),
         parapet_z: [params.roof_level_m, params.parapet_level_m],
+        edge: None,
     })
 }
 

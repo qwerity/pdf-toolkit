@@ -527,6 +527,7 @@ mod tests {
                 door_gaps: Vec::new(),
                 rooms: Vec::new(),
                 rails: Vec::new(),
+                edge: None,
             }],
             roof: None,
             stone: Vec::new(),

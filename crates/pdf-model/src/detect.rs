@@ -191,6 +191,23 @@ pub fn detect(
                 .join(", ")
         ));
     }
+    // Sections: the sheets the slabs' edge bands are read from.
+    params.section_pages = sheets
+        .iter()
+        .filter(|s| s.role == Some(SheetRole::Section))
+        .map(|s| s.page)
+        .collect();
+    if !params.section_pages.is_empty() {
+        notes.push(format!(
+            "sections: page(s) {}",
+            params
+                .section_pages
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     if let Some(&parapet) = elevation_marks.last()
         && parapet >= params.roof_level_m
     {

@@ -61,6 +61,7 @@ fn the_parameters_are_detected_from_the_sheets_themselves() {
         params["elevation_pages"],
         serde_json::json!([16, 17, 18, 19])
     );
+    assert_eq!(params["section_pages"], serde_json::json!([20]));
     assert_eq!(params["roof_level_m"], 7.2);
     assert_eq!(params["parapet_level_m"], 7.78);
     assert_eq!(params["slab_thickness_m"], 0.5);
@@ -126,7 +127,8 @@ fn the_storeys_and_roof_are_summarised_and_carried_inline() {
     assert_eq!(floors[1]["rooms"], 20);
     assert_eq!(floors[1]["rails"], 6);
     assert!((floors[0]["slab_area_m2"].as_f64().unwrap() - 87.79).abs() < 0.05);
-    assert!((report["roof"]["area_m2"].as_f64().unwrap() - 100.87).abs() < 0.05);
+    // The roof less its edge band: the envelope and its two terraces.
+    assert!((report["roof"]["area_m2"].as_f64().unwrap() - 94.39).abs() < 0.05);
     // The two stone walls either side, cut at the envelope; the five 3 cm
     // strips of wall drawn past it are not piers.
     assert_eq!(report["stone_piers"], 2);
@@ -152,24 +154,73 @@ fn the_storeys_and_roof_are_summarised_and_carried_inline() {
             .len()
             >= 4
     );
-    // The parapet the roof plan draws, 37 cm in from the roof's curved edges —
-    // not a ring along the edge, and so no warning about one.
+    // Both slabs end in the band section 1-1 cuts: 0.40 m out past the slab,
+    // a 0.20 m tip, full height 0.33 m in from it — the storey's sloping on
+    // top, the roof's underneath. Their plans draw where it runs: down both
+    // ends and round the front, not along the back.
+    let near =
+        |value: &Value, expected: f64| (value.as_f64().expect("a number") - expected).abs() < 0.01;
+    let extreme = |line: &[Value], axis: usize, pick: fn(f64, f64) -> f64, from: f64| {
+        line.iter()
+            .map(|p| p[axis].as_f64().expect("coordinate"))
+            .fold(from, pick)
+    };
+    assert!(
+        model["floors"][0].get("edge").is_none(),
+        "the ground slab ends square"
+    );
+    for (edge, face, z, plan) in [
+        (&model["floors"][1]["edge"], "top", [3.1, 3.7], 14),
+        (&model["roof"]["edge"], "bottom", [6.7, 7.3], 15),
+    ] {
+        assert_eq!(edge["face"], face, "{edge}");
+        assert!(
+            near(&edge["z"][0], z[0]) && near(&edge["z"][1], z[1]),
+            "{edge}"
+        );
+        assert!(
+            near(&edge["depth_m"], 0.4)
+                && near(&edge["tip_m"], 0.2)
+                && near(&edge["chamfer_m"], 0.33),
+            "{edge}"
+        );
+        assert_eq!(
+            (edge["section_page"].as_u64(), edge["plan_page"].as_u64()),
+            (Some(20), Some(plan)),
+            "{edge}"
+        );
+        let runs = edge["runs"].as_array().expect("runs");
+        assert_eq!(runs.len(), 1, "one run round the front: {edge}");
+        let tip = runs[0]["outer"].as_array().expect("the tip");
+        assert!(
+            (extreme(tip, 0, f64::min, f64::INFINITY) + 2.9).abs() < 0.01
+                && (extreme(tip, 0, f64::max, f64::NEG_INFINITY) - 12.9).abs() < 0.01
+                && (extreme(tip, 1, f64::min, f64::INFINITY) + 0.6).abs() < 0.01,
+            "the tip runs from x -2.90 to 12.90 with the front at y -0.60: {edge}"
+        );
+    }
+    // The GeoJSON extrudes the storey's band in steps up to its top.
+    let features = report["geojson"]["features"].as_array().expect("features");
+    assert!(features.iter().any(|f| {
+        f["properties"]["role"] == "slab"
+            && f["properties"]["floor"] == 1
+            && near(&f["properties"]["height"], 3.7)
+    }));
+    // The parapet the roof plan draws, on the roof inside the band and 40 cm
+    // in from its tip — not a ring along the edge, and so no warning about one.
     let roof = &model["roof"];
     let parapet = roof["parapet"].as_array().expect("parapet");
     assert_eq!(parapet.len(), 1, "one drawn ring");
-    let least = |polygon: &Value, axis: usize| {
-        polygon["outer"]
-            .as_array()
-            .expect("outer ring")
-            .iter()
-            .map(|p| p[axis].as_f64().expect("coordinate"))
-            .fold(f64::INFINITY, f64::min)
-    };
+    let ring = parapet[0]["outer"].as_array().expect("outer ring");
+    let tip = roof["edge"]["runs"][0]["outer"]
+        .as_array()
+        .expect("the band's tip");
     for axis in [0, 1] {
-        let inset = least(&parapet[0], axis) - least(&roof["outline"], axis);
+        let inset = extreme(ring, axis, f64::min, f64::INFINITY)
+            - extreme(tip, axis, f64::min, f64::INFINITY);
         assert!(
             (0.3..0.45).contains(&inset),
-            "axis {axis}: the parapet is {inset} m in from the edge"
+            "axis {axis}: the parapet is {inset} m in from the band's tip"
         );
     }
     assert!(report["warnings"].as_array().is_none_or(|w| {

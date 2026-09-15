@@ -128,7 +128,7 @@ pub fn collection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Floor, Room};
+    use crate::model::{ChamferFace, EdgeRun, Floor, Room, SlabEdge};
     use indexmap::IndexMap;
 
     fn square(x0: f64, y0: f64, side: f64) -> Polygon2D {
@@ -167,6 +167,7 @@ mod tests {
                     polygon: square(1.0, 1.0, 2.0),
                 }],
                 rails: vec![vec![[10.0, 0.0], [10.0, 5.0]]],
+                edge: None,
             }],
             roof: None,
             stone: vec![square(12.0, 0.0, 0.5).into()],
@@ -186,6 +187,46 @@ mod tests {
         let properties = pier.properties.as_ref().unwrap();
         assert_eq!(properties["base"], -0.35);
         assert_eq!(properties["height"], 4.8);
+    }
+
+    #[test]
+    fn a_slab_edge_band_is_extruded_in_three_steps() {
+        let mut model = model();
+        // A band 0.40 deep down the slab's west side, its top sloping from a
+        // 0.20 m tip to full height 0.32 m in.
+        model.floors[0].edge = Some(SlabEdge {
+            runs: vec![EdgeRun {
+                inner: vec![[0.0, 10.0], [0.0, 0.0]],
+                outer: vec![[-0.4, 10.0], [-0.4, 0.0]],
+            }],
+            z: [-0.4, 0.2],
+            depth_m: 0.4,
+            tip_m: 0.2,
+            chamfer_m: 0.32,
+            face: ChamferFace::Top,
+            section_page: 20,
+            plan_page: 15,
+        });
+        let fc = collection(&model, &Frame { placement: None }, 0.35, 1.1, json!({}));
+        let steps: Vec<(f64, f64, f64)> = fc
+            .features
+            .iter()
+            .map(|f| f.properties.as_ref().unwrap())
+            .filter(|p| p["role"] == "slab" && p["base"] == -0.4)
+            .map(|p| {
+                (
+                    p["base"].as_f64().unwrap(),
+                    p["height"].as_f64().unwrap(),
+                    p["area_m2"].as_f64().unwrap(),
+                )
+            })
+            .collect();
+        // Two strips 0.16 wide across the chamfer, at the slope's height
+        // halfway along each, then the last 0.08 at full height.
+        assert_eq!(
+            steps,
+            [(-0.4, -0.1, 1.6), (-0.4, 0.1, 1.6), (-0.4, 0.2, 0.8)]
+        );
     }
 
     #[test]

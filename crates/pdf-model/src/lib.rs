@@ -129,6 +129,17 @@ pub fn reconstruct(document: &PdfDocument, params: &Params) -> Result<Reconstruc
     if let Some((_, ground)) = floor_sheets.first() {
         stone::read_tops(document, params, ground, &mut model.stone, &mut warnings);
     }
+    // The slabs' edge bands: their profile off the sections, their runs off
+    // the plans.
+    let storeys: Vec<&Sheet> = floor_sheets.iter().map(|(_, sheet)| sheet).collect();
+    slab_edge::read_edges(
+        document,
+        params,
+        &storeys,
+        roof.as_ref(),
+        &mut model,
+        &mut warnings,
+    );
     Ok(Reconstruction {
         model,
         sheets,

@@ -1283,6 +1283,9 @@ the model and the extruded FeatureCollection inline):
     "roof_level_m": 7.2,
     "roof_page": 15,
     "scale_denominator": 75,
+    "section_pages": [
+      20
+    ],
     "slab_thickness_m": 0.5,
     "source": "detected"
   },
@@ -1291,6 +1294,7 @@ the model and the extruded FeatureCollection inline):
     "roof level 7.2 from the roof plan's title (page 15)",
     "roof plan: page 15",
     "elevations: page(s) 16, 17, 18, 19",
+    "sections: page(s) 20",
     "parapet level 7.78 from the highest level mark on the elevations",
     "slab thickness 0.50 from paired level marks on the section",
     "plinth 0.35 from the lowest level mark",
@@ -1301,7 +1305,7 @@ the model and the extruded FeatureCollection inline):
   ],
   "placed": true,
   "roof": {
-    "area_m2": 100.87,
+    "area_m2": 94.39,
     "page": 15,
     "parapet_pieces": 1
   },
@@ -1350,16 +1354,16 @@ the model and the extruded FeatureCollection inline):
 
 | Field | Notes |
 |---|---|
-| `params` | The parameters the model was built from. `source` — `detected` (read off the document) \| `file` (`--params`) \| `model` (proposed by `--llm-params` and confirmed against the drawings). `floors[]` bottom first, one-based `page`, `level_m` / `top_m`; `roof_page` **absent** when the set has no roof plan; `elevation_pages` the elevation sheets the stone piers' heights are read from, **absent** when the set has none; `colours` RGB in 0..1 with a per-channel `tolerance`; `axis` the grid labels the storeys are aligned on, `font_size` **absent** when not pinned. The block is a valid `--params` file. |
+| `params` | The parameters the model was built from. `source` — `detected` (read off the document) \| `file` (`--params`) \| `model` (proposed by `--llm-params` and confirmed against the drawings). `floors[]` bottom first, one-based `page`, `level_m` / `top_m`; `roof_page` **absent** when the set has no roof plan; `elevation_pages` the elevation sheets the stone piers' heights are read from, **absent** when the set has none; `section_pages` the section sheets the slabs' edge bands are read from, **absent** when the set has none; `colours` RGB in 0..1 with a per-channel `tolerance`; `axis` the grid labels the storeys are aligned on, `font_size` **absent** when not pinned. The block is a valid `--params` file. |
 | `params_notes` | One line per detection decision, in reading order. **Absent** for a `--params` file. |
 | `placed` / `crs` | Whether the model is on the map; `geojson` is in `EPSG:4326` when placed and `local_metres` otherwise. `model` is always in local metres. |
 | `georeference` | How it was placed: `source` — `sheet_outline` (matched to the box on `page`, with `residual_m` the mean corner distance and `linework_residual_m` how close the placed slab sits to the sheet's other line work, the latter **absent** when the sheet draws nothing else nearby) \| `references` (`--georeference`, `residual_m` the fit's RMSE). `rotation_degrees` CCW from the model's x axis to east, `origin` the tangent-plane origin, and `transform` `{a, b, tx, ty}` — the model's metres to metres east/north of `origin` as `x' = a·x − b·y + tx`, `y' = b·x + a·y + ty` (`a² + b² = 1`); degrees follow from `origin` and the WGS 84 metres-per-degree at its latitude, which is how a consumer brings the parcel into the model's frame. **Absent** when not placed, with a `warnings` entry. |
 | `bounds` | The placed ground-floor slab's extent, `[[west, south], [east, north]]`. **Absent** when not placed. |
 | `sheets[]` | How each sheet was read: `role` `floor` \| `roof`, the grid `origin_page` in page units, `origin_source` — `axis_bubbles` (both labels sit in drawn circles) \| `axis_text` (no circle; the text position stood in, with a `warnings` entry) \| `fill_centre` (no grid labels at all; the storey is aligned on the centre of its filled drawing, with a `warnings` entry) — and the fill counts by element type. A storey whose sheet the rules could not read, and a roof sheet likewise, are left out with a `warnings` entry rather than failing the run. |
 | `floors[]` | Per-storey counts and areas: `walls`, `glazing`, `door_gaps`, `rooms`, `rooms_area_m2` (sum of the room fills), `slab_area_m2` (envelope plus terraces), `rails`. |
-| `roof` | `page`, `area_m2`, `parapet_pieces`. **Absent** when the set has no roof plan. |
+| `roof` | `page`, `area_m2` (the outline's, less the edge band where one is read), `parapet_pieces`. **Absent** when the set has no roof plan. |
 | `stone_piers` | How many stone pieces `model.stone` holds: the parts of the ground-floor walls outside the envelope, cut at it — a pier that runs on into the house is stone only outside, the rest a wall — and without the parts nowhere thicker than 10 cm, which are walls drawn past the envelope. |
-| `warnings` | Why the model is not placed, a rejected or failed parameter proposal, a sheet whose grid origin came from text, a roof plan that draws no parapet (a ring along the outline stands in), an elevation whose level marks or grid axes do not read, a stone pier whose elevations disagree on its top or that fewer than two elevations draw (it stands to the parapet); absent when none. |
+| `warnings` | Why the model is not placed, a rejected or failed parameter proposal, a sheet whose grid origin came from text, a roof plan that draws no parapet (a ring along the outline stands in), an elevation whose level marks or grid axes do not read, a stone pier whose elevations disagree on its top or that fewer than two elevations draw (it stands to the parapet), a section whose level marks or grid axes do not read, a slab a section cuts with an edge band that no plan draws (it keeps a square edge); absent when none. |
 | `model_file` / `glb_file` / `geojson_file` / `params_file` | Present with `--output`: `model/<document>.model.json`, `.glb`, `.geojson`, `.params.json`, relative to that directory. |
 | `model` | The model itself, inline — the schema below. |
 | `geojson` | The extruded FeatureCollection, inline — the shape below. |
@@ -1376,17 +1380,32 @@ Each floor: `name`, one-based `page`, `z`, `top`, `envelope` (the building
 box as drawn), `slab` (envelope plus terraces, exterior only) with `slab_z`
 `[bottom, top]`, `walls[]`, `glazing[]` with `glazing_z`, `door_gaps[]`,
 `rooms[]` (`area` in m² plus the polygon), `rails[]` (open polylines along
-the terrace edges, upper floors only). `roof`: `outline`, `slab_z`,
-`parapet[]` (the band the roof plan draws, cut to the outline — or, when it
-draws none, a `parapet_width_m` ring along the outline), `parapet_z`;
-**absent** without a roof plan. `stone[]`: the
+the terrace edges, upper floors only), and `edge`, the band the slab's edge
+ends in — **absent** when no section cuts one, or no plan draws where it runs.
+`roof`: `outline` (the envelope, terraces and edge strips the roof plan draws,
+less its edge band), `slab_z`, `parapet[]` (the band the roof plan draws, cut
+to the outline — or, when it draws none, a `parapet_width_m` ring along the
+outline), `parapet_z` and `edge` as a floor's; **absent** without a roof plan.
+An `edge` is `{runs[], z, depth_m, tip_m, chamfer_m, face, section_page,
+plan_page}`: the profile the section on `section_page` cuts at both ends of the
+slab — `z` the band's `[bottom, top]` at full height, `depth_m` from its tip to
+the slab, `tip_m` its height at the tip, `face` (`top` or `bottom`) the face
+that slopes from the tip to full height `chamfer_m` in from it — and the runs
+it takes along the slab's edges, where the plan on `plan_page` (the storey's
+own, or else the roof plan) fills strips as wide as the band beside them. Each
+run is `{inner, outer}`, two open polylines with as many vertices: `inner`
+along the slab's edge and `outer` along the tip, vertex *i* of one facing
+vertex *i* of the other, so a consumer that can slope lofts the band without
+geometry of its own — full height lies `chamfer_m / depth_m` of the way from
+`outer` to `inner`. `stone[]`: the
 piers, each polygon with `top` — the level its face stands to on the
 elevations that draw it — and the `top_pages` it was read from, extruded by
 consumers from the plinth to `top`, or to the parapet when `top` is **absent**
 (fewer than two elevations draw the pier — one alone may be a section filed as
 an elevation — or they disagree by more than 5 cm). Any consumer
-that can extrude a polygon between two z values rebuilds the building; the
-glTF writer and the GeoJSON below are two such consumers.
+that can extrude a polygon between two z values rebuilds the building — an
+edge band in steps; the glTF writer and the GeoJSON below are two such
+consumers.
 
 ### `geojson`
 
@@ -1394,7 +1413,10 @@ One `Polygon` feature per element with `role` — `slab`, `wall`, `glazing`,
 `rail`, `stone`, `roof`, `parapet` — plus `base` and `height` (metres above
 ±0.000), `color` (`#rrggbb`), `area_m2`, and for storey elements `floor`
 (index) and `floor_name`; a `stone` feature's `height` is the pier's `top`,
-or the parapet without one. Ready for a Mapbox/MapLibre `fill-extrusion`
+or the parapet without one. A slab's or the roof's edge band adds `slab` or
+`roof` features, three per run from the tip in: two across the slope, each as
+high as the slope stands halfway along it, then the rest of the band at full
+height. Ready for a Mapbox/MapLibre `fill-extrusion`
 layer, the same shape `building` emits. Rooms are carried flat
 (`role: "room"`, no `height`) with `level`, `area_m2` and a ready `label`
 for a map that names them. `metadata` carries `document`, `source`, `crs`,

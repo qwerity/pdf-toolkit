@@ -6,7 +6,8 @@
 use std::borrow::Cow;
 
 use crate::geom;
-use crate::model::{Model, Polygon2D};
+use crate::model::{ChamferFace, Model, Polygon2D, Ring, SlabEdge};
+use crate::slab_edge;
 
 /// Half the thickness a railing is drawn with, metres.
 const RAIL_HALF_WIDTH_M: f64 = 0.03;
@@ -80,10 +81,11 @@ impl Element<'_> {
     }
 }
 
-/// Everything the model extrudes, in drawing order: each storey's slab,
-/// walls, glazing and stroked rails; the stone piers from the plinth to their
-/// top, or to the parapet without one; the roof slab and its parapet. `plinth_m` and
-/// `rail_height_m` are parameters rather than model facts.
+/// Everything the model extrudes, in drawing order: each storey's slab and
+/// the band its edge ends in, walls, glazing and stroked rails; the stone
+/// piers from the plinth to their top, or to the parapet without one; the
+/// roof slab, its band and its parapet. `plinth_m` and `rail_height_m` are
+/// parameters rather than model facts.
 pub fn elements(model: &Model, plinth_m: f64, rail_height_m: f64) -> Vec<Element<'_>> {
     let mut out: Vec<Element<'_>> = Vec::new();
     for (index, floor) in model.floors.iter().enumerate() {
@@ -99,6 +101,13 @@ pub fn elements(model: &Model, plinth_m: f64, rail_height_m: f64) -> Vec<Element
             Role::Slab,
             floor.slab_z,
         ));
+        out.extend(
+            floor
+                .edge
+                .iter()
+                .flat_map(band_steps)
+                .map(|(polygon, z)| element(Cow::Owned(polygon), Role::Slab, z)),
+        );
         out.extend(
             floor
                 .walls
@@ -145,6 +154,17 @@ pub fn elements(model: &Model, plinth_m: f64, rail_height_m: f64) -> Vec<Element
             floor: None,
             z: roof.slab_z,
         });
+        out.extend(
+            roof.edge
+                .iter()
+                .flat_map(band_steps)
+                .map(|(polygon, z)| Element {
+                    polygon: Cow::Owned(polygon),
+                    role: Role::Roof,
+                    floor: None,
+                    z,
+                }),
+        );
         for parapet in &roof.parapet {
             out.push(Element {
                 polygon: Cow::Borrowed(parapet),
@@ -155,4 +175,46 @@ pub fn elements(model: &Model, plinth_m: f64, rail_height_m: f64) -> Vec<Element
         }
     }
     out
+}
+
+/// A slab's edge band in steps, for a consumer that extrudes but cannot
+/// slope: across the chamfer two strips, each as high as the slope stands
+/// halfway along it, then the rest of the band at full height.
+fn band_steps(edge: &SlabEdge) -> Vec<(Polygon2D, [f64; 2])> {
+    let [bottom, top] = edge.z;
+    let rise = top - bottom - edge.tip_m;
+    let span = |height: f64| match edge.face {
+        ChamferFace::Top => [bottom, bottom + height],
+        ChamferFace::Bottom => [top - height, top],
+    };
+    let share = if edge.depth_m > 0.0 {
+        (edge.chamfer_m / edge.depth_m).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let mut steps = Vec::new();
+    for run in &edge.runs {
+        let middle = across(&run.outer, &run.inner, share / 2.0);
+        let full = across(&run.outer, &run.inner, share);
+        for (from, to, height) in [
+            (&run.outer, &middle, edge.tip_m + rise / 4.0),
+            (&middle, &full, edge.tip_m + rise * 3.0 / 4.0),
+            (&full, &run.inner, top - bottom),
+        ] {
+            steps.extend(
+                slab_edge::between(from, to)
+                    .iter()
+                    .map(|polygon| (geom::to_polygon2d(polygon), span(height))),
+            );
+        }
+    }
+    steps
+}
+
+/// The line `share` of the way from `from` to `to`, vertex by vertex.
+fn across(from: &Ring, to: &Ring, share: f64) -> Ring {
+    from.iter()
+        .zip(to)
+        .map(|(p, q)| [p[0] + (q[0] - p[0]) * share, p[1] + (q[1] - p[1]) * share])
+        .collect()
 }

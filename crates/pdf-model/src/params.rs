@@ -91,6 +91,10 @@ pub struct Params {
     /// heights are read from; empty when the set has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub elevation_pages: Vec<usize>,
+    /// One-based pages of the section sheets, which the slabs' edge bands are
+    /// read from; empty when the set has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub section_pages: Vec<usize>,
     /// Top of the roof slab, metres.
     pub roof_level_m: f64,
     /// Top of the parapet, metres.
@@ -125,6 +129,7 @@ impl Params {
             floors: Vec::new(),
             roof_page: None,
             elevation_pages: Vec::new(),
+            section_pages: Vec::new(),
             roof_level_m: 7.2,
             parapet_level_m: 7.78,
             slab_thickness_m: 0.5,

@@ -232,6 +232,53 @@ fn the_storeys_and_roof_are_summarised_and_carried_inline() {
 }
 
 #[test]
+fn the_callouts_give_each_part_its_material() {
+    if !corpus_available("the_callouts_give_each_part_its_material") {
+        return;
+    }
+    let report = report();
+    let materials = &report["model"]["materials"];
+    // What the facades, the section and the roof plan call each part out in,
+    // and on how many sheets.
+    for (part, material, sheets) in [
+        ("wall", "travertine", 3),
+        ("stone", "rough_stone", 3),
+        ("parapet", "stone", 5),
+        ("rail", "metal", 4),
+        ("glazing", "glass", 3),
+        ("roof", "metal_sheet", 2),
+        ("slab", "concrete", 1),
+        ("plinth", "basalt", 1),
+    ] {
+        let call = &materials[part];
+        assert_eq!(call["material"], material, "{part}: {call}");
+        assert_eq!(
+            call["pages"].as_array().map(Vec::len),
+            Some(sheets),
+            "{part}: {call}"
+        );
+    }
+    // The back facade calls its walls plaster, the other three travertine.
+    let warnings = report["warnings"].as_array().expect("warnings");
+    assert!(
+        warnings.iter().any(|w| w
+            .as_str()
+            .is_some_and(|w| w.starts_with("walls:") && w.contains("plaster (page 19)"))),
+        "{warnings:?}"
+    );
+    // The map draws each part in its material.
+    let features = report["geojson"]["features"].as_array().expect("features");
+    let colour = |role: &str| {
+        features
+            .iter()
+            .find(|f| f["properties"]["role"] == role)
+            .map(|f| f["properties"]["color"].clone())
+    };
+    assert_eq!(colour("wall"), Some(serde_json::json!("#dbceb6")));
+    assert_eq!(colour("stone"), Some(serde_json::json!("#7a6e62")));
+}
+
+#[test]
 fn output_writes_the_model_the_mesh_the_geojson_and_the_params() {
     if !corpus_available("output_writes_the_model_the_mesh_the_geojson_and_the_params") {
         return;

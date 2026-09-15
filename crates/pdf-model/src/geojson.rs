@@ -66,7 +66,7 @@ fn feature(frame: &Frame<'_>, element: &Element<'_>) -> Feature {
     }
     properties.insert("base".into(), json!(round(element.z[0], 3)));
     properties.insert("height".into(), json!(round(element.z[1], 3)));
-    properties.insert("color".into(), json!(element.role.hex()));
+    properties.insert("color".into(), json!(element.hex()));
     properties.insert("area_m2".into(), json!(round(element.polygon.area_m2(), 3)));
     Feature {
         bbox: None,
@@ -171,7 +171,37 @@ mod tests {
             }],
             roof: None,
             stone: vec![square(12.0, 0.0, 0.5).into()],
+            materials: IndexMap::new(),
         }
+    }
+
+    #[test]
+    fn a_part_called_out_in_a_material_takes_its_colour() {
+        use crate::model::{Material, MaterialCall, Part};
+        let mut model = model();
+        let call = |material| MaterialCall {
+            material,
+            text: String::new(),
+            pages: vec![18],
+        };
+        model
+            .materials
+            .insert(Part::Wall, call(Material::Travertine));
+        model.materials.insert(Part::Plinth, call(Material::Basalt));
+        let fc = collection(&model, &Frame { placement: None }, 0.35, 1.1, json!({}));
+        let colour = |role: &str| {
+            fc.features
+                .iter()
+                .map(|f| f.properties.as_ref().unwrap())
+                .find(|p| p["role"] == role)
+                .map(|p| p["color"].clone())
+                .expect("a feature")
+        };
+        // The walls in travertine, the ground slab as the basalt plinth, and
+        // the glazing, which no callout names, in its own colour.
+        assert_eq!(colour("wall"), "#dbceb6");
+        assert_eq!(colour("slab"), "#48484b");
+        assert_eq!(colour("glazing"), "#78aadc");
     }
 
     #[test]

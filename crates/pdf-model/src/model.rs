@@ -130,6 +130,53 @@ pub struct Model {
     /// the elevations, extruded from the plinth to their `top` — or to the
     /// parapet when no elevation draws one.
     pub stone: Vec<Stone>,
+    /// What the callouts on the elevations, sections and roof plan say each
+    /// part of the building is made of; absent when they name nothing the
+    /// rules know.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub materials: IndexMap<Part, MaterialCall>,
+}
+
+/// A part of the building a material callout names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Part {
+    Wall,
+    Glazing,
+    Rail,
+    Stone,
+    Roof,
+    Parapet,
+    Slab,
+    /// The ground storey's slab, where it shows above the ground.
+    Plinth,
+}
+
+/// A material a callout names, from the set the rules know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Material {
+    Travertine,
+    Basalt,
+    Felsite,
+    Tuff,
+    RoughStone,
+    Stone,
+    Plaster,
+    Concrete,
+    Metal,
+    MetalSheet,
+    Glass,
+}
+
+/// A part's material as the callouts give it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MaterialCall {
+    pub material: Material,
+    /// The first callout that names it, as printed.
+    pub text: String,
+    /// The sheets that call it out.
+    pub pages: Vec<usize>,
 }
 
 /// A stone pier: its footprint, and the level its face stands to when the

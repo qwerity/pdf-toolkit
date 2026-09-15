@@ -531,6 +531,7 @@ mod tests {
             }],
             roof: None,
             stone: Vec::new(),
+            materials: IndexMap::new(),
         }
     }
 

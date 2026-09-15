@@ -1348,7 +1348,10 @@ the model and the extruded FeatureCollection inline):
     }
   ],
   "source": "data/plan/4.pdf",
-  "stone_piers": 2
+  "stone_piers": 2,
+  "warnings": [
+    "walls: the callouts name travertine (pages 16, 17, 18) and plaster (page 19); travertine is kept"
+  ]
 }
 ```
 
@@ -1363,7 +1366,7 @@ the model and the extruded FeatureCollection inline):
 | `floors[]` | Per-storey counts and areas: `walls`, `glazing`, `door_gaps`, `rooms`, `rooms_area_m2` (sum of the room fills), `slab_area_m2` (envelope plus terraces), `rails`. |
 | `roof` | `page`, `area_m2` (the outline's, less the edge band where one is read), `parapet_pieces`. **Absent** when the set has no roof plan. |
 | `stone_piers` | How many stone pieces `model.stone` holds: the parts of the ground-floor walls outside the envelope, cut at it — a pier that runs on into the house is stone only outside, the rest a wall — and without the parts nowhere thicker than 10 cm, which are walls drawn past the envelope. |
-| `warnings` | Why the model is not placed, a rejected or failed parameter proposal, a sheet whose grid origin came from text, a roof plan that draws no parapet (a ring along the outline stands in), an elevation whose level marks or grid axes do not read, a stone pier whose elevations disagree on its top or that fewer than two elevations draw (it stands to the parapet), a section whose level marks or grid axes do not read, a slab a section cuts with an edge band that no plan draws (it keeps a square edge); absent when none. |
+| `warnings` | Why the model is not placed, a rejected or failed parameter proposal, a sheet whose grid origin came from text, a roof plan that draws no parapet (a ring along the outline stands in), an elevation whose level marks or grid axes do not read, a stone pier whose elevations disagree on its top or that fewer than two elevations draw (it stands to the parapet), a section whose level marks or grid axes do not read, a slab a section cuts with an edge band that no plan draws (it keeps a square edge), a part whose callouts name more than one material (the one the most sheets name is kept); absent when none. |
 | `model_file` / `glb_file` / `geojson_file` / `params_file` | Present with `--output`: `model/<document>.model.json`, `.glb`, `.geojson`, `.params.json`, relative to that directory. |
 | `model` | The model itself, inline — the schema below. |
 | `geojson` | The extruded FeatureCollection, inline — the shape below. |
@@ -1371,7 +1374,7 @@ the model and the extruded FeatureCollection inline):
 
 ### `model` (the `model.json` schema)
 
-`{units: "m", up: "z", source, scale: "1:75", levels, floors[], roof?, stone[]}`.
+`{units: "m", up: "z", source, scale: "1:75", levels, floors[], roof?, stone[], materials?}`.
 Polygons are `{outer: [[x, y], …], holes: [[[x, y], …], …]}` in metres
 relative to the grid intersection the parameters name, outer rings
 counter-clockwise, holes clockwise, no closing repeat. `levels` names
@@ -1402,7 +1405,16 @@ piers, each polygon with `top` — the level its face stands to on the
 elevations that draw it — and the `top_pages` it was read from, extruded by
 consumers from the plinth to `top`, or to the parapet when `top` is **absent**
 (fewer than two elevations draw the pier — one alone may be a section filed as
-an elevation — or they disagree by more than 5 cm). Any consumer
+an elevation — or they disagree by more than 5 cm). `materials`: what the
+callouts on the elevations, sections and roof plan say each part is made of,
+keyed by part — `wall`, `glazing`, `rail`, `stone`, `roof`, `parapet`, `slab`,
+`plinth` (the ground storey's slab where it shows) — each `{material, text,
+pages}`: `material` one of `travertine`, `basalt`, `felsite`, `tuff`,
+`rough_stone`, `stone`, `plaster`, `concrete`, `metal`, `metal_sheet`,
+`glass`; `text` the first callout naming it, as printed; `pages` the sheets
+that call it out. A part called out in two materials keeps the one the most
+sheets name; **absent** when no callout names a part and a material the rules
+know. Any consumer
 that can extrude a polygon between two z values rebuilds the building — an
 edge band in steps; the glTF writer and the GeoJSON below are two such
 consumers.
@@ -1411,7 +1423,8 @@ consumers.
 
 One `Polygon` feature per element with `role` — `slab`, `wall`, `glazing`,
 `rail`, `stone`, `roof`, `parapet` — plus `base` and `height` (metres above
-±0.000), `color` (`#rrggbb`), `area_m2`, and for storey elements `floor`
+±0.000), `color` (`#rrggbb`: the material the callouts give the element's part,
+the ground storey's slab as the plinth, or the role's own), `area_m2`, and for storey elements `floor`
 (index) and `floor_name`; a `stone` feature's `height` is the pier's `top`,
 or the parapet without one. A slab's or the roof's edge band adds `slab` or
 `roof` features, three per run from the tip in: two across the slope, each as

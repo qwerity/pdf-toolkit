@@ -130,7 +130,7 @@ fn layers(model: &Model, plinth_m: f64, rail_height_m: f64) -> Vec<Layer> {
                 &geom::from_polygon2d(&element.polygon),
                 element.z[0],
                 element.z[1],
-                element.role.colour(),
+                element.colour,
             );
     }
     layers.into_values().filter(|l| !l.is_empty()).collect()

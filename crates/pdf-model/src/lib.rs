@@ -24,6 +24,7 @@ pub mod elements;
 pub mod elevation;
 pub mod geojson;
 pub mod geom;
+pub mod materials;
 pub mod mesh;
 pub mod model;
 pub mod params;
@@ -140,6 +141,8 @@ pub fn reconstruct(document: &PdfDocument, params: &Params) -> Result<Reconstruc
         &mut model,
         &mut warnings,
     );
+    // What the elevations, sections and roof plan call each part out in.
+    model.materials = materials::read(document, params, &mut warnings);
     Ok(Reconstruction {
         model,
         sheets,

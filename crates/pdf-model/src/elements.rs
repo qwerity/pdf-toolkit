@@ -5,8 +5,10 @@
 
 use std::borrow::Cow;
 
+use indexmap::IndexMap;
+
 use crate::geom;
-use crate::model::{ChamferFace, Model, Polygon2D, Ring, SlabEdge};
+use crate::model::{ChamferFace, Material, MaterialCall, Model, Part, Polygon2D, Ring, SlabEdge};
 use crate::slab_edge;
 
 /// Half the thickness a railing is drawn with, metres.
@@ -51,8 +53,24 @@ impl Role {
 
     /// The same colour as `#rrggbb`, for a map's `color` property.
     pub fn hex(self) -> String {
-        let [r, g, b, _] = self.colour();
-        format!("#{r:02x}{g:02x}{b:02x}")
+        hex(self.colour())
+    }
+}
+
+/// A material's colour, RGBA in 0..=255.
+pub fn material_colour(material: Material) -> [u8; 4] {
+    match material {
+        Material::Travertine => [219, 206, 182, 255],
+        Material::Basalt => [72, 72, 75, 255],
+        Material::Felsite => [196, 172, 152, 255],
+        Material::Tuff => [196, 142, 112, 255],
+        Material::RoughStone => [122, 110, 98, 255],
+        Material::Stone => [206, 199, 186, 255],
+        Material::Plaster => [236, 233, 226, 255],
+        Material::Concrete => [186, 186, 181, 255],
+        Material::Metal => [58, 61, 66, 255],
+        Material::MetalSheet => [150, 156, 162, 255],
+        Material::Glass => [120, 170, 220, 120],
     }
 }
 
@@ -64,6 +82,9 @@ pub struct Element<'a> {
     pub floor: Option<(usize, &'a str)>,
     /// `[base, top]`, metres.
     pub z: [f64; 2],
+    /// RGBA in 0..=255: the material the drawings call out for the element's
+    /// part, else the role's own colour.
+    pub colour: [u8; 4],
 }
 
 impl Element<'_> {
@@ -79,6 +100,11 @@ impl Element<'_> {
             (_, role) => role.name().into(),
         }
     }
+
+    /// The element's colour as `#rrggbb`, for a map's `color` property.
+    pub fn hex(&self) -> String {
+        hex(self.colour)
+    }
 }
 
 /// Everything the model extrudes, in drawing order: each storey's slab and
@@ -87,6 +113,7 @@ impl Element<'_> {
 /// roof slab, its band and its parapet. `plinth_m` and `rail_height_m` are
 /// parameters rather than model facts.
 pub fn elements(model: &Model, plinth_m: f64, rail_height_m: f64) -> Vec<Element<'_>> {
+    let materials = &model.materials;
     let mut out: Vec<Element<'_>> = Vec::new();
     for (index, floor) in model.floors.iter().enumerate() {
         let storey = Some((index, floor.name.as_str()));
@@ -95,6 +122,7 @@ pub fn elements(model: &Model, plinth_m: f64, rail_height_m: f64) -> Vec<Element
             role,
             floor: storey,
             z,
+            colour: colour(role, Some(index), materials),
         };
         out.push(element(
             Cow::Borrowed(&floor.slab),
@@ -145,36 +173,59 @@ pub fn elements(model: &Model, plinth_m: f64, rail_height_m: f64) -> Vec<Element
             role: Role::Stone,
             floor: None,
             z: [ground - plinth_m, pier.top.unwrap_or(parapet_top)],
+            colour: colour(Role::Stone, None, materials),
         });
     }
     if let Some(roof) = &model.roof {
-        out.push(Element {
-            polygon: Cow::Borrowed(&roof.outline),
-            role: Role::Roof,
+        let element = |polygon, role, z| Element {
+            polygon,
+            role,
             floor: None,
-            z: roof.slab_z,
-        });
+            z,
+            colour: colour(role, None, materials),
+        };
+        out.push(element(
+            Cow::Borrowed(&roof.outline),
+            Role::Roof,
+            roof.slab_z,
+        ));
         out.extend(
             roof.edge
                 .iter()
                 .flat_map(band_steps)
-                .map(|(polygon, z)| Element {
-                    polygon: Cow::Owned(polygon),
-                    role: Role::Roof,
-                    floor: None,
-                    z,
-                }),
+                .map(|(polygon, z)| element(Cow::Owned(polygon), Role::Roof, z)),
         );
-        for parapet in &roof.parapet {
-            out.push(Element {
-                polygon: Cow::Borrowed(parapet),
-                role: Role::Parapet,
-                floor: None,
-                z: roof.parapet_z,
-            });
-        }
+        out.extend(
+            roof.parapet
+                .iter()
+                .map(|parapet| element(Cow::Borrowed(parapet), Role::Parapet, roof.parapet_z)),
+        );
     }
     out
+}
+
+/// The colour an element is drawn in: the material the drawings call out for
+/// its part — the ground storey's slab shows as the plinth, when one is called
+/// out — or its role's own.
+fn colour(role: Role, floor: Option<usize>, materials: &IndexMap<Part, MaterialCall>) -> [u8; 4] {
+    let parts: &[Part] = match (role, floor) {
+        (Role::Slab, Some(0)) => &[Part::Plinth, Part::Slab],
+        (Role::Slab, _) => &[Part::Slab],
+        (Role::Wall, _) => &[Part::Wall],
+        (Role::Glazing, _) => &[Part::Glazing],
+        (Role::Rail, _) => &[Part::Rail],
+        (Role::Stone, _) => &[Part::Stone],
+        (Role::Roof, _) => &[Part::Roof],
+        (Role::Parapet, _) => &[Part::Parapet],
+    };
+    parts
+        .iter()
+        .find_map(|part| materials.get(part))
+        .map_or(role.colour(), |call| material_colour(call.material))
+}
+
+fn hex([r, g, b, _]: [u8; 4]) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
 }
 
 /// A slab's edge band in steps, for a consumer that extrudes but cannot

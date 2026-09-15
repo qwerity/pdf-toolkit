@@ -76,6 +76,7 @@ pub fn build(
         floors: Vec::new(),
         roof: None,
         stone: Vec::new(),
+        materials: IndexMap::new(),
     };
     for (index, input) in floors.iter().enumerate() {
         // A storey whose sheet carries none of the fills the rules read is

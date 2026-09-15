@@ -267,7 +267,7 @@ fn dossier_reports_the_contract_shape_on_a_plain_document() {
     let argv = argv::dossier(pdf.to_str().expect("utf-8 path"));
     let report = run(&as_args(&argv)).expect_success().json();
 
-    assert_eq!(report["schema_version"], "0.3.0");
+    assert_eq!(report["schema_version"], "0.4.0");
     assert_eq!(report["page_count"], 2);
     assert_eq!(report["stats"]["embedded_text"], 2);
     for n in [1, 2] {

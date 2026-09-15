@@ -35,7 +35,7 @@ use crate::entities::{self, Found, Template};
 use crate::facts::{self, Fact, FactKind};
 use crate::report::*;
 use crate::trust::{Trust, group_trust, looks_like_extract, page_trust};
-use crate::{checks, legacy, numbers, qr, request, text_signals};
+use crate::{access, checks, legacy, numbers, qr, request, text_signals};
 
 /// Whether a label marks a page whose geometry export is worth referencing:
 /// the classifier's own drawing classes, plus the labels this schema adds on
@@ -212,7 +212,41 @@ pub fn assemble(analysis: &DossierAnalysis, options: &DossierOptions) -> Result<
         .filter(|(_, f)| f.trust == Trust::Unknown)
         .map(|(input, _)| input.number)
         .collect();
-    let page_checks = checks::run(&page_facts, application_code.as_deref(), &unread);
+    // The credentials the Committee's documents print, read off the
+    // (legacy-decoded) text of the pages labelled as such, and the
+    // certificate pages the access check measures them against — one pass,
+    // since both are the same question asked of the same page.
+    let mut access: Vec<access::DocumentAccess> = Vec::new();
+    let mut certificate_pages: Vec<(usize, Trust)> = Vec::new();
+    for (input, fact) in analysis.inputs.iter().zip(&facts) {
+        if fact.labels.iter().any(|l| l == "cadastral_certificate") {
+            certificate_pages.push((input.number, fact.trust));
+        }
+        let printed = access::page_access(
+            input.number,
+            &fact.labels,
+            &legacy::decode_legacy(&input.text),
+        );
+        if printed.is_empty() {
+            // A scanned header is the model's to read. Two readings of one
+            // secret would be a misread, so the printed pair always wins.
+            access.extend(
+                answers
+                    .and_then(|a| a.page(input.number))
+                    .map(|a| access::answered_access(input.number, &a.access))
+                    .unwrap_or_default(),
+            );
+        } else {
+            access.extend(printed);
+        }
+    }
+    let page_checks = checks::run(
+        &page_facts,
+        application_code.as_deref(),
+        &unread,
+        &certificate_pages,
+        &access,
+    );
 
     emit_report(
         analysis,
@@ -221,6 +255,7 @@ pub fn assemble(analysis: &DossierAnalysis, options: &DossierOptions) -> Result<
         request,
         page_facts,
         page_checks,
+        access,
         answers,
         options,
         &vector_pages,
@@ -815,6 +850,51 @@ struct EntityAccumulator {
     sources: Vec<EntitySource>,
 }
 
+/// Strikes this page's passcodes out of every free-text field of a finished
+/// annotation, leaving the certificate number and everything else intact.
+///
+/// ONE CHOKE POINT, DELIBERATELY. The passcode is a bearer credential: it is
+/// kept once, structurally, in `groups[].access`, and must appear nowhere a
+/// reader would not expect a secret. Redacting field by field at each
+/// assignment meant the next text-bearing field added to `PageAnnotation`
+/// would leak by omission — `extraction.vlm.extracted` already did, since it
+/// is built from the same title and notes before they were cleaned. Running
+/// over the assembled annotation instead makes coverage the default.
+///
+/// `qr_codes[].data` is deliberately NOT redacted: its contract is the
+/// payload as decoded, a reference letter's QR encodes the register's own
+/// link, and truncating it would misreport what the page carries.
+fn redact_page_passcodes(page: &mut PageAnnotation, access: &[access::DocumentAccess]) {
+    let codes: Vec<&str> = access
+        .iter()
+        .filter(|a| a.page == page.page_number)
+        .map(|a| a.passcode.as_str())
+        .collect();
+    if codes.is_empty() {
+        return;
+    }
+    let strike = |text: &mut String| {
+        for code in &codes {
+            if text.contains(*code) {
+                *text = text.replace(*code, "[գաղտնաբառ]");
+            }
+        }
+    };
+    let mut fields: Vec<&mut String> = Vec::new();
+    fields.extend(page.title.as_mut());
+    fields.extend(page.notes.as_mut());
+    fields.extend(page.extraction.text.as_mut());
+    if let Some(vlm) = page.extraction.vlm.as_mut()
+        && let Some(extracted) = vlm.extracted.as_mut()
+    {
+        fields.extend(extracted.summary.as_mut());
+        fields.extend(extracted.notes.as_mut());
+    }
+    for field in fields {
+        strike(field);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_report(
     analysis: &DossierAnalysis,
@@ -823,6 +903,7 @@ fn emit_report(
     request: Option<request::Request>,
     page_facts: Vec<Fact>,
     page_checks: Vec<checks::Check>,
+    access: Vec<access::DocumentAccess>,
     answers: Option<&Answers>,
     options: &DossierOptions,
     vector_pages: &HashMap<usize, &PageVector>,
@@ -955,7 +1036,7 @@ fn emit_report(
         )?;
 
         page_trusts.insert(n, fact.trust);
-        pages_out.push(PageAnnotation {
+        let mut annotation = PageAnnotation {
             page_number: n,
             labels: fact.labels,
             trust: fact.trust,
@@ -980,7 +1061,9 @@ fn emit_report(
             related_pages: fact.related,
             georeference,
             cad,
-        });
+        };
+        redact_page_passcodes(&mut annotation, &access);
+        pages_out.push(annotation);
     }
 
     let mut groups_out = Vec::new();
@@ -1040,6 +1123,15 @@ fn emit_report(
             pages: accumulator.pages.iter().copied().collect(),
             entities: accumulator.entities.iter().cloned().collect(),
             georeference,
+            access: if kind == "ownership" || kind == "administrative" {
+                access
+                    .iter()
+                    .filter(|a| accumulator.pages.contains(&a.page))
+                    .cloned()
+                    .collect()
+            } else {
+                Vec::new()
+            },
         });
     }
 

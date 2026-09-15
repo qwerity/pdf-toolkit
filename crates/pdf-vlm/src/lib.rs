@@ -27,7 +27,9 @@ use serde::Deserialize;
 
 use llm_providers::{Client, Request};
 use pdf_core::page::{open_document, page_index};
-use pdf_dossier::answers::{Answers, FactAnswer, HandwritingAnswer, PageAnswer, PersonMeta};
+use pdf_dossier::answers::{
+    AccessAnswer, Answers, FactAnswer, HandwritingAnswer, PageAnswer, PersonMeta,
+};
 use pdf_dossier::entities::entity_id;
 use pdf_render::{PngSize, render_page, write_png};
 
@@ -189,6 +191,10 @@ Look at the page image and return ONLY a JSON object (no markdown fences) with:
      "value": "...",     // the number or name exactly as printed
      "unit": "ha"|"m2",  // areas only
      "subject": "..."}   // building_area: the building's code; planned_area: "fence"|"building"
+  ],
+  "access": [            // the header line of an ownership certificate (ՎԿԱՅԱԿԱՆ) or a
+                         // reference letter (ՏԵՂԵԿԱՆՔ): its number and the passcode after "գաղտնաբառ"
+    {"kind": "certificate"|"reference", "number": "...", "passcode": "..."}
   ]
 }
 Rules: report only what is visible; transcribe numbers exactly; do not guess
@@ -198,7 +204,11 @@ the facts are: section 4's "Մակերեսի չափը (հա)" as parcel_area wit
 section 1's subject(s) as owner, section 2's address as address, section 4's
 code as cadastral_code, and every row of section 5's buildings table as a
 building_area (subject = the row's code, unit m2). On a ՏԵՂԵԿԱՆՔ or fee table
-the "Դիմող" line is the applicant."#;
+the "Դիմող" line is the applicant. The certificate's header reads
+"ՎԿԱՅԱԿԱՆ N 00000000-00-0000, գաղտնաբառ՝ XXXXXXXXXXXX": report it under access
+with the number and the 12-character passcode exactly as printed (Latin letters
+and digits); a reference letter's "Փաստաթղթի համար՝ …" / "գաղտնաբառ՝ …" pair
+likewise, kind reference. Omit access when either part is not clearly legible."#;
 
 /// The reply shape the prompt asks for.
 #[derive(Debug, Deserialize)]
@@ -216,6 +226,15 @@ struct RawAnswer {
     entities: Vec<RawEntity>,
     #[serde(default)]
     facts: Vec<RawFact>,
+    #[serde(default)]
+    access: Vec<RawAccess>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawAccess {
+    kind: String,
+    number: String,
+    passcode: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -289,6 +308,16 @@ fn parse_reply(reply: &str) -> Result<(PageAnswer, IndexMap<String, PersonMeta>)
                 value: f.value,
                 unit: f.unit,
                 subject: f.subject,
+            })
+            .collect(),
+        access: raw
+            .access
+            .into_iter()
+            .filter(|a| !a.number.trim().is_empty() && !a.passcode.trim().is_empty())
+            .map(|a| AccessAnswer {
+                kind: a.kind,
+                number: a.number,
+                passcode: a.passcode,
             })
             .collect(),
         ..Default::default()

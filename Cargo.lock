@@ -1480,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-downsample"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "fast_image_resize",

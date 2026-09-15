@@ -80,6 +80,19 @@ pub struct PageAnswer {
     /// what a scanned certificate states about the parcel.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub facts: Vec<FactAnswer>,
+    /// The number and passcode a scanned certificate or reference letter
+    /// prints in its header, read by the model (`groups[].access`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub access: Vec<AccessAnswer>,
+}
+
+/// One document's credentials as a vision answer states them: `kind` is
+/// `certificate` or `reference`, `number` and `passcode` as printed.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AccessAnswer {
+    pub kind: String,
+    pub number: String,
+    pub passcode: String,
 }
 
 /// One figure a vision answer states: `kind` is a `FactKind` name

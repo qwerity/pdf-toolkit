@@ -15,11 +15,12 @@ use serde_json::Value;
 
 use pdf_classify::{Confidence, PageClass};
 
+use crate::access::DocumentAccess;
 use crate::checks::Check;
 use crate::facts::Fact;
 use crate::trust::Trust;
 
-pub const SCHEMA_VERSION: &str = "0.3.0";
+pub const SCHEMA_VERSION: &str = "0.4.0";
 
 /// How a page's text is recovered.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -317,6 +318,10 @@ pub struct Group {
     /// Present on `drawings` groups.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub georeference: Option<GroupGeoreference>,
+    /// On `ownership` and `administrative` groups: the number and passcode
+    /// the Committee's document prints on itself. No link — see `access`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub access: Vec<DocumentAccess>,
 }
 
 #[derive(Debug, Serialize)]

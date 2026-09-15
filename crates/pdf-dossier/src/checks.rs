@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
+use crate::access::{AccessKind, DocumentAccess};
 use crate::facts::{Fact, FactKind, same_address};
 use crate::trust::Trust;
 
@@ -37,6 +38,9 @@ pub enum CheckKind {
     Address,
     /// The certificate number as printed and as cited.
     CertificateNumber,
+    /// Whether each ownership certificate prints the number and passcode
+    /// that identify it to the register.
+    CertificateAccess,
     /// Official pages nothing has read yet.
     OfficialReadability,
 }
@@ -692,8 +696,11 @@ pub fn run(
     facts: &[Fact],
     application_code: Option<&str>,
     unread_official: &[usize],
+    certificate_pages: &[(usize, Trust)],
+    access: &[DocumentAccess],
 ) -> Vec<Check> {
     let mut out = Vec::new();
+    check_certificate_access(certificate_pages, access, &mut out);
     if !unread_official.is_empty() {
         out.push(Check {
             kind: CheckKind::OfficialReadability,
@@ -718,6 +725,78 @@ pub fn run(
     check_address(facts, &subject, &mut out);
     check_certificate_number(facts, &subject, &mut out);
     out
+}
+
+/// Every page that reads as an ownership certificate must print the number
+/// and the passcode («գաղտնաբառ») the register asks for; a dossier with no
+/// such page cannot be verified at all. Reported whenever the answer is no,
+/// so the absence of a certificate is never silent.
+///
+/// **The passcode is never repeated here.** It is a bearer credential, and
+/// `build` strips it from the page's free text for that reason; a check that
+/// printed it back into `checks[]` would undo that. This records presence
+/// only — which page, whose page, and whether the pair was read — and the
+/// values stay in `groups[].access`.
+fn check_certificate_access(
+    certificate_pages: &[(usize, Trust)],
+    access: &[DocumentAccess],
+    out: &mut Vec<Check>,
+) {
+    let witnesses: Vec<Witness> = certificate_pages
+        .iter()
+        .map(|&(page, trust)| {
+            let found = access
+                .iter()
+                .find(|a| a.page == page && a.kind == AccessKind::Certificate);
+            Witness {
+                page,
+                trust,
+                // The number identifies the document and is printed all over
+                // it; only the passcode is withheld.
+                printed: found.map_or_else(|| "—".to_string(), |a| format!("N {}", a.number)),
+                number: None,
+                text: found.map(|a| a.number.clone()),
+                status: found.map_or(CheckStatus::Unreadable, |_| CheckStatus::Agree),
+                delta: None,
+            }
+        })
+        .collect();
+    let unread: Vec<String> = witnesses
+        .iter()
+        .filter(|w| w.status != CheckStatus::Agree)
+        .map(|w| format!("page {}", w.page))
+        .collect();
+    let note = if witnesses.is_empty() {
+        "no page reads as a Committee ownership certificate, so it prints no number and \
+         passcode to verify the register's copy against"
+            .to_string()
+    } else if unread.is_empty() {
+        format!(
+            "every certificate page prints its number and passcode ({})",
+            witnesses
+                .iter()
+                .map(|w| format!("page {}", w.page))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else {
+        format!(
+            "certificate {} print no readable number and passcode",
+            unread.join(", ")
+        )
+    };
+    out.push(Check {
+        kind: CheckKind::CertificateAccess,
+        subject: None,
+        status: if witnesses.is_empty() {
+            CheckStatus::Unreadable
+        } else {
+            worst(witnesses.iter().map(|w| w.status))
+        },
+        reference: None,
+        witnesses,
+        note,
+    });
 }
 
 #[cfg(test)]
@@ -755,6 +834,51 @@ mod tests {
             .expect("check present")
     }
 
+    fn access(page: usize, number: &str, passcode: &str) -> DocumentAccess {
+        DocumentAccess {
+            kind: AccessKind::Certificate,
+            number: number.into(),
+            passcode: passcode.into(),
+            page,
+        }
+    }
+
+    #[test]
+    fn a_certificate_that_prints_its_credentials_passes_and_one_that_does_not_is_reported() {
+        let pages = [(5, Trust::Official), (6, Trust::Official)];
+        let both = [
+            access(5, "20300101-01-0001", "0AAAA0AAA0AA"),
+            access(6, "20300101-01-0001", "0AAAA0AAA0AA"),
+        ];
+        let checks = run(&[], None, &[], &pages, &both);
+        let check = by_kind(&checks, CheckKind::CertificateAccess);
+        assert_eq!(check.status, CheckStatus::Agree);
+        assert_eq!(check.witnesses.len(), 2);
+        assert_eq!(check.witnesses[0].printed, "N 20300101-01-0001");
+        // The passcode is a bearer credential: `checks[]` records that the pair was read,
+        // never the secret itself. It lives once, in `groups[].access`.
+        let serialised = serde_json::to_string(&checks).expect("checks serialise");
+        assert!(
+            !serialised.contains("0AAAA0AAA0AA"),
+            "the passcode must not reach checks[]"
+        );
+
+        let checks = run(&[], None, &[], &pages, &both[..1]);
+        let check = by_kind(&checks, CheckKind::CertificateAccess);
+        assert_eq!(check.status, CheckStatus::Unreadable);
+        assert_eq!(check.witnesses[1].status, CheckStatus::Unreadable);
+        assert!(check.note.contains("page 6"), "{}", check.note);
+    }
+
+    #[test]
+    fn a_dossier_without_a_certificate_page_says_so() {
+        let checks = run(&[], None, &[], &[], &[]);
+        let check = by_kind(&checks, CheckKind::CertificateAccess);
+        assert_eq!(check.status, CheckStatus::Unreadable);
+        assert!(check.witnesses.is_empty());
+        assert!(check.note.contains("no page reads"), "{}", check.note);
+    }
+
     #[test]
     fn a_rounded_copy_agrees_and_a_wrong_one_does_not() {
         let mut cert = num(
@@ -777,7 +901,7 @@ mod tests {
             ),
             num(FactKind::ParcelArea, 12, Trust::Applicant, "265 քմ", 265.0),
         ];
-        let checks = run(&facts, Some("01-011-0912-0146"), &[]);
+        let checks = run(&facts, Some("01-011-0912-0146"), &[], &[], &[]);
         let area = by_kind(&checks, CheckKind::ParcelArea);
         assert_eq!(area.status, CheckStatus::NearMiss);
         let statuses: Vec<CheckStatus> = area.witnesses.iter().map(|w| w.status).collect();
@@ -833,7 +957,7 @@ mod tests {
                 "01-011-0912-0141",
             ),
         ];
-        let checks = run(&facts, Some("01-011-0912-0146"), &[]);
+        let checks = run(&facts, Some("01-011-0912-0146"), &[], &[], &[]);
         let codes = by_kind(&checks, CheckKind::CadastralCode);
         let got: Vec<(usize, CheckStatus)> =
             codes.witnesses.iter().map(|w| (w.page, w.status)).collect();
@@ -868,7 +992,7 @@ mod tests {
             ),
             partial,
         ];
-        let checks = run(&facts, Some("01-008-0857-0041"), &[]);
+        let checks = run(&facts, Some("01-008-0857-0041"), &[], &[], &[]);
         assert_eq!(
             by_kind(&checks, CheckKind::CadastralCode).status,
             CheckStatus::Disagree
@@ -902,7 +1026,7 @@ mod tests {
                 "person:arman-zohrabyan",
             ),
         ];
-        let checks = run(&facts, Some("01-008-0731-0612"), &[]);
+        let checks = run(&facts, Some("01-008-0731-0612"), &[], &[], &[]);
         let who = by_kind(&checks, CheckKind::Applicant);
         assert_eq!(who.status, CheckStatus::Disagree);
         assert_eq!(who.witnesses[1].status, CheckStatus::Agree);
@@ -925,7 +1049,7 @@ mod tests {
             a,
             b,
         ];
-        let checks = run(&facts, Some("01-011-0912-0146"), &[]);
+        let checks = run(&facts, Some("01-011-0912-0146"), &[], &[], &[]);
         let fence = by_kind(&checks, CheckKind::PlannedArea);
         assert_eq!(fence.status, CheckStatus::Disagree);
         assert_eq!(fence.witnesses[0].page, 8);
@@ -951,7 +1075,7 @@ mod tests {
         );
         note.subject = Some("-001".into());
         let facts = vec![reg, note];
-        let checks = run(&facts, Some("01-008-0857-0041"), &[]);
+        let checks = run(&facts, Some("01-008-0857-0041"), &[], &[], &[]);
         assert_eq!(
             by_kind(&checks, CheckKind::BuildingArea).status,
             CheckStatus::Disagree

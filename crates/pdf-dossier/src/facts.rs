@@ -600,7 +600,7 @@ mod tests {
 
     #[test]
     fn a_certificate_states_code_area_owner_number_and_address() {
-        let text = "1. ԳՐԱՆՑՎԱԾ ԻՐԱՎՈՒՆՔԻ ՍՈՒԲՅԵԿՏ(ՆԵՐ)\nՆԱՐԻՆԵ ԱՎԵՏԻՍՅԱՆ ՀԱՅԿԻ\n2. ԱՆՇԱՐԺ ԳՈՒՅՔԻ ԳՏՆՎԵԼՈՒ ՎԱՅՐԸ ԵՎ ԱՆՎԱՆՈՒՄԸ\nՔ.Երևան, Շենգավիթ, Արշակունյաց պողոտա 212/6 բնակելի տուն\n4. ՀՈՂԱՄԱՍԻ ԲՆՈՒԹԱԳՐԵՐԸ\nԿադաստրային ծածկագիրը՝ 01-011-0912-0146 Մակերեսի չափը (հա)՝ 0.02612 Նպատակային\nՎԿԱՅԱԿԱՆ N 11052025-01-0226, գաղտնաբառ՝ 0FFFF0FFF0FF";
+        let text = "1. ԳՐԱՆՑՎԱԾ ԻՐԱՎՈՒՆՔԻ ՍՈՒԲՅԵԿՏ(ՆԵՐ)\nԱՆՈՒՆ ԱԶԳԱՆՈՒՆՅԱՆ ՀԱՅՐԻ\n2. ԱՆՇԱՐԺ ԳՈՒՅՔԻ ԳՏՆՎԵԼՈՒ ՎԱՅՐԸ ԵՎ ԱՆՎԱՆՈՒՄԸ\nՔ.Երևան, Շենգավիթ, Օրինակ փողոց 1/1 բնակելի տուն\n4. ՀՈՂԱՄԱՍԻ ԲՆՈՒԹԱԳՐԵՐԸ\nԿադաստրային ծածկագիրը՝ 01-011-0000-0001 Մակերեսի չափը (հա)՝ 0.02612 Նպատակային\nՎԿԱՅԱԿԱՆ N 20300101-01-0001, գաղտնաբառ՝ 0AAAA0AAA0AA";
         let l = labels(&["cadastral_certificate", "text_document"]);
         let facts = page_facts(&input(5, &l, text, Trust::Official), None, None);
         let kinds: Vec<FactKind> = facts.iter().map(|f| f.kind).collect();
@@ -615,12 +615,12 @@ mod tests {
             ]
         );
         assert_eq!(facts[1].number, Some(261.2));
-        assert_eq!(facts[3].text.as_deref(), Some("person:avetisyan-narine"));
-        assert_eq!(facts[4].text.as_deref(), Some("արշակու շենգավի|212/6"));
+        assert_eq!(facts[3].text.as_deref(), Some("person:anun-azganunyan"));
+        assert_eq!(facts[4].text.as_deref(), Some("շենգավի օրինակ|1/1"));
         assert!(
             facts
                 .iter()
-                .all(|f| f.about.as_deref() == Some("01-011-0912-0146"))
+                .all(|f| f.about.as_deref() == Some("01-011-0000-0001"))
         );
     }
 

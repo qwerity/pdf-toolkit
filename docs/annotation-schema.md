@@ -1,4 +1,4 @@
-# Dossier annotation schema — 0.3.0
+# Dossier annotation schema — 0.4.0
 
 The output of `pdf-toolkit dossier` (command contract: the `dossier` section
 of `json-api.md`). One JSON per document: every page's labels, extraction
@@ -98,7 +98,7 @@ certificate), `cadastral_reference` (ՏԵՂԵԿԱՆՔ), `passport`, `id_card`,
 
 ## `groups[]`
 
-`{"id", "kind", "trust", "title", "pages", "entities"}` — `kind` one of `identity`,
+`{"id", "kind", "trust", "title", "pages", "entities", "access"?}` — `kind` one of `identity`,
 `ownership`, `application`, `administrative`, `financial`, `drawings`,
 `technical`. A deterministic-only run (no answers) derives structural groups
 with fixed ids — `application`, `certificate:<number>` (one per ownership
@@ -109,6 +109,13 @@ name instead. `trust` is the document's: `official` once any page of the group
 is the Committee's, else `identity` for identity papers, else `applicant`. A dossier can hold several `drawings` groups (e.g. cadastre
 extracts vs. the design album vs. a demolition part); georeference application
 respects that boundary:
+
+`groups[].access[]` on `ownership` and `administrative` groups (0.4.0): the
+credentials the document prints on itself — the number and passcode
+(«գաղտնաբառ») from a certificate's or reference letter's header: `{"kind":
+"certificate" | "reference", "number", "passcode", "page"}`. Absent when the
+pages print none. The toolkit reads the pair and nothing more; it builds no
+link and retrieves nothing.
 
 `groups[].georeference` on `drawings` groups:
 `{"status": "applied" | "same_site_unverified" | "none", "source_pages",

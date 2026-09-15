@@ -664,7 +664,7 @@ changes its rates. Model quality on the annotation task is compared in
       "trust": "applicant"
     }
   ],
-  "schema_version": "0.3.0",
+  "schema_version": "0.4.0",
   "source": "letter.pdf",
   "stats": {
     "embedded_text": 1,
@@ -712,6 +712,13 @@ Branch on these enums, not on prose:
   `none`. `applied` only where a placed fit is in that group's own drawing
   frame; a floor plan of the same building is `same_site_unverified` —
   geometry decides, never proximity.
+- `groups[].access[]` — on `ownership` and `administrative` groups, the
+  credentials the Committee's document prints on itself: `{"kind":
+  "certificate" \| "reference", "number", "passcode", "page"}`. The number and
+  passcode («գաղտնաբառ») are verbatim from the certificate's or reference
+  letter's header, and together they are what the register asks for before it
+  will show its own copy. The toolkit reads them and stops there: it builds no
+  links and fetches nothing, so what to do with the pair is the caller's.
 - `pages[].trust` / `groups[].trust` — `official` \| `applicant` \|
   `identity` \| `unknown`. Official pages are the Cadastre Committee's own
   documents (certificate, reference letter, fee table, map extract): the
@@ -837,6 +844,7 @@ with `via: "vlm"`.
 | `applicant` | Whoever applies, commissions, or asked the Committee for the map, against the registered owner(s). |
 | `address` | The site address on the certificate against the form's and the notes' — the same numbers and a street word in common. |
 | `certificate_number` | The certificate's number against every citation of it. |
+| `certificate_access` | Whether every page labelled as an ownership certificate prints the number and passcode that identify it to the register (`groups[].access`); a page without them is an `unreadable` witness, and a dossier with no certificate page at all is one `unreadable` check with no witnesses — the absence is the finding. |
 | `official_readability` | `unreadable` with the pages nothing has read yet, so a caller knows the vision pass is still owed before the official figures are settled. |
 
 Tolerances: an area copy agrees within 0.2 % (or half a square metre when
@@ -1447,17 +1455,6 @@ the grid the storeys cannot be stacked.
 
 ---
 
-## Token usage (`llm_usage`)
-
-Every command that calls a hosted model reports each call it made, with the
-provider's token counts and the cost estimated from
-`crates/llm-providers/models.json` (USD per million tokens, the cache-read
-rate for the cached share). `building` and `cadfix` always carry the array;
-`dossier` carries it only with `--vlm`, `model` only with `--llm-params`, and
-both omit it entirely when no model was called. Copied from a real
-`dossier --vlm` run (one entry per flagged page):
-
-```json
 ## `downsample`
 
 Writes a smaller copy of the PDF by resampling its raster images, and nothing
@@ -1538,6 +1535,17 @@ An encrypted input fails the run: rewriting it would drop its protection.
 
 ---
 
+## Token usage (`llm_usage`)
+
+Every command that calls a hosted model reports each call it made, with the
+provider's token counts and the cost estimated from
+`crates/llm-providers/models.json` (USD per million tokens, the cache-read
+rate for the cached share). `building` and `cadfix` always carry the array;
+`dossier` carries it only with `--vlm`, `model` only with `--llm-params`, and
+both omit it entirely when no model was called. Copied from a real
+`dossier --vlm` run (one entry per flagged page):
+
+```json
 {
   "label": "vlm page 5",
   "model": "gemini-3.8-flash",

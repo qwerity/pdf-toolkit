@@ -15,6 +15,7 @@
 //! page's semantic fields are taken from the answer wholesale, because the
 //! answer came from something that looked at the page.
 
+pub mod access;
 pub mod answers;
 mod build;
 pub mod checks;

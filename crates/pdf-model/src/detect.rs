@@ -4,9 +4,11 @@
 //! each sheet's title block names it (`+3,60 նիշով հարկի հատակագիծ`) and
 //! prints its scale, the section prints the storey levels and slab
 //! soffits as level marks, the roof plan names the roof level. The fill
-//! colours are the plan sheets' own statistics: the one big light fill is
-//! the envelope, the many dark ones are the walls, the white ones the
-//! rooms. The grid labels are the single characters drawn in bubbles.
+//! colours are the plan sheets' own statistics: the many dark fills are the
+//! walls — or, where the dark ones draw no wall-shaped band, the colour that
+//! does — the one big light fill is the envelope where a plan draws one, and
+//! the white fills are the rooms. The grid labels are the single characters
+//! drawn in bubbles.
 //!
 //! Every field detected here is checkable against the document, and each
 //! carries a note saying where it came from, so a reviewer can see what
@@ -36,11 +38,20 @@ pub struct Detection {
 const SLAB_GAP_M: std::ops::RangeInclusive<f64> = 0.15..=0.8;
 /// A wall colour is dark; an envelope fill is light but not white.
 const WALL_MAX_LUMINANCE: f64 = 0.55;
+const ENVELOPE_LUMINANCE: std::ops::Range<f64> = 0.8..0.995;
+/// A wall colour draws at least this many fills.
+const MIN_WALL_FILLS: usize = 10;
+/// A wall fill is a band of a wall's thickness (m) at its narrowest...
+const WALL_BAND_M: std::ops::RangeInclusive<f64> = 0.05..=0.6;
+/// ...and at least this long (m): shorter bands are door leaves and symbols.
+const WALL_BAND_MIN_M: f64 = 0.5;
+/// A colour stands in for the walls when the dark fills draw no band at all
+/// and it draws at least this many.
+const MIN_WALL_BANDS: usize = 10;
 /// Two storey levels read off the elevations are at least this far apart (m).
 const MIN_STOREY_M: f64 = 2.4;
 /// The storey height assumed when nothing on the drawings states one (m).
 const DEFAULT_STOREY_M: f64 = 3.0;
-const ENVELOPE_LUMINANCE: std::ops::Range<f64> = 0.8..0.995;
 
 /// What one sheet says about itself, gathered from the vector pass.
 struct SheetFacts {
@@ -336,14 +347,16 @@ pub fn detect(
 
     // Colours and grid labels: from the ground-floor plan's own content.
     let ground = document.page_content(params.floors[0].page)?;
-    match detect_colours(&ground) {
+    match detect_colours(&ground, params.mm_per_point() / 1000.0) {
         Some((colours, note)) => {
             params.colours = colours;
             notes.push(note);
         }
-        None => {
-            notes.push("fill colours: template (too few fills to read them off the plan)".into())
-        }
+        None => notes.push(format!(
+            "no fill on page {} draws a wall band: the plan is line work, which these rules read \
+             nothing from; the template's colours stand in and match little",
+            ground.page_number
+        )),
     }
     match detect_axis(&ground) {
         Some(axis) => {
@@ -409,13 +422,19 @@ fn luminance(c: [f64; 3]) -> f64 {
     .luminance()
 }
 
-/// Reads the element colours off a plan: the largest light fill is the
-/// envelope, the most numerous dark fill the walls, white the rooms.
-fn detect_colours(content: &PageContent) -> Option<(FillColours, String)> {
+/// Reads the element colours off a plan. The walls are the colour that draws
+/// the most wall-shaped bands — the tone is not the test, since one office
+/// draws its walls near-black and another mid-grey — the envelope is the
+/// largest fill the size of a building, and white the rooms. `metres_per_unit`
+/// is the sheet's scale, which is what makes a band a band.
+fn detect_colours(content: &PageContent, metres_per_unit: f64) -> Option<(FillColours, String)> {
     #[derive(Default)]
     struct Stat {
         count: usize,
-        largest: f64,
+        /// Fills shaped like a wall: a band of a wall's thickness, run out.
+        bands: usize,
+        /// The largest single fill of this colour, m².
+        largest_m2: f64,
     }
     let mut stats: BTreeMap<[i64; 3], Stat> = BTreeMap::new();
     for path in &content.paths {
@@ -426,35 +445,75 @@ fn detect_colours(content: &PageContent) -> Option<(FillColours, String)> {
         let stat = stats.entry(key).or_default();
         for subpath in &path.subpaths {
             stat.count += 1;
-            stat.largest = stat.largest.max(subpath.signed_area().abs());
+            stat.largest_m2 = stat
+                .largest_m2
+                .max(subpath.signed_area().abs() * metres_per_unit * metres_per_unit);
+            let bbox = subpath.bbox();
+            let across = bbox.width().min(bbox.height()) * metres_per_unit;
+            let along = bbox.width().max(bbox.height()) * metres_per_unit;
+            if WALL_BAND_M.contains(&across) && along >= WALL_BAND_MIN_M {
+                stat.bands += 1;
+            }
         }
     }
     let colour = |key: &[i64; 3]| Rgb(key.map(|v| v as f64 / 1000.0));
+    let white = |key: &[i64; 3]| luminance(colour(key).0) >= 0.995;
+    // The walls are the dark fills, as most offices draw them. A dark colour
+    // that draws no wall-shaped band at all is something else — dossier 14's
+    // arrowheads — and the colour that does draw bands takes its place.
+    let dark = stats
+        .iter()
+        .filter(|(k, s)| luminance(colour(k).0) < WALL_MAX_LUMINANCE && s.count >= MIN_WALL_FILLS)
+        .max_by_key(|(_, s)| s.count);
+    let banded = stats
+        .iter()
+        .filter(|(k, s)| !white(k) && s.bands >= MIN_WALL_BANDS)
+        .max_by_key(|(_, s)| s.bands);
+    let wall = match (dark, banded) {
+        (Some(dark), Some(banded)) if dark.1.bands == 0 => banded,
+        (Some(dark), _) => dark,
+        (None, banded) => banded?,
+    };
+    // The envelope is the one big light fill. A plan that draws none is not a
+    // plan these rules cannot read: the building box comes from the outline of
+    // the walls and rooms instead, which is what the storey rules fall back to.
     let envelope = stats
         .iter()
-        .filter(|(k, _)| ENVELOPE_LUMINANCE.contains(&luminance(colour(k).0)))
-        .max_by(|a, b| a.1.largest.total_cmp(&b.1.largest))?;
-    let wall = stats
-        .iter()
-        .filter(|(k, _)| luminance(colour(k).0) < WALL_MAX_LUMINANCE)
-        .filter(|(_, s)| s.count >= 10)
-        .max_by_key(|(_, s)| s.count)?;
+        .filter(|(k, _)| ENVELOPE_LUMINANCE.contains(&luminance(colour(k).0)) && *k != wall.0)
+        .max_by(|a, b| a.1.largest_m2.total_cmp(&b.1.largest_m2));
     let room = stats
         .iter()
-        .filter(|(k, _)| luminance(colour(k).0) >= 0.995)
+        .filter(|(k, _)| white(k))
         .max_by_key(|(_, s)| s.count)
         .map(|(k, _)| colour(k))
         .unwrap_or(Rgb([1.0, 1.0, 1.0]));
     let colours = FillColours {
         wall: colour(wall.0),
-        envelope: colour(envelope.0),
+        // A plan that draws no envelope fill leaves the building box to the
+        // outline of the walls and rooms; the template's colour then matches
+        // nothing on the sheet, which is what that fallback wants.
+        envelope: envelope.map_or(Params::archicad_template().colours.envelope, |(k, _)| {
+            colour(k)
+        }),
         room,
         tolerance: 0.02,
     };
-    let note = format!(
-        "fill colours from page {}: walls {:?} ({} fills), envelope {:?}, rooms {:?}",
-        content.page_number, colours.wall.0, wall.1.count, colours.envelope.0, colours.room.0
-    );
+    let note = match envelope {
+        Some((_, stat)) => format!(
+            "fill colours from page {}: walls {:?} ({} fills, {} bands), envelope {:?} ({:.0} m²), rooms {:?}",
+            content.page_number,
+            colours.wall.0,
+            wall.1.count,
+            wall.1.bands,
+            colours.envelope.0,
+            stat.largest_m2,
+            colours.room.0
+        ),
+        None => format!(
+            "fill colours from page {}: walls {:?} ({} fills, {} bands), rooms {:?}; no light fill for the envelope, so the box comes from the walls and rooms",
+            content.page_number, colours.wall.0, wall.1.count, wall.1.bands, colours.room.0
+        ),
+    };
     Some((colours, note))
 }
 
@@ -490,6 +549,110 @@ fn detect_axis(content: &PageContent) -> Option<AxisParams> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pdf_geometry::model::{BBox, Point, Rgb as Fill, SubPath, VectorPath};
+
+    /// Page units in a metre at 1:75.
+    const UNITS_PER_M: f64 = 72.0 / (75.0 * 0.0254);
+
+    /// A filled rectangle of that colour, given in metres on a 1:75 sheet.
+    fn fill(colour: [f64; 3], x0: f64, y0: f64, x1: f64, y1: f64) -> VectorPath {
+        let p = |x: f64, y: f64| Point::new(x * UNITS_PER_M, y * UNITS_PER_M);
+        VectorPath {
+            subpaths: vec![SubPath {
+                points: vec![p(x0, y0), p(x1, y0), p(x1, y1), p(x0, y1), p(x0, y0)],
+                closed: true,
+            }],
+            mode: PaintMode::Fill,
+            stroke: Fill::BLACK,
+            fill: Fill {
+                r: colour[0],
+                g: colour[1],
+                b: colour[2],
+            },
+            width: 0.0,
+            layer: None,
+        }
+    }
+
+    fn page(paths: Vec<VectorPath>) -> PageContent {
+        PageContent {
+            page_number: 13,
+            media_box: BBox {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 1190.0,
+                max_y: 842.0,
+            },
+            paths,
+            texts: Vec::new(),
+            image_count: 0,
+            image_coverage: 0.0,
+        }
+    }
+
+    /// Twelve wall bands of that colour, 0.4 m thick and 3 m long.
+    fn bands(colour: [f64; 3]) -> Vec<VectorPath> {
+        (0..12)
+            .map(|i| {
+                let y = 0.5 + f64::from(i) * 0.6;
+                fill(colour, 0.5, y, 3.5, y + 0.4)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_walls_are_the_colour_that_draws_bands_whatever_its_tone() {
+        let mut paths = vec![fill([0.95, 0.95, 0.95], 0.0, 0.0, 10.0, 8.0)];
+        // Mid-grey walls: a rule that asked for a dark tone would pass them by.
+        paths.extend(bands([0.753, 0.753, 0.753]));
+        paths.push(fill([1.0, 1.0, 1.0], 1.0, 1.0, 4.0, 4.0));
+        let (colours, note) =
+            detect_colours(&page(paths), 1.0 / UNITS_PER_M).expect("the colours read");
+        assert_eq!(colours.wall.0, [0.753, 0.753, 0.753], "{note}");
+        assert_eq!(colours.envelope.0, [0.95, 0.95, 0.95], "{note}");
+        assert_eq!(colours.room.0, [1.0, 1.0, 1.0], "{note}");
+        assert!(
+            note.contains("12 fills, 12 bands") && note.contains("80 m²"),
+            "{note}"
+        );
+    }
+
+    #[test]
+    fn a_plan_drawn_in_line_work_reads_no_colours() {
+        // White fills and one small dark blob: nothing shaped like a wall.
+        let paths = vec![
+            fill([1.0, 1.0, 1.0], 0.0, 0.0, 2.0, 2.0),
+            fill([0.0, 0.0, 0.0], 0.0, 0.0, 0.1, 0.1),
+        ];
+        assert!(detect_colours(&page(paths), 1.0 / UNITS_PER_M).is_none());
+    }
+
+    #[test]
+    fn walls_without_a_light_fill_leave_the_building_box_to_them() {
+        let mut paths = bands([0.753, 0.753, 0.753]);
+        // Nothing light enough to be an envelope: the only other fill is a
+        // mid-grey block, which a plan draws for a shaft or a stair.
+        paths.push(fill([0.7, 0.7, 0.7], 0.0, 0.0, 2.0, 1.0));
+        let (colours, note) =
+            detect_colours(&page(paths), 1.0 / UNITS_PER_M).expect("the walls read");
+        assert_eq!(colours.wall.0, [0.753, 0.753, 0.753]);
+        assert!(
+            note.contains("no light fill for the envelope"),
+            "the note says where the box will come from: {note}"
+        );
+    }
+
+    #[test]
+    fn a_dark_colour_that_draws_no_band_gives_way_to_one_that_does() {
+        let mut paths = bands([0.753, 0.753, 0.753]);
+        // Twelve black arrowheads: dark and numerous, but none is a wall.
+        for i in 0..12 {
+            let x = f64::from(i) * 0.3;
+            paths.push(fill([0.0, 0.0, 0.0], x, 9.0, x + 0.12, 9.12));
+        }
+        let (colours, _) = detect_colours(&page(paths), 1.0 / UNITS_PER_M).expect("the walls read");
+        assert_eq!(colours.wall.0, [0.753, 0.753, 0.753]);
+    }
 
     #[test]
     fn slab_thickness_is_the_common_gap_below_the_storey_levels() {

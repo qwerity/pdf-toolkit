@@ -1376,10 +1376,10 @@ the model and the extruded FeatureCollection inline):
 | `georeference` | How it was placed: `source` — `sheet_outline` (matched to the box on `page`, with `residual_m` the mean corner distance and `linework_residual_m` how close the placed slab sits to the sheet's other line work, the latter **absent** when the sheet draws nothing else nearby) \| `references` (`--georeference`, `residual_m` the fit's RMSE). `rotation_degrees` CCW from the model's x axis to east, `origin` the tangent-plane origin, and `transform` `{a, b, tx, ty}` — the model's metres to metres east/north of `origin` as `x' = a·x − b·y + tx`, `y' = b·x + a·y + ty` (`a² + b² = 1`); degrees follow from `origin` and the WGS 84 metres-per-degree at its latitude, which is how a consumer brings the parcel into the model's frame. **Absent** when not placed, with a `warnings` entry. |
 | `bounds` | The placed ground-floor slab's extent, `[[west, south], [east, north]]`. **Absent** when not placed. |
 | `sheets[]` | How each sheet was read: `role` `floor` \| `roof`, the grid `origin_page` in page units, `origin_source` — `axis_bubbles` (both labels sit in drawn circles) \| `axis_text` (no circle; the text position stood in, with a `warnings` entry) \| `fill_centre` (no grid labels at all; the storey is aligned on the centre of its filled drawing, with a `warnings` entry) — and the fill counts by element type. A storey whose sheet the rules could not read, and a roof sheet likewise, are left out with a `warnings` entry rather than failing the run. |
-| `floors[]` | Per-storey counts and areas: `walls`, `glazing`, `door_gaps`, `rooms`, `rooms_area_m2` (sum of the room fills), `slab_area_m2` (envelope plus terraces), `rails`. |
-| `roof` | `page`, `area_m2` (the outline's, less the edge band where one is read), `parapet_pieces`. **Absent** when the set has no roof plan. |
+| `floors[]` | Per-storey counts and areas: `walls`, `glazing`, `door_gaps`, `rooms`, `rooms_area_m2` (sum of the room fills), `slab_area_m2` (envelope plus terraces), `rails`; `empty` **present only when** the storey drew nothing the rules could read — no rooms and no walls, or a slab under 2 m², which is what a sheet whose fills do not read leaves behind. |
+| `roof` | `page`, `area_m2` (the outline's, less the edge band where one is read), `parapet_pieces`; `empty` as a storey's, for an outline under 2 m². **Absent** when the set has no roof plan. |
 | `stone_piers` | How many stone pieces `model.stone` holds: the parts of the ground-floor walls outside the envelope, cut at it — a pier that runs on into the house is stone only outside, the rest a wall — and without the parts nowhere thicker than 10 cm, which are walls drawn past the envelope. |
-| `warnings` | Why the model is not placed, a rejected or failed parameter proposal, a sheet whose grid origin came from text, a roof plan that draws no parapet (a ring along the outline stands in), an elevation whose level marks or grid axes do not read, a stone pier whose elevations disagree on its top or that fewer than two elevations draw (it stands to the parapet), a section whose level marks or grid axes do not read, a slab a section cuts with an edge band that no plan draws (it keeps a square edge), a part whose callouts name more than one material (the one the most sheets name is kept); absent when none. |
+| `warnings` | Why the model is not placed, a rejected or failed parameter proposal, a sheet whose grid origin came from text, a roof plan that draws no parapet (a ring along the outline stands in), an elevation whose level marks or grid axes do not read, a stone pier whose elevations disagree on its top or that fewer than two elevations draw (it stands to the parapet), a section whose level marks or grid axes do not read, a slab a section cuts with an edge band that no plan draws (it keeps a square edge), a part whose callouts name more than one material (the one the most sheets name is kept), a storey that drew nothing the rules read and a roof outline too small to be one (both kept, marked `empty`); absent when none. |
 | `model_file` / `glb_file` / `geojson_file` / `params_file` | Present with `--output`: `model/<document>.model.json`, `.glb`, `.geojson`, `.params.json`, relative to that directory. |
 | `model` | The model itself, inline — the schema below. |
 | `geojson` | The extruded FeatureCollection, inline — the shape below. |
@@ -1396,12 +1396,16 @@ Each floor: `name`, one-based `page`, `z`, `top`, `envelope` (the building
 box as drawn), `slab` (envelope plus terraces, exterior only) with `slab_z`
 `[bottom, top]`, `walls[]`, `glazing[]` with `glazing_z`, `door_gaps[]`,
 `rooms[]` (`area` in m² plus the polygon), `rails[]` (open polylines along
-the terrace edges, upper floors only), and `edge`, the band the slab's edge
-ends in — **absent** when no section cuts one, or no plan draws where it runs.
+the terrace edges, upper floors only), `edge`, the band the slab's edge
+ends in — **absent** when no section cuts one, or no plan draws where it runs —
+and `empty`, **present only when** the storey drew nothing the rules could
+read: no rooms and no walls, or a slab under 2 m². Such a storey is carried as
+the sheet gave it, and is not a reconstruction of a floor.
 `roof`: `outline` (the envelope, terraces and edge strips the roof plan draws,
 less its edge band), `slab_z`, `parapet[]` (the band the roof plan draws, cut
 to the outline — or, when it draws none, a `parapet_width_m` ring along the
-outline), `parapet_z` and `edge` as a floor's; **absent** without a roof plan.
+outline), `parapet_z`, `edge` as a floor's and `empty` for an outline under
+2 m²; **absent** without a roof plan.
 An `edge` is `{runs[], z, depth_m, tip_m, chamfer_m, face, section_page,
 plan_page}`: the profile the section on `section_page` cuts at both ends of the
 slab — `z` the band's `[bottom, top]` at full height, `depth_m` from its tip to

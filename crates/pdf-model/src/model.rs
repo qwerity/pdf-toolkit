@@ -54,6 +54,11 @@ pub struct Floor {
     /// draws where it runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge: Option<SlabEdge>,
+    /// The storey drew nothing the rules could read — no rooms and no walls,
+    /// or a slab too small to be a storey. It is carried as it came off the
+    /// sheet, but nothing here is a reconstruction of a floor.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub empty: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -69,6 +74,14 @@ pub struct Roof {
     /// The band the roof's edge ends in, as for a storey's slab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge: Option<SlabEdge>,
+    /// The outline is too small to be a roof, as a storey's `empty` is.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub empty: bool,
+}
+
+/// `skip_serializing_if` for a flag that means something only when true.
+pub(crate) fn is_false(flag: &bool) -> bool {
+    !*flag
 }
 
 /// Which face of a slab's edge band slopes from its tip to full height.

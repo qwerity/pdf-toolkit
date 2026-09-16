@@ -528,6 +528,7 @@ mod tests {
                 rooms: Vec::new(),
                 rails: Vec::new(),
                 edge: None,
+                empty: false,
             }],
             roof: None,
             stone: Vec::new(),

@@ -793,6 +793,7 @@ mod tests {
             parapet: vec![geom::to_polygon2d(&parapet)],
             parapet_z: [7.2, 7.78],
             edge: None,
+            empty: false,
         };
         let edge = SlabEdge {
             runs: vec![EdgeRun {

@@ -168,6 +168,7 @@ mod tests {
                 }],
                 rails: vec![vec![[10.0, 0.0], [10.0, 5.0]]],
                 edge: None,
+                empty: false,
             }],
             roof: None,
             stone: vec![square(12.0, 0.0, 0.5).into()],

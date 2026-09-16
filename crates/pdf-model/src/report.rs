@@ -29,6 +29,10 @@ pub struct FloorSummary {
     pub rooms_area_m2: f64,
     pub slab_area_m2: f64,
     pub rails: usize,
+    /// The storey drew nothing the rules could read (`model.floors[].empty`);
+    /// absent when it stands on its own.
+    #[serde(skip_serializing_if = "crate::model::is_false")]
+    pub empty: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -36,6 +40,9 @@ pub struct RoofSummary {
     pub page: usize,
     pub area_m2: f64,
     pub parapet_pieces: usize,
+    /// The outline is too small to be a roof; absent otherwise.
+    #[serde(skip_serializing_if = "crate::model::is_false")]
+    pub empty: bool,
 }
 
 /// The stdout contract of `model`.
@@ -105,6 +112,7 @@ impl FloorSummary {
             rooms_area_m2: round(floor.rooms.iter().map(|r| r.area).sum(), 2),
             slab_area_m2: round(floor.slab.area_m2(), 2),
             rails: floor.rails.len(),
+            empty: floor.empty,
         }
     }
 }
@@ -115,6 +123,7 @@ impl RoofSummary {
             page,
             area_m2: round(roof.outline.area_m2(), 2),
             parapet_pieces: roof.parapet.len(),
+            empty: roof.empty,
         }
     }
 }

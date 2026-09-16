@@ -129,6 +129,20 @@ fn the_storeys_and_roof_are_summarised_and_carried_inline() {
     assert!((floors[0]["slab_area_m2"].as_f64().unwrap() - 87.79).abs() < 0.05);
     // The roof less its edge band: the envelope and its two terraces.
     assert!((report["roof"]["area_m2"].as_f64().unwrap() - 94.39).abs() < 0.05);
+    // Both storeys and the roof draw a building, so nothing here is marked empty.
+    assert!(
+        floors.iter().all(|floor| floor.get("empty").is_none()),
+        "no storey is empty: {floors:?}"
+    );
+    assert!(report["roof"].get("empty").is_none(), "nor the roof");
+    assert!(
+        report["model"]["floors"]
+            .as_array()
+            .expect("the model's floors")
+            .iter()
+            .all(|floor| floor.get("empty").is_none()),
+        "nor in the model itself"
+    );
     // The two stone walls either side, cut at the envelope; the five 3 cm
     // strips of wall drawn past it are not piers.
     assert_eq!(report["stone_piers"], 2);

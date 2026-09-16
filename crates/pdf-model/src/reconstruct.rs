@@ -45,6 +45,13 @@ const PARAPET_BAND_M: std::ops::Range<f64> = 0.07..0.15;
 const PARAPET_CLOSE_M: f64 = 0.02;
 /// A drawn parapet goes round at least this share of the roof's area.
 const PARAPET_MIN_ENCLOSED: f64 = 0.7;
+/// A storey with no rooms and no walls, or a slab smaller than this (m²), drew
+/// nothing the rules could read: the reference set's storeys are 88 and 94 m²,
+/// the corpus's hollow ones 0.4 to 1.7.
+const MIN_FLOOR_M2: f64 = 2.0;
+/// A roof outline smaller than this (m²) is hollow the same way — the corpus
+/// has roofs of 0.2 and 0.6 m² beside real ones of 43 to 177.
+const MIN_ROOF_M2: f64 = 2.0;
 
 /// A storey's parameters with its sheet read in.
 pub struct FloorInput<'a> {
@@ -98,7 +105,17 @@ pub fn build(
                 .map(|piece| geom::to_polygon2d(piece).into())
                 .collect();
         }
-        model.floors.push(built.floor);
+        let mut floor = built.floor;
+        // A storey the sheet gave nothing to is carried as it came and marked:
+        // a caller must not read it as a reconstruction of a floor.
+        if let Some(found) = nothing_read(&floor) {
+            warnings.push(format!(
+                "page {}: the storey draws nothing the rules read ({found}); it is kept, marked empty",
+                floor.page
+            ));
+            floor.empty = true;
+        }
+        model.floors.push(floor);
     }
     if model.floors.is_empty() {
         return Err(anyhow!("no storey could be built: {}", warnings.join("; ")));
@@ -107,11 +124,31 @@ pub fn build(
         // A roof sheet that draws no outline the rules can read leaves the
         // model without a roof rather than without a model.
         match build_roof(sheet, params, warnings) {
-            Ok(roof) => model.roof = Some(roof),
+            Ok(mut built) => {
+                let area = built.outline.area_m2();
+                if area < MIN_ROOF_M2 {
+                    warnings.push(format!(
+                        "page {}: the roof outline is {area:.2} m²; it is kept, marked empty",
+                        sheet.page
+                    ));
+                    built.empty = true;
+                }
+                model.roof = Some(built);
+            }
             Err(error) => warnings.push(format!("roof omitted: {error:#}")),
         }
     }
     Ok(model)
+}
+
+/// What a storey gave the rules, when that is nothing: no rooms and no walls,
+/// or a slab too small to be a floor. `None` when the storey stands on its own.
+fn nothing_read(floor: &Floor) -> Option<String> {
+    let slab = floor.slab.area_m2();
+    if floor.rooms.is_empty() && floor.walls.is_empty() {
+        return Some(format!("no rooms, no walls, a {slab:.2} m² slab"));
+    }
+    (slab < MIN_FLOOR_M2).then(|| format!("a {slab:.2} m² slab"))
 }
 
 fn levels(params: &Params) -> IndexMap<String, f64> {
@@ -237,6 +274,7 @@ fn build_floor(
                 .collect(),
             rails,
             edge: None,
+            empty: false,
         },
         outside,
     })
@@ -322,6 +360,7 @@ fn build_roof(sheet: &Sheet, params: &Params, warnings: &mut Vec<String>) -> Res
         parapet: parapet.iter().map(geom::to_polygon2d).collect(),
         parapet_z: [params.roof_level_m, params.parapet_level_m],
         edge: None,
+        empty: false,
     })
 }
 
@@ -524,6 +563,48 @@ mod tests {
         assert!(
             (bounds.min().x - 0.4).abs() < 1e-3 && (bounds.min().y - 0.4).abs() < 1e-3,
             "40 cm in from the edge: {bounds:?}"
+        );
+    }
+
+    /// A storey with `rooms` rooms, `walls` walls and that slab.
+    fn floor(slab: Polygon<f64>, rooms: usize, walls: usize) -> Floor {
+        Floor {
+            name: "t".into(),
+            page: 7,
+            z: 0.0,
+            top: 3.0,
+            envelope: Polygon2D::default(),
+            slab: geom::to_polygon2d(&slab),
+            slab_z: [-0.35, 0.0],
+            walls: vec![geom::to_polygon2d(&rect(0.0, 0.0, 0.2, 1.0)); walls],
+            glazing: Vec::new(),
+            glazing_z: [0.0, 3.0],
+            door_gaps: Vec::new(),
+            rooms: vec![
+                Room {
+                    area: 4.0,
+                    polygon: geom::to_polygon2d(&rect(0.0, 0.0, 2.0, 2.0)),
+                };
+                rooms
+            ],
+            rails: Vec::new(),
+            edge: None,
+            empty: false,
+        }
+    }
+
+    #[test]
+    fn a_storey_that_drew_nothing_says_what_it_gave_and_a_real_one_says_nothing() {
+        assert_eq!(nothing_read(&floor(rect(0.0, 0.0, 10.0, 6.0), 3, 4)), None);
+        assert_eq!(
+            nothing_read(&floor(rect(0.0, 0.0, 10.0, 6.0), 0, 0)).as_deref(),
+            Some("no rooms, no walls, a 60.00 m² slab"),
+            "nothing drawn, whatever the box around it"
+        );
+        assert_eq!(
+            nothing_read(&floor(rect(0.0, 0.0, 1.0, 1.5), 2, 0)).as_deref(),
+            Some("a 1.50 m² slab"),
+            "rooms drawn, but no slab to stand them on"
         );
     }
 

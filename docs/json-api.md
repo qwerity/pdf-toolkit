@@ -6,7 +6,7 @@ document on stdout and nothing else**, so it can be driven from another program.
 This file is the contract. It is the reference for integrating the tool; if you
 are wiring it into a service, this is all you need.
 
-- Version described here: **0.14.0** (matches the package version)
+- Version described here: **0.15.0** (matches the package version)
 - Warnings and progress go to **stderr**; stdout is only ever the JSON document
 - Files written under `--output` are the same whether or not you parse stdout
 - Exit code is `0` on success and non-zero on failure. **A failed run prints no
@@ -633,7 +633,7 @@ changes its rates. Model quality on the annotation task is compared in
 {
   "document": "letter",
   "entities": [],
-  "generated_by": "pdf-toolkit 0.14.0 dossier: deterministic extraction (pdfium text, templates, rxing QR, vector classification and georeferencing); vision-pass answers pending",
+  "generated_by": "pdf-toolkit 0.15.0 dossier: deterministic extraction (pdfium text, templates, rxing QR, vector classification and georeferencing); vision-pass answers pending",
   "graph": {
     "edges": []
   },
@@ -1162,7 +1162,8 @@ elevations' level marks when the plan titles state none (each storey the
 first mark at least 2.4 m above the last); a storey aligned on the centre of
 its filled drawing when the sheet prints no grid labels
 (`sheets[].origin_source: "fill_centre"`); and a building box derived from
-the outline of the walls and rooms when the sheet draws no envelope fill.
+the outline of the walls and rooms when the sheet draws no light fill big
+enough to hold its own walls.
 Each is approximate where the drawing is unusual — a set whose "floor
 plans" include existing-state or ceiling plans gets too many storeys — which
 is what `--llm-params` is for: the proposal names the plan pages, the levels,
@@ -1313,7 +1314,7 @@ the model and the extruded FeatureCollection inline):
     "plinth 0.35 from the lowest level mark",
     "floors: page 13 at 0 to 3.6, page 14 at 3.6 to 7.2",
     "scale 1:75 from the plan sheet's title block",
-    "fill colours from page 13: walls [0.286, 0.267, 0.251] (69 fills), envelope [0.953, 0.953, 0.953], rooms [1.0, 1.0, 1.0]",
+    "fill colours from page 13: walls [0.286, 0.267, 0.251] (69 fills, 24 bands), envelope [0.953, 0.953, 0.953] (78 m²), rooms [1.0, 1.0, 1.0]",
     "grid origin: column '1' x row 'Ա' from the bubbles on page 13"
   ],
   "placed": true,

@@ -287,7 +287,8 @@ Reconstructs the building storey by storey from the CAD-exported plan
 sheets — deterministically, from the fills the exporter wrote. Walls, the
 building envelope and the rooms are told apart by fill colour — the walls by
 the shape of their fills where the tone does not settle it, since one office
-draws them near-black and another mid-grey — the storeys are stacked on the
+draws them near-black and another mid-grey, the envelope by being the largest
+light fill that could hold those walls — the storeys are stacked on the
 printed grid axes, and the openings are what the envelope minus the rooms
 minus the walls leaves behind: edge pieces are glazing, interior pieces door
 gaps. Levels come from the section's level marks, the scale from the title
@@ -322,7 +323,8 @@ edit. `--answers` lends the dossier's page labels to sets whose title blocks
 the classifier cannot read (most offices' exports), and detection then
 falls back to the elevations' level marks for the storeys, to a sheet's
 drawing centre when it prints no grid labels, and to the outline of walls
-and rooms when it draws no envelope fill — each named in the notes.
+and rooms when it draws no envelope fill big enough to hold them — each
+named in the notes.
 `--llm-params` asks a hosted model to confirm or correct the parameters; the
 proposal is checked against the drawings before it is used, and its
 accepted `params` block can be kept and passed back as `--params`. Geometry

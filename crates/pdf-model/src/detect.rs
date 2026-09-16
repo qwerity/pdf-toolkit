@@ -345,7 +345,9 @@ pub fn detect(
         ));
     }
 
-    // Colours and grid labels: from the ground-floor plan's own content.
+    // Colours and grid labels: from the ground-floor plan's own content. Read
+    // across the plan sheets instead and one sheet's beige hatch becomes another
+    // storey's envelope — measured on the corpus, it costs more than it gives.
     let ground = document.page_content(params.floors[0].page)?;
     match detect_colours(&ground, params.mm_per_point() / 1000.0) {
         Some((colours, note)) => {
@@ -422,11 +424,11 @@ fn luminance(c: [f64; 3]) -> f64 {
     .luminance()
 }
 
-/// Reads the element colours off a plan. The walls are the colour that draws
-/// the most wall-shaped bands — the tone is not the test, since one office
+/// Reads the element colours off a plan. The walls are the dark fills — or,
+/// where those draw no wall-shaped band, the colour that does, since one office
 /// draws its walls near-black and another mid-grey — the envelope is the
-/// largest fill the size of a building, and white the rooms. `metres_per_unit`
-/// is the sheet's scale, which is what makes a band a band.
+/// largest light fill that could hold those walls, and white the rooms.
+/// `metres_per_unit` is the sheet's scale, which is what makes a band a band.
 fn detect_colours(content: &PageContent, metres_per_unit: f64) -> Option<(FillColours, String)> {
     #[derive(Default)]
     struct Stat {
@@ -435,6 +437,8 @@ fn detect_colours(content: &PageContent, metres_per_unit: f64) -> Option<(FillCo
         bands: usize,
         /// The largest single fill of this colour, m².
         largest_m2: f64,
+        /// The largest of its wall-shaped fills, m².
+        largest_band_m2: f64,
     }
     let mut stats: BTreeMap<[i64; 3], Stat> = BTreeMap::new();
     for path in &content.paths {
@@ -444,15 +448,15 @@ fn detect_colours(content: &PageContent, metres_per_unit: f64) -> Option<(FillCo
         let key = [path.fill.r, path.fill.g, path.fill.b].map(|v| (v * 1000.0).round() as i64);
         let stat = stats.entry(key).or_default();
         for subpath in &path.subpaths {
+            let area = subpath.signed_area().abs() * metres_per_unit * metres_per_unit;
             stat.count += 1;
-            stat.largest_m2 = stat
-                .largest_m2
-                .max(subpath.signed_area().abs() * metres_per_unit * metres_per_unit);
+            stat.largest_m2 = stat.largest_m2.max(area);
             let bbox = subpath.bbox();
             let across = bbox.width().min(bbox.height()) * metres_per_unit;
             let along = bbox.width().max(bbox.height()) * metres_per_unit;
             if WALL_BAND_M.contains(&across) && along >= WALL_BAND_MIN_M {
                 stat.bands += 1;
+                stat.largest_band_m2 = stat.largest_band_m2.max(area);
             }
         }
     }
@@ -474,12 +478,19 @@ fn detect_colours(content: &PageContent, metres_per_unit: f64) -> Option<(FillCo
         (Some(dark), _) => dark,
         (None, banded) => banded?,
     };
-    // The envelope is the one big light fill. A plan that draws none is not a
-    // plan these rules cannot read: the building box comes from the outline of
-    // the walls and rooms instead, which is what the storey rules fall back to.
+    // The envelope is the biggest light fill, and it has to be able to hold the
+    // walls: a fill smaller than the widest wall band is a blob — a hatch key, a
+    // stair tread — and cutting a storey to it leaves nothing. A plan that draws
+    // no envelope is not a plan these rules cannot read: the building box comes
+    // from the outline of the walls and rooms, which the storey rules fall back
+    // to on their own.
     let envelope = stats
         .iter()
-        .filter(|(k, _)| ENVELOPE_LUMINANCE.contains(&luminance(colour(k).0)) && *k != wall.0)
+        .filter(|(k, s)| {
+            ENVELOPE_LUMINANCE.contains(&luminance(colour(k).0))
+                && *k != wall.0
+                && s.largest_m2 >= wall.1.largest_band_m2
+        })
         .max_by(|a, b| a.1.largest_m2.total_cmp(&b.1.largest_m2));
     let room = stats
         .iter()
@@ -498,22 +509,20 @@ fn detect_colours(content: &PageContent, metres_per_unit: f64) -> Option<(FillCo
         room,
         tolerance: 0.02,
     };
-    let note = match envelope {
+    let envelope_note = match envelope {
         Some((_, stat)) => format!(
-            "fill colours from page {}: walls {:?} ({} fills, {} bands), envelope {:?} ({:.0} m²), rooms {:?}",
-            content.page_number,
-            colours.wall.0,
-            wall.1.count,
-            wall.1.bands,
-            colours.envelope.0,
-            stat.largest_m2,
-            colours.room.0
+            "envelope {:?} ({:.0} m²)",
+            colours.envelope.0, stat.largest_m2
         ),
-        None => format!(
-            "fill colours from page {}: walls {:?} ({} fills, {} bands), rooms {:?}; no light fill for the envelope, so the box comes from the walls and rooms",
-            content.page_number, colours.wall.0, wall.1.count, wall.1.bands, colours.room.0
-        ),
+        None => {
+            "no light fill big enough for the envelope, so the box comes from the walls and rooms"
+                .to_string()
+        }
     };
+    let note = format!(
+        "fill colours from page {}: walls {:?} ({} fills, {} bands), {envelope_note}, rooms {:?}",
+        content.page_number, colours.wall.0, wall.1.count, wall.1.bands, colours.room.0
+    );
     Some((colours, note))
 }
 
@@ -618,6 +627,21 @@ mod tests {
     }
 
     #[test]
+    fn a_light_fill_smaller_than_the_walls_is_no_envelope() {
+        let mut paths = bands([0.753, 0.753, 0.753]);
+        // A light blob of 0.6 m², narrower than the 1.2 m² wall bands beside it:
+        // a hatch key or a stair tread, not a building box.
+        paths.push(fill([0.95, 0.95, 0.95], 8.0, 8.0, 8.8, 8.75));
+        let (colours, note) =
+            detect_colours(&page(paths), 1.0 / UNITS_PER_M).expect("the walls read");
+        assert_eq!(colours.wall.0, [0.753, 0.753, 0.753], "{note}");
+        assert!(
+            note.contains("no light fill big enough for the envelope"),
+            "the blob is refused and the note says so: {note}"
+        );
+    }
+
+    #[test]
     fn a_plan_drawn_in_line_work_reads_no_colours() {
         // White fills and one small dark blob: nothing shaped like a wall.
         let paths = vec![
@@ -637,7 +661,7 @@ mod tests {
             detect_colours(&page(paths), 1.0 / UNITS_PER_M).expect("the walls read");
         assert_eq!(colours.wall.0, [0.753, 0.753, 0.753]);
         assert!(
-            note.contains("no light fill for the envelope"),
+            note.contains("no light fill big enough for the envelope"),
             "the note says where the box will come from: {note}"
         );
     }

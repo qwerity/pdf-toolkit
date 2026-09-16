@@ -173,6 +173,9 @@ that looked at the page.
       "groups": ["ownership", "identity"],
       "related": [{"page": 7, "relation": "continues"}],
       "handwriting": {"extent": "fields", "script": ["hy"]},
+      "facts": [{"kind": "signatory", "value": "name as the hand wrote it"},
+                {"kind": "identity_holder", "value": "name the passport prints"}],
+      "access": [{"kind": "certificate", "number": "…", "passcode": "…"}],
       "vlm": ["id_card_fields"],
       "declared_scale": 500,
       "sheet": "ԷՋ-03",
@@ -191,7 +194,12 @@ that looked at the page.
 }
 ```
 
-Every field but `labels` is optional. `groups` metadata is keyed by the ids
+Every field but `labels` is optional. `facts[]` carries the figures and names
+only a look at the page can supply; `signatory` (the name written beside a
+signature) and `identity_holder` (whom a passport or ID card names) are the
+two the `signature` check compares, and `access[]` the credentials a scanned
+Committee header prints. Both are person-valued and canonicalised to the same
+`person:` ids the owner and applicant facts use. `groups` metadata is keyed by the ids
 pages reference, in the order the final report should list them; `people`
 supplies display values and roles for person/org entity ids. Pages without an
 answer keep their deterministic facts, so a partial answers file is a valid

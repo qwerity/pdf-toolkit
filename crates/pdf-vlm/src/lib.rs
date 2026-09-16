@@ -187,7 +187,8 @@ Look at the page image and return ONLY a JSON object (no markdown fences) with:
   ],
   "facts": [             // figures the page states about the parcel, for cross-page checks
     {"kind": "parcel_area"|"building_area"|"footprint_area"|"planned_area"|"owner"|
-             "applicant"|"address"|"cadastral_code"|"certificate_number",
+             "applicant"|"address"|"cadastral_code"|"certificate_number"|
+             "signatory"|"identity_holder",
      "value": "...",     // the number or name exactly as printed
      "unit": "ha"|"m2",  // areas only
      "subject": "..."}   // building_area: the building's code; planned_area: "fence"|"building"
@@ -204,7 +205,15 @@ the facts are: section 4's "Մակերեսի չափը (հա)" as parcel_area wit
 section 1's subject(s) as owner, section 2's address as address, section 4's
 code as cadastral_code, and every row of section 5's buildings table as a
 building_area (subject = the row's code, unit m2). On a ՏԵՂԵԿԱՆՔ or fee table
-the "Դիմող" line is the applicant. The certificate's header reads
+the "Դիմող" line is the applicant.
+
+WHO SIGNED, AND WHO THE PAPERS SAY THEY ARE. Where a page carries a HANDWRITTEN
+name next to a signature (a consent statement, a declaration), report that
+written name as a `signatory` fact — transcribe what the hand actually wrote,
+and omit the fact entirely if you cannot read it rather than guessing from the
+printed text nearby. On a passport or an ID card, report the holder's name as
+an `identity_holder` fact. Do not judge whether a signature matches; only read
+the names. The certificate's header reads
 "ՎԿԱՅԱԿԱՆ N 00000000-00-0000, գաղտնաբառ՝ XXXXXXXXXXXX": report it under access
 with the number and the 12-character passcode exactly as printed (Latin letters
 and digits); a reference letter's "Փաստաթղթի համար՝ …" / "գաղտնաբառ՝ …" pair

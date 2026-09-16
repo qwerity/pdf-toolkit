@@ -810,7 +810,11 @@ apart they are. Copied from a real run (`jq '.checks[] | select(.kind ==
 "via", "subject"?, "about"?}`. `kind` is one of `cadastral_code`,
 `parcel_area`, `footprint_area`, `building_area`, `planned_area`, `owner`,
 `applicant`, `address`, `certificate_number`, `survey_area`,
-`survey_perimeter`, `turning_points`. `number` is the figure in canonical
+`survey_perimeter`, `turning_points`, `signatory`, `identity_holder`.
+`signatory` is the name a hand WROTE beside a signature and `identity_holder`
+the person a passport or ID card names; both are person-valued, so `text`
+carries the same canonical `person:` id the owner and applicant facts use, and
+a vision answer supplies them (the deterministic pass cannot read handwriting). `number` is the figure in canonical
 units (square metres, metres, a count); `text` the canonical form of a code,
 a person entity id or an address key; `printed` is verbatim. `subject` says
 what the fact is about where the kind needs it — a building's code for
@@ -845,6 +849,7 @@ with `via: "vlm"`.
 | `address` | The site address on the certificate against the form's and the notes' — the same numbers and a street word in common. |
 | `certificate_number` | The certificate's number against every citation of it. |
 | `certificate_access` | Whether every page labelled as an ownership certificate prints the number and passcode that identify it to the register (`groups[].access`); a page without them is an `unreadable` witness, and a dossier with no certificate page at all is one `unreadable` check with no witnesses — the absence is the finding. |
+| `signature` | The name a hand wrote on a signed page against the identity documents filed in the same group: `agree` when a passport or ID card there names that person, `near_miss` within two edits, `disagree` when none of them does, and `unreadable` when the group files no identity document at all — the paper a signature would be verified against is missing. One check per signed page, `subject` the signatory's person id. **The strokes are never compared**: this reads names, not handwriting, because matching a signature against a specimen is forensic work no model here can do. |
 | `official_readability` | `unreadable` with the pages nothing has read yet, so a caller knows the vision pass is still owed before the official figures are settled. |
 
 Tolerances: an area copy agrees within 0.2 % (or half a square metre when

@@ -52,6 +52,12 @@ pub enum FactKind {
     SurveyPerimeter,
     /// How many turning points the table has.
     TurningPoints,
+    /// Who signed a page BY HAND, as the vision pass read the written name
+    /// (`text` is the person entity id, `printed` the name as written).
+    Signatory,
+    /// The person an identity document names — a passport's or ID card's
+    /// holder (`text` is the person entity id).
+    IdentityHolder,
 }
 
 /// One figure, as one page states it.

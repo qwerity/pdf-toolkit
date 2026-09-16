@@ -41,6 +41,9 @@ pub enum CheckKind {
     /// Whether each ownership certificate prints the number and passcode
     /// that identify it to the register.
     CertificateAccess,
+    /// A hand-signed page's written name against the identity document filed
+    /// with it: is the person who signed the one the passport names?
+    Signature,
     /// Official pages nothing has read yet.
     OfficialReadability,
 }
@@ -59,6 +62,29 @@ pub enum CheckStatus {
     SingleSource,
     /// The pages that would settle it have not been read.
     Unreadable,
+}
+
+/// What a check needs to know about one page, so `run` can project for itself
+/// the page lists it used to be handed separately — the unread official pages
+/// and the certificate pages — and can pair a signature with the identity
+/// papers filed in the same document.
+#[derive(Debug, Clone)]
+pub struct PageView {
+    pub number: usize,
+    pub trust: Trust,
+    pub labels: Vec<String>,
+    /// The documents this page belongs to: the unit a signature is paired in.
+    pub groups: Vec<String>,
+}
+
+impl PageView {
+    fn has(&self, label: &str) -> bool {
+        self.labels.iter().any(|l| l == label)
+    }
+    /// A passport or an ID card — the paper a signature is checked against.
+    fn is_identity(&self) -> bool {
+        self.has("passport") || self.has("id_card")
+    }
 }
 
 /// One page's statement of the figure.
@@ -695,12 +721,22 @@ fn check_certificate_number(facts: &[Fact], subject: &str, out: &mut Vec<Check>)
 pub fn run(
     facts: &[Fact],
     application_code: Option<&str>,
-    unread_official: &[usize],
-    certificate_pages: &[(usize, Trust)],
+    pages: &[PageView],
     access: &[DocumentAccess],
 ) -> Vec<Check> {
     let mut out = Vec::new();
-    check_certificate_access(certificate_pages, access, &mut out);
+    let certificate_pages: Vec<(usize, Trust)> = pages
+        .iter()
+        .filter(|p| p.has("cadastral_certificate"))
+        .map(|p| (p.number, p.trust))
+        .collect();
+    let unread_official: Vec<usize> = pages
+        .iter()
+        .filter(|p| p.trust == Trust::Unknown)
+        .map(|p| p.number)
+        .collect();
+    check_certificate_access(&certificate_pages, access, &mut out);
+    check_signatures(facts, pages, &mut out);
     if !unread_official.is_empty() {
         out.push(Check {
             kind: CheckKind::OfficialReadability,
@@ -799,6 +835,99 @@ fn check_certificate_access(
     });
 }
 
+/// Whether the person who signed a page by hand is the one their own papers
+/// name.
+///
+/// WHAT THIS CAN AND CANNOT SAY. It compares the written NAME the vision pass
+/// read against the identity document filed in the same group — a passport or
+/// an ID card. It does not compare the signature's strokes with a specimen;
+/// that is forensic handwriting work no model here can do, and a check that
+/// claimed it would be worse than none. So a match here means "the name
+/// written is the name on the passport", which is what a reviewer can act on.
+///
+/// Pairing is per GROUP, never document-wide: a submission carries one consent
+/// statement per neighbour, each with its own passport, and comparing a
+/// signatory against a stranger's passport would be noise. A signed page whose
+/// group files no identity document is `unreadable` — the passport a signature
+/// is verified against is simply not there.
+fn check_signatures(facts: &[Fact], pages: &[PageView], out: &mut Vec<Check>) {
+    let group_of = |page: usize| -> &[String] {
+        pages
+            .iter()
+            .find(|p| p.number == page)
+            .map_or(&[][..], |p| &p.groups)
+    };
+    let identity_pages: BTreeSet<usize> = pages
+        .iter()
+        .filter(|p| p.is_identity())
+        .map(|p| p.number)
+        .collect();
+
+    for signatory in facts.iter().filter(|f| f.kind == FactKind::Signatory) {
+        let groups = group_of(signatory.page);
+        // The identity documents filed alongside this signature.
+        let holders: Vec<&Fact> = facts
+            .iter()
+            .filter(|f| f.kind == FactKind::IdentityHolder)
+            .filter(|f| {
+                identity_pages.contains(&f.page)
+                    && (groups.is_empty() || group_of(f.page).iter().any(|g| groups.contains(g)))
+            })
+            .collect();
+        let signed_as = signatory.text.as_deref().unwrap_or("");
+        if holders.is_empty() {
+            out.push(Check {
+                kind: CheckKind::Signature,
+                subject: signatory.text.clone(),
+                status: CheckStatus::Unreadable,
+                reference: None,
+                witnesses: vec![witness(signatory, CheckStatus::Unreadable, None)],
+                note: format!(
+                    "page {} is signed by hand, but no passport or ID card is filed with it to \
+                     check that name against",
+                    signatory.page
+                ),
+            });
+            continue;
+        }
+        let status = if holders.iter().any(|h| h.text.as_deref() == Some(signed_as)) {
+            CheckStatus::Agree
+        } else if holders.iter().any(|h| {
+            h.text
+                .as_deref()
+                .is_some_and(|t| edit_distance(t, signed_as) <= 2)
+        }) {
+            CheckStatus::NearMiss
+        } else {
+            CheckStatus::Disagree
+        };
+        let named: Vec<String> = holders
+            .iter()
+            .map(|h| format!("page {} names {}", h.page, h.printed))
+            .collect();
+        let note = match status {
+            CheckStatus::Agree => format!(
+                "the hand that signed page {} is the person the identity document names ({})",
+                signatory.page, holders[0].printed
+            ),
+            _ => format!(
+                "page {} is signed {}; {}",
+                signatory.page,
+                signatory.printed,
+                named.join("; ")
+            ),
+        };
+        out.push(Check {
+            kind: CheckKind::Signature,
+            subject: signatory.text.clone(),
+            status,
+            reference: Some(witness(holders[0], CheckStatus::Agree, None)),
+            witnesses: vec![witness(signatory, status, None)],
+            note,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -834,6 +963,18 @@ mod tests {
             .expect("check present")
     }
 
+    fn page_view(number: usize, labels: &[&str], groups: &[&str]) -> PageView {
+        PageView {
+            number,
+            trust: Trust::Official,
+            labels: labels.iter().map(|s| s.to_string()).collect(),
+            groups: groups.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+    fn certificate_page(number: usize) -> PageView {
+        page_view(number, &["cadastral_certificate"], &[])
+    }
+
     fn access(page: usize, number: &str, passcode: &str) -> DocumentAccess {
         DocumentAccess {
             kind: AccessKind::Certificate,
@@ -845,12 +986,12 @@ mod tests {
 
     #[test]
     fn a_certificate_that_prints_its_credentials_passes_and_one_that_does_not_is_reported() {
-        let pages = [(5, Trust::Official), (6, Trust::Official)];
+        let pages = [certificate_page(5), certificate_page(6)];
         let both = [
             access(5, "20300101-01-0001", "0AAAA0AAA0AA"),
             access(6, "20300101-01-0001", "0AAAA0AAA0AA"),
         ];
-        let checks = run(&[], None, &[], &pages, &both);
+        let checks = run(&[], None, &pages, &both);
         let check = by_kind(&checks, CheckKind::CertificateAccess);
         assert_eq!(check.status, CheckStatus::Agree);
         assert_eq!(check.witnesses.len(), 2);
@@ -863,7 +1004,7 @@ mod tests {
             "the passcode must not reach checks[]"
         );
 
-        let checks = run(&[], None, &[], &pages, &both[..1]);
+        let checks = run(&[], None, &pages, &both[..1]);
         let check = by_kind(&checks, CheckKind::CertificateAccess);
         assert_eq!(check.status, CheckStatus::Unreadable);
         assert_eq!(check.witnesses[1].status, CheckStatus::Unreadable);
@@ -872,7 +1013,7 @@ mod tests {
 
     #[test]
     fn a_dossier_without_a_certificate_page_says_so() {
-        let checks = run(&[], None, &[], &[], &[]);
+        let checks = run(&[], None, &[], &[]);
         let check = by_kind(&checks, CheckKind::CertificateAccess);
         assert_eq!(check.status, CheckStatus::Unreadable);
         assert!(check.witnesses.is_empty());
@@ -901,7 +1042,7 @@ mod tests {
             ),
             num(FactKind::ParcelArea, 12, Trust::Applicant, "265 քմ", 265.0),
         ];
-        let checks = run(&facts, Some("01-011-0912-0146"), &[], &[], &[]);
+        let checks = run(&facts, Some("01-011-0912-0146"), &[], &[]);
         let area = by_kind(&checks, CheckKind::ParcelArea);
         assert_eq!(area.status, CheckStatus::NearMiss);
         let statuses: Vec<CheckStatus> = area.witnesses.iter().map(|w| w.status).collect();
@@ -957,7 +1098,7 @@ mod tests {
                 "01-011-0912-0141",
             ),
         ];
-        let checks = run(&facts, Some("01-011-0912-0146"), &[], &[], &[]);
+        let checks = run(&facts, Some("01-011-0912-0146"), &[], &[]);
         let codes = by_kind(&checks, CheckKind::CadastralCode);
         let got: Vec<(usize, CheckStatus)> =
             codes.witnesses.iter().map(|w| (w.page, w.status)).collect();
@@ -992,7 +1133,7 @@ mod tests {
             ),
             partial,
         ];
-        let checks = run(&facts, Some("01-008-0857-0041"), &[], &[], &[]);
+        let checks = run(&facts, Some("01-008-0857-0041"), &[], &[]);
         assert_eq!(
             by_kind(&checks, CheckKind::CadastralCode).status,
             CheckStatus::Disagree
@@ -1026,7 +1167,7 @@ mod tests {
                 "person:arman-zohrabyan",
             ),
         ];
-        let checks = run(&facts, Some("01-008-0731-0612"), &[], &[], &[]);
+        let checks = run(&facts, Some("01-008-0731-0612"), &[], &[]);
         let who = by_kind(&checks, CheckKind::Applicant);
         assert_eq!(who.status, CheckStatus::Disagree);
         assert_eq!(who.witnesses[1].status, CheckStatus::Agree);
@@ -1049,7 +1190,7 @@ mod tests {
             a,
             b,
         ];
-        let checks = run(&facts, Some("01-011-0912-0146"), &[], &[], &[]);
+        let checks = run(&facts, Some("01-011-0912-0146"), &[], &[]);
         let fence = by_kind(&checks, CheckKind::PlannedArea);
         assert_eq!(fence.status, CheckStatus::Disagree);
         assert_eq!(fence.witnesses[0].page, 8);
@@ -1075,11 +1216,87 @@ mod tests {
         );
         note.subject = Some("-001".into());
         let facts = vec![reg, note];
-        let checks = run(&facts, Some("01-008-0857-0041"), &[], &[], &[]);
+        let checks = run(&facts, Some("01-008-0857-0041"), &[], &[]);
         assert_eq!(
             by_kind(&checks, CheckKind::BuildingArea).status,
             CheckStatus::Disagree
         );
+    }
+
+    #[test]
+    fn a_signature_is_checked_against_the_passport_filed_with_it() {
+        // One consent statement per neighbour, each with its own passport: the pairing is by
+        // group, so a signatory is never measured against a stranger's papers.
+        let pages = [
+            page_view(3, &["consent_statement", "handwritten"], &["consent:a"]),
+            page_view(4, &["passport"], &["consent:a"]),
+            page_view(5, &["consent_statement", "handwritten"], &["consent:b"]),
+            page_view(6, &["passport"], &["consent:b"]),
+        ];
+        let facts = [
+            txt(
+                FactKind::Signatory,
+                3,
+                Trust::Applicant,
+                "ԱՐԱՄ ՂԱԶԱՐՅԱՆ",
+                "person:aram-ghazaryan",
+            ),
+            txt(
+                FactKind::IdentityHolder,
+                4,
+                Trust::Identity,
+                "ԱՐԱՄ ՂԱԶԱՐՅԱՆ",
+                "person:aram-ghazaryan",
+            ),
+            // The second statement is signed by someone the passport does not name.
+            txt(
+                FactKind::Signatory,
+                5,
+                Trust::Applicant,
+                "ԷԴԳԱՐ ՄԿՐՏՉՅԱՆ",
+                "person:edgar-mkrtchyan",
+            ),
+            txt(
+                FactKind::IdentityHolder,
+                6,
+                Trust::Identity,
+                "ԳԱՅԱՆԵ ՂԱԶԱՐՅԱՆ",
+                "person:gayane-ghazaryan",
+            ),
+        ];
+        let checks = run(&facts, None, &pages, &[]);
+        let signature: Vec<&Check> = checks
+            .iter()
+            .filter(|c| c.kind == CheckKind::Signature)
+            .collect();
+        assert_eq!(signature.len(), 2, "one per signed page");
+        assert_eq!(signature[0].status, CheckStatus::Agree);
+        assert_eq!(signature[1].status, CheckStatus::Disagree);
+        assert!(
+            signature[1].note.contains("page 5"),
+            "{}",
+            signature[1].note
+        );
+    }
+
+    #[test]
+    fn a_signed_page_with_no_passport_filed_says_so() {
+        let pages = [page_view(
+            3,
+            &["consent_statement", "handwritten"],
+            &["consent:a"],
+        )];
+        let facts = [txt(
+            FactKind::Signatory,
+            3,
+            Trust::Applicant,
+            "ԱՐԱՄ ՂԱԶԱՐՅԱՆ",
+            "person:aram-ghazaryan",
+        )];
+        let checks = run(&facts, None, &pages, &[]);
+        let check = by_kind(&checks, CheckKind::Signature);
+        assert_eq!(check.status, CheckStatus::Unreadable);
+        assert!(check.note.contains("no passport"), "{}", check.note);
     }
 
     #[test]

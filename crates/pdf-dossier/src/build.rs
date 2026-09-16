@@ -205,23 +205,19 @@ pub fn assemble(analysis: &DossierAnalysis, options: &DossierOptions) -> Result<
     let application_code = subject
         .as_deref()
         .map(|id| entities::split_id(id).1.to_string());
-    let unread: Vec<usize> = analysis
-        .inputs
-        .iter()
-        .zip(&facts)
-        .filter(|(_, f)| f.trust == Trust::Unknown)
-        .map(|(input, _)| input.number)
-        .collect();
     // The credentials the Committee's documents print, read off the
-    // (legacy-decoded) text of the pages labelled as such, and the
-    // certificate pages the access check measures them against — one pass,
+    // (legacy-decoded) text of the pages labelled as such, and the view of
+    // each page the checks project their own page lists from — one pass,
     // since both are the same question asked of the same page.
     let mut access: Vec<access::DocumentAccess> = Vec::new();
-    let mut certificate_pages: Vec<(usize, Trust)> = Vec::new();
+    let mut page_views: Vec<checks::PageView> = Vec::new();
     for (input, fact) in analysis.inputs.iter().zip(&facts) {
-        if fact.labels.iter().any(|l| l == "cadastral_certificate") {
-            certificate_pages.push((input.number, fact.trust));
-        }
+        page_views.push(checks::PageView {
+            number: input.number,
+            trust: fact.trust,
+            labels: fact.labels.clone(),
+            groups: fact.groups.clone(),
+        });
         let printed = access::page_access(
             input.number,
             &fact.labels,
@@ -243,8 +239,7 @@ pub fn assemble(analysis: &DossierAnalysis, options: &DossierOptions) -> Result<
     let page_checks = checks::run(
         &page_facts,
         application_code.as_deref(),
-        &unread,
-        &certificate_pages,
+        &page_views,
         &access,
     );
 
@@ -327,6 +322,8 @@ fn answered_page_facts(page: &facts::PageInput<'_>, answer: &PageAnswer) -> Vec<
                 "applicant" => FactKind::Applicant,
                 "address" => FactKind::Address,
                 "certificate_number" => FactKind::CertificateNumber,
+                "signatory" => FactKind::Signatory,
+                "identity_holder" => FactKind::IdentityHolder,
                 _ => return None,
             };
             let mut fact = Fact {
@@ -352,7 +349,13 @@ fn answered_page_facts(page: &facts::PageInput<'_>, answer: &PageAnswer) -> Vec<
                         .unwrap_or(1.0);
                     fact.number = Some(numbers::parse_number(&f.value)? * factor);
                 }
-                FactKind::Owner | FactKind::Applicant => {
+                // Every person-valued fact is canonicalised the same way, so a
+                // signature reads equal to the passport that names the same
+                // person however either spelled or cased it.
+                FactKind::Owner
+                | FactKind::Applicant
+                | FactKind::Signatory
+                | FactKind::IdentityHolder => {
                     fact.text = Some(entities::entity_id("person", f.value.trim()));
                 }
                 FactKind::Address => fact.text = Some(facts::address_key(&f.value)),

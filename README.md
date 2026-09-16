@@ -285,11 +285,14 @@ usage and estimated cost on stderr, priced from
 
 Reconstructs the building storey by storey from the CAD-exported plan
 sheets — deterministically, from the fills the exporter wrote. Walls, the
-building envelope and the rooms are told apart by fill colour, the storeys
-are stacked on the printed grid axes, and the openings are what the envelope
-minus the rooms minus the walls leaves behind: edge pieces are glazing,
-interior pieces door gaps. Levels come from the section's level marks, the
-scale from the title block.
+building envelope and the rooms are told apart by fill colour — the walls by
+the shape of their fills where the tone does not settle it, since one office
+draws them near-black and another mid-grey — the storeys are stacked on the
+printed grid axes, and the openings are what the envelope minus the rooms
+minus the walls leaves behind: edge pieces are glazing, interior pieces door
+gaps. Levels come from the section's level marks, the scale from the title
+block. A sheet that draws none of these fills — a plan in line work — yields a
+storey marked `empty` rather than one that looks reconstructed.
 
 The other sheets add what a plan cannot show. The roof plan draws the
 parapet. The elevations, set against the model by their level marks and grid

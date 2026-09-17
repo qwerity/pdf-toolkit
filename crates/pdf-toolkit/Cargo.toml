@@ -25,6 +25,12 @@ pdf-text.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
+serde.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures-core.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
 image.workspace = true

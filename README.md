@@ -10,7 +10,7 @@ Built as a quicker alternative to [Docling](https://github.com/docling-project/d
 for turning PDFs into text and structured markdown: a single native binary over
 PDFium, with no Python runtime to install.
 
-Every command prints one JSON document on stdout.
+Every processing command prints one JSON document on stdout.
 **[`docs/json-api.md`](docs/json-api.md) is the contract** — field by field,
 with the enums to branch on and when a field is absent. Read that if you are
 wiring this into a service; the examples below are a tour, not a reference.
@@ -49,6 +49,20 @@ Optional environment variables:
 - `SKIP_TESTS=1`: keeps the checks, clippy and the release build but skips `cargo test` (what the release workflow sets)
 
 The build script downloads the matching PDFium binary and places it next to the executable in `./dist`.
+
+## Optional service and PM2
+
+Existing CLI calls are unchanged. For an application-managed HTTP service:
+
+```bash
+./dist/pdf-toolkit serve                  # defaults to 8 active workers
+./dist/pdf-toolkit serve --max-workers 16
+pm2 start ecosystem.config.js             # optional PM2 supervision
+```
+
+The service runs disposable CLI workers and exposes `/health`, `/ready`,
+`/status`, and the full command API. See [service configuration and lifecycle](docs/service.md)
+for request examples, shutdown, memory behavior, and PM2 overrides.
 
 ## Usage
 

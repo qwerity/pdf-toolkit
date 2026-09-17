@@ -1,10 +1,11 @@
 mod cli_output;
+mod service;
 
 use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 
 use pdf_toolkit::cli::{
     BuildingArgs, CadfixArgs, Cli, Command, CutArgs, DossierArgs, DownsampleArgs, InspectArgs,
@@ -23,12 +24,22 @@ use crate::cli_output::{
 };
 
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    match launch() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("Error: {error:#}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn launch() -> Result<()> {
+    service::watch_parent()?;
+    let matches = Cli::command().subcommand(service::command()).get_matches();
+    if let Some(args) = matches.subcommand_matches("serve") {
+        service::run(service::Config::from_arg_matches(args)?)
+    } else {
+        run(Cli::from_arg_matches(&matches)?)
     }
 }
 

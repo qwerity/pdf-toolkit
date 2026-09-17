@@ -13,45 +13,47 @@ rust-version = "1.98"
 
 [workspace.dependencies]
 anyhow = "1.0"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+base64 = "0.23"
 clap = { version = "4.6", features = ["derive"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
-pdfium-render = "0.9"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tempfile = "3"
-thiserror = "2.0"
-
-geojson = "1.0.0"
+dotenvy = "0.15"
 earcutr = "0.5"
 fast_image_resize = "6.1"
 flate2 = "1.1"
+futures-core = { version = "0.3", default-features = false }
 geo = "0.33"
-base64 = "0.23"
-dotenvy = "0.15"
+geojson = "1.0.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
 indexmap = { version = "2", features = ["serde"] }
 jpeg-encoder = "0.7"
-rayon = "1.12"
+llm-providers = { path = "crates/llm-providers" }
 lopdf = { version = "0.45.0", default-features = false, features = ["chrono"] }
-regex = "1.13"
-rxing = { version = "0.9", default-features = false, features = ["encoding_rs", "decoders", "multi_barcode_readers", "qrcode"] }
-ureq = { version = "3.4", features = ["json"] }
-zune-core = "0.5"
-zune-jpeg = "0.5"
-
 pdf-classify = { path = "crates/pdf-classify" }
 pdf-core = { path = "crates/pdf-core" }
 pdf-dossier = { path = "crates/pdf-dossier" }
 pdf-downsample = { path = "crates/pdf-downsample" }
 pdf-geo = { path = "crates/pdf-geo" }
 pdf-geometry = { path = "crates/pdf-geometry" }
-pdf-vector = { path = "crates/pdf-vector" }
-pdf-vlm = { path = "crates/pdf-vlm" }
-llm-providers = { path = "crates/llm-providers" }
 pdf-inspect = { path = "crates/pdf-inspect" }
 pdf-model = { path = "crates/pdf-model" }
 pdf-pages = { path = "crates/pdf-pages" }
 pdf-render = { path = "crates/pdf-render" }
 pdf-text = { path = "crates/pdf-text" }
+pdf-vector = { path = "crates/pdf-vector" }
+pdf-vlm = { path = "crates/pdf-vlm" }
+pdfium-render = "0.9"
+rayon = "1.12"
+regex = "1.13"
+rxing = { version = "0.9", default-features = false, features = ["encoding_rs", "decoders", "multi_barcode_readers", "qrcode"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3"
+thiserror = "2.0"
+tokio = { version = "1.53", default-features = false, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", default-features = false, features = ["io", "rt"] }
+ureq = { version = "3.4", features = ["json"] }
+zune-core = "0.5"
+zune-jpeg = "0.5"
 
 [profile.release]
 opt-level = 3

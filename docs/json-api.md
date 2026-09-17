@@ -1,12 +1,14 @@
 # pdf-toolkit JSON API
 
-`pdf-toolkit` is a command-line tool. Every subcommand prints **exactly one JSON
-document on stdout and nothing else**, so it can be driven from another program.
+`pdf-toolkit` is a command-line tool. An optional [HTTP service](service.md)
+returns these same successful JSON responses. Every processing subcommand prints
+**exactly one JSON document on stdout and nothing else**, so it can be driven from
+another program. `serve` is a long-running coordinator and logs to stderr.
 
 This file is the contract. It is the reference for integrating the tool; if you
 are wiring it into a service, this is all you need.
 
-- Version described here: **0.15.0** (matches the package version)
+- Version described here: **0.15.1** (matches the package version)
 - Warnings and progress go to **stderr**; stdout is only ever the JSON document
 - Files written under `--output` are the same whether or not you parse stdout
 - Exit code is `0` on success and non-zero on failure. **A failed run prints no

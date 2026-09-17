@@ -22,19 +22,43 @@ service itself. PM2 is optional.
 | `--worker-threads` | `1` | Rayon threads per child, particularly relevant to downsampling |
 | `--timeout-seconds` | `3600` | Deadline covering queueing and execution |
 | `--shutdown-grace-seconds` | `30` | Time for running work to finish on shutdown |
+| `--write-timeout-seconds` | `30` | Close connections whose response writes stall |
+| `--max-connections` | `128` | Maximum open HTTP connections, including idle ones |
+| `--memory-budget-mib` | `8192` | Total reservations for worker memory |
+| `--worker-memory-mib` | `1024` | Reservation and sampled resident-memory limit per worker |
+| `--max-render-pixels` | `32000000` | Maximum pixels in one rendered page |
+| `--print-config` | off | Print validated configuration as JSON and exit |
 
 With defaults, eight jobs can execute and up to forty requests can be admitted.
 Admission also covers incoming bodies and outgoing JSON streams, so slow clients
 cannot create an unbounded collection of buffers or temporary files. At capacity,
 new job requests receive JSON `503` with `Retry-After: 1`. Health/status requests
-remain available. Request bodies are limited to 64 KiB and ten seconds to arrive.
-The execution deadline does not include delivery of a completed response.
+remain available while connection capacity remains. Request headers and bodies
+each have a ten-second deadline; bodies are limited to 64 KiB. Excess connections
+are closed. Response delivery has a separate socket write idle timeout: a stalled
+reader is disconnected and its capacity and temporary files are released.
 
-The worker count is a concurrency limit, **not a RAM reservation or a memory
-cap**. Eight simultaneous downsampling or large dossier jobs can exceed a small
-host's RAM. Tune it against representative PDFs and reserve resources for the
-parent application. The service does not change rendering resolution or the
-existing downsampling batch budget.
+Each executing job reserves `--worker-memory-mib` from `--memory-budget-mib`.
+Effective execution concurrency is the smaller of `--max-workers` and the number
+of whole reservations that fit. Defaults permit eight jobs with 1 GiB each. For
+sixteen simultaneous jobs within 8 GiB, use `--max-workers 16
+--worker-memory-mib 512`; larger jobs may need a larger worker limit and fewer
+simultaneous executions. Waiting jobs retain their queue/execution deadline.
+
+Worker resident memory is sampled every 100 ms. A worker over its limit is killed
+and reaped, releasing its reservation and returning JSON `422`. This is **not a
+kernel-enforced hard cap**: short allocations can exceed the limit between
+samples. The budget excludes the coordinator, parent application and filesystem
+cache. Use an OS/container memory limit when a strict host-level boundary is
+required, and tune these settings against representative PDFs.
+
+Rendering checks dimensions before allocating the bitmap, including renders
+inside dossier/VLM work. Pages exceeding `--max-render-pixels` are rejected by
+the existing command error/partial-result path. Downsampling restricts estimated
+image-processing batches to one quarter of the worker limit, capped at 256 MiB.
+Images that cannot fit individually remain unchanged and are counted under
+`unchanged.too_large`. The worker RSS monitor also covers document loading and saving.
+These service limits do not silently reduce requested render resolution.
 
 The same configuration works for render/text, dossier/model/building, and
 downsampling hosts; all commands remain available. Customize the limits per host.
@@ -79,10 +103,11 @@ already returned by the toolkit. CLI defaults are unchanged.
 | `200` | Successful CLI result, including its normal partial results |
 | `400` | Invalid JSON or command arguments |
 | `401` | Missing or incorrect configured bearer token |
+| `404` / `405` | Unknown route / unsupported method, with JSON error body |
 | `408` | Request body took too long |
 | `413` | Request body too large or unreadable |
 | `415` | Request is not `application/json` |
-| `422` | CLI failed; includes a bounded stderr diagnostic |
+| `422` | CLI failed (bounded stderr diagnostic), or worker memory limit exceeded |
 | `500` | Coordinator/spawn/I/O failure |
 | `503` | Capacity exhausted or shutdown in progress |
 | `504` | Queue/execution deadline expired; worker terminated and reaped |
@@ -126,7 +151,7 @@ stdout/stderr files are automatically removed; put `TMPDIR` on disk rather than
 a RAM-backed filesystem if large results are expected.
 
 After all responses finish, `/status` should report `active_workers: 0` and
-`outstanding_requests: 0`. Coordinator RSS can retain small allocator/runtime
+`outstanding_requests: 0` and `reserved_memory_mib: 0`. Coordinator RSS can retain small allocator/runtime
 high-water allocations; exact startup RSS is not guaranteed. Validate a stable
 idle baseline over repeated workload bursts. Filesystem cache is reclaimable OS
 memory and should be distinguished from retained process memory. PM2 itself also
@@ -165,9 +190,17 @@ PDF_TOOLKIT_MAX_WORKERS=12 pm2 restart ecosystem.config.js --update-env
 | `PDF_TOOLKIT_WORKER_THREADS` | `1` |
 | `PDF_TOOLKIT_TIMEOUT_SECONDS` | `3600` |
 | `PDF_TOOLKIT_SHUTDOWN_GRACE_SECONDS` | `30` |
+| `PDF_TOOLKIT_WRITE_TIMEOUT_SECONDS` | `30` |
+| `PDF_TOOLKIT_MAX_CONNECTIONS` | `128` |
+| `PDF_TOOLKIT_MEMORY_BUDGET_MIB` | `8192` |
+| `PDF_TOOLKIT_WORKER_MEMORY_MIB` | `1024` |
+| `PDF_TOOLKIT_MAX_RENDER_PIXELS` | `32000000` |
 
-The ecosystem translates these values into CLI arguments. They are not separately
-read by `serve` when invoked directly. PM2's kill timeout is derived from the grace
+The ecosystem translates supplied values into CLI arguments and invokes the binary
+with `serve --print-config` to obtain defaults and validate overrides. Build or
+install the matching binary before loading the ecosystem file; Rust is the single
+source of defaults and validation. These variables are not separately read by
+`serve` when invoked directly. PM2's kill timeout is derived from the grace
 period plus ten seconds. `treekill: false` lets the coordinator drain its own
 workers; the parent pipe handles forced coordinator termination. PM2 readiness
 IPC is disabled because this is a native executable; use `/ready`.

@@ -12,6 +12,8 @@
 //! is the natural third variant, and adding it means one arm in each `match`
 //! below.
 
+mod limits;
+
 use std::io::Write;
 use std::path::Path;
 
@@ -71,6 +73,7 @@ pub fn dimensions_px(page: &PdfPage<'_>, size: PngSize) -> (u32, u32) {
 /// it is later composited onto something dark.
 pub fn render_page<'page>(page: &'page PdfPage<'page>, size: PngSize) -> Result<PdfBitmap<'page>> {
     size.validate()?;
+    limits::check(page.width().value, page.height().value, size)?;
 
     let render_config = match size {
         PngSize::Scale(scale) => PdfRenderConfig::new().scale_page_by_factor(scale),

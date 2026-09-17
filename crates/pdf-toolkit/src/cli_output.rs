@@ -3,7 +3,9 @@ use pdf_toolkit::{
     DocumentInfo, ExtractionReport, ExtractionWarning, OutputFormat, PageInfo, PngSize,
     StructuredExtractionReport, TextExtractionReport,
 };
+use serde::Serialize;
 use serde_json::{Map, Value, json};
+use std::io::{BufWriter, Write};
 
 pub fn print_document_info(document_info: &DocumentInfo) -> Result<()> {
     print_json(document_info_json(document_info))
@@ -20,33 +22,33 @@ pub fn print_vector_output(report: &pdf_vector::DocumentVector) -> Result<()> {
     for warning in &report.warnings {
         eprintln!("Warning: {warning}");
     }
-    print_json(serde_json::to_value(report).context("failed to serialize vector output")?)
+    print_json(report)
 }
 
 pub fn print_dossier_output(report: &pdf_dossier::DossierReport) -> Result<()> {
     print_warnings(&report.warnings);
     print_warnings(&report.validate());
-    print_json(serde_json::to_value(report).context("failed to serialize dossier output")?)
+    print_json(report)
 }
 
 pub fn print_cadfix_output(report: &pdf_vlm::cad::CadFixReport) -> Result<()> {
     print_warnings(&report.warnings);
-    print_json(serde_json::to_value(report).context("failed to serialize cadfix output")?)
+    print_json(report)
 }
 
 pub fn print_building_output(report: &pdf_vlm::building::BuildingReport) -> Result<()> {
     print_warnings(&report.warnings);
-    print_json(serde_json::to_value(report).context("failed to serialize building output")?)
+    print_json(report)
 }
 
 pub fn print_downsample_output(report: &pdf_downsample::DownsampleReport) -> Result<()> {
     print_warnings(&report.warnings);
-    print_json(serde_json::to_value(report).context("failed to serialize downsample output")?)
+    print_json(report)
 }
 
 pub fn print_model_output(report: &pdf_model::ModelReport) -> Result<()> {
     print_warnings(&report.warnings);
-    print_json(serde_json::to_value(report).context("failed to serialize model output")?)
+    print_json(report)
 }
 
 pub fn print_structured_output(report: &StructuredExtractionReport) -> Result<()> {
@@ -333,17 +335,42 @@ fn print_warnings(warnings: &[impl std::fmt::Display]) {
     }
 }
 
-fn print_json(value: Value) -> Result<()> {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&value).context("failed to serialize JSON output")?
-    );
-    Ok(())
+/// Serialize directly to buffered stdout without building a complete JSON string.
+/// The JSON document is followed by one newline, as in the CLI contract.
+pub fn print_json(value: impl Serialize) -> Result<()> {
+    let mut writer = BufWriter::new(std::io::stdout().lock());
+    write_json(&mut writer, &value)?;
+    writer.flush().context("failed to flush JSON output")
+}
+
+fn write_json(writer: &mut impl Write, value: &impl Serialize) -> Result<()> {
+    serde_json::to_writer_pretty(&mut *writer, value).context("failed to serialize JSON output")?;
+    writer
+        .write_all(b"\n")
+        .context("failed to finish JSON output")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn buffered_json_preserves_document_and_propagates_write_errors() {
+        let value = serde_json::json!({"pages": {"1": {"text": "hello"}}});
+        let mut bytes = Vec::new();
+        write_json(&mut bytes, &value).expect("serialize");
+        assert_eq!(
+            bytes,
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&value).expect("expected")
+            )
+            .as_bytes()
+        );
+        let mut full = &mut [0u8; 1][..];
+        assert!(write_json(&mut full, &value).is_err());
+    }
+
     use pdf_toolkit::{LlmReason, PageResult, StructuredPage, TextFileResult, TextSpan};
     use std::path::PathBuf;
 

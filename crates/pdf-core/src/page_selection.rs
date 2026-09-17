@@ -1,6 +1,9 @@
 use crate::error::{PdfError, Result};
 use std::num::NonZeroU16;
 
+/// Bounds eager expansion, including duplicates, before allocating.
+pub const MAX_SELECTION_ENTRIES: usize = u16::MAX as usize;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PageSelection {
     All,
@@ -57,7 +60,9 @@ fn extend_page_selection(
         return extend_page_range(value, start.trim(), end.trim(), position, page_numbers);
     }
 
-    page_numbers.push(parse_page_number(value, position)?);
+    let page = parse_page_number(value, position)?;
+    reserve_selection(page_numbers, 1)?;
+    page_numbers.push(page);
 
     Ok(())
 }
@@ -79,12 +84,25 @@ fn extend_page_range(
         });
     }
 
-    page_numbers.reserve(usize::from(end_page.get() - start_page.get()) + 1);
+    reserve_selection(
+        page_numbers,
+        usize::from(end_page.get() - start_page.get()) + 1,
+    )?;
 
     for raw_page in start_page.get()..=end_page.get() {
         page_numbers.push(NonZeroU16::new(raw_page).expect("page ranges must stay non-zero"));
     }
 
+    Ok(())
+}
+
+fn reserve_selection(pages: &mut Vec<NonZeroU16>, additional: usize) -> Result<()> {
+    if additional > MAX_SELECTION_ENTRIES.saturating_sub(pages.len()) {
+        return Err(PdfError::PageSelectionTooLarge {
+            max: MAX_SELECTION_ENTRIES,
+        });
+    }
+    pages.reserve(additional);
     Ok(())
 }
 
@@ -143,6 +161,22 @@ mod tests {
 
     fn pages(numbers: &[u16]) -> Vec<NonZeroU16> {
         numbers.iter().copied().map(page).collect()
+    }
+
+    #[test]
+    fn expansion_is_bounded_for_ranges_and_single_pages() {
+        assert!(PageSelection::parse("1-65535").is_ok());
+        for spec in ["1-65535,1", "1-65535,1-65535"] {
+            assert!(matches!(
+                PageSelection::parse(spec),
+                Err(PdfError::PageSelectionTooLarge { .. })
+            ));
+        }
+        let repeated = vec!["1-65535"; 256].join(",");
+        assert!(matches!(
+            PageSelection::parse(&repeated),
+            Err(PdfError::PageSelectionTooLarge { .. })
+        ));
     }
 
     #[test]

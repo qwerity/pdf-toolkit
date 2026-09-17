@@ -3,10 +3,13 @@
 mod config;
 mod error;
 mod http;
+mod memory;
 mod request;
 mod response;
 mod state;
+mod transport;
 mod worker;
+mod write_timeout;
 
 use std::{sync::Arc, time::Duration};
 
@@ -14,10 +17,17 @@ use anyhow::{Context, Result, bail};
 use tokio::sync::watch;
 
 pub use config::{Config, command};
-pub use worker::watch_parent;
+pub use worker::{downsample_budget, watch_parent};
 
 /// Run until SIGINT, SIGTERM or POST /shutdown; finish/reap jobs before returning.
 pub fn run(config: Config) -> Result<()> {
+    config.validate()?;
+    if config.print_config {
+        return crate::cli_output::print_json(&config);
+    }
+    if !sysinfo::IS_SUPPORTED_SYSTEM {
+        bail!("worker memory monitoring is unsupported on this operating system");
+    }
     let token = std::env::var("PDF_TOOLKIT_SERVICE_TOKEN")
         .ok()
         .filter(|token| !token.is_empty());
@@ -55,25 +65,7 @@ async fn serve(state: Arc<state::State>) -> Result<()> {
             .context("cannot read listener address")?,
         state.config.max_workers
     );
-    let mut stop = state.stop.subscribe();
-    let shutdown_state = state.clone();
-    let server =
-        axum::serve(listener, http::router(state.clone())).with_graceful_shutdown(async move {
-            signal.await;
-            shutdown_state.stop.send_replace(true);
-        });
-    // Slow clients must not keep PM2 stop/restart waiting indefinitely.
-    let result = tokio::select! {
-        result = server => result.context("HTTP server failed"),
-        _ = async {
-            let _ = stop.changed().await;
-            tokio::time::sleep(Duration::from_secs(state.config.shutdown_grace_seconds + 2)).await;
-        } => Ok(()),
-    };
-    state.stop.send_replace(true);
-    state.tasks.close();
-    state.tasks.wait().await;
-    result
+    transport::serve(listener, state, signal).await
 }
 
 #[cfg(unix)]

@@ -39,6 +39,9 @@ pub struct DownsampleOptions {
     pub threshold_dpi: u32,
     /// JPEG quality (1–100) for images that were stored as JPEG.
     pub jpeg_quality: u8,
+    /// Estimated bytes available to concurrently decoded/resized samples.
+    /// Images exceeding this budget are left unchanged as `too_large`.
+    pub working_memory_bytes: u64,
 }
 
 impl DownsampleOptions {
@@ -49,6 +52,7 @@ impl DownsampleOptions {
             target_dpi,
             threshold_dpi: target_dpi.saturating_add(target_dpi.div_ceil(10)),
             jpeg_quality: DEFAULT_JPEG_QUALITY,
+            working_memory_bytes: PARALLEL_BYTES_BUDGET,
         }
     }
 }
@@ -75,6 +79,10 @@ pub fn downsample(
     output: &Path,
     options: &DownsampleOptions,
 ) -> Result<DownsampleReport> {
+    anyhow::ensure!(
+        options.working_memory_bytes > 0,
+        "resampling memory budget must be positive"
+    );
     refuse_same_file(input, output)?;
     let bytes_before = std::fs::metadata(input)
         .with_context(|| format!("cannot read '{}'", input.display()))?
@@ -106,7 +114,7 @@ pub fn downsample(
             }
         }
         let mut edits = Vec::new();
-        for result in process_all(&jobs, options.jpeg_quality) {
+        for result in process_all(&jobs, options.jpeg_quality, options.working_memory_bytes) {
             match result {
                 Ok(edit) => edits.push(edit),
                 Err(reason) => *unchanged.entry(reason).or_default() += 1,
@@ -300,17 +308,21 @@ fn plan<'d>(
 }
 
 /// Resamples every job, in parallel, in batches whose decoded size stays
-/// within [`PARALLEL_BYTES_BUDGET`]. Results come back in job order.
-fn process_all(jobs: &[Job<'_>], jpeg_quality: u8) -> Vec<Result<Edit, SkipReason>> {
+/// within `budget`. Oversized individual jobs are skipped without decoding.
+/// Results come back in job order.
+fn process_all(jobs: &[Job<'_>], jpeg_quality: u8, budget: u64) -> Vec<Result<Edit, SkipReason>> {
     let mut results = Vec::with_capacity(jobs.len());
     let mut start = 0;
     while start < jobs.len() {
         let cost = |job: &Job<'_>| job.declared.bytes() * WORKING_BYTES_PER_SAMPLE;
+        if cost(&jobs[start]) > budget {
+            results.push(Err(SkipReason::TooLarge));
+            start += 1;
+            continue;
+        }
         let mut end = start;
         let mut bytes = 0;
-        while end < jobs.len()
-            && (end == start || bytes + cost(&jobs[end]) <= PARALLEL_BYTES_BUDGET)
-        {
+        while end < jobs.len() && cost(&jobs[end]) <= budget.saturating_sub(bytes) {
             bytes += cost(&jobs[end]);
             end += 1;
         }
@@ -414,4 +426,35 @@ fn refuse_same_file(input: &Path, output: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    use lopdf::dictionary;
+
+    #[test]
+    fn oversized_job_is_skipped_without_decoding_invalid_stream() {
+        let doc = Document::new();
+        let stream = Stream::new(
+            lopdf::dictionary! {
+                "Width" => 1000, "Height" => 1000, "BitsPerComponent" => 8,
+                "ColorSpace" => "DeviceRGB", "Filter" => "DCTDecode",
+            },
+            Vec::new(),
+        );
+        let declared = codec::declared(&doc, &stream).expect("valid declaration");
+        let placement = placement::Placement::default();
+        let job = Job {
+            id: (1, 0),
+            stream: &stream,
+            declared,
+            placement: &placement,
+            to: [100, 100],
+            effective_dpi: 1000.0,
+        };
+        let results = process_all(&[job], 85, 1);
+        assert!(matches!(results.as_slice(), [Err(SkipReason::TooLarge)]));
+        assert!(process_all(&[], 85, 1).is_empty());
+    }
 }

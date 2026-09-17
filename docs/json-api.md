@@ -66,6 +66,10 @@ pdf-toolkit <command> <input.pdf> [options]
 An option that does not apply to a command does not exist on it, and using it is
 a usage error rather than a silently ignored flag.
 
+Explicit page lists/ranges may expand to at most 65,535 entries, counting
+duplicates. Larger selections are rejected before further expansion; `all` is
+unaffected. HTTP workers also apply the configurable [service resource limits](service.md).
+
 ---
 
 ## Errors and partial results

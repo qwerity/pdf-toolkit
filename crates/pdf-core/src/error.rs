@@ -17,6 +17,8 @@ pub enum PdfError {
     InputNotFile(PathBuf),
     #[error("page selection cannot be empty")]
     EmptyPageSelection,
+    #[error("page selection expands beyond the supported maximum of {max} entries")]
+    PageSelectionTooLarge { max: usize },
     #[error("page selection entry #{position} ('{value}') is invalid; expected a positive integer")]
     InvalidPageSelectionToken { position: usize, value: String },
     #[error("page selection entry #{position} ('{value}') is invalid; ranges must be ascending")]
@@ -25,6 +27,10 @@ pub enum PdfError {
     InvalidImageScale { value: f32 },
     #[error("image width must be an integer in 1..={max}, got {value}")]
     InvalidImageWidth { value: u32, max: u32 },
+    #[error("render dimensions exceed the limit of {max_pixels} pixels or PDFium dimension bounds")]
+    RenderTooLarge { max_pixels: u64 },
+    #[error("invalid resource limit {name}: {value}")]
+    InvalidResourceLimit { name: &'static str, value: String },
     #[error("the document contains no pages")]
     EmptyDocument,
     #[error(

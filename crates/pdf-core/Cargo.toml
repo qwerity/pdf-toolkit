@@ -12,3 +12,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[bench]]
+name = "page_selection"
+harness = false

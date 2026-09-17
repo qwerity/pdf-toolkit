@@ -339,7 +339,11 @@ fn model(args: &ModelArgs) -> Result<()> {
 fn downsample(args: &DownsampleArgs) -> Result<()> {
     args.validate()
         .map_err(|message| anyhow::anyhow!(message))?;
-    let report = pdf_downsample::downsample(&args.input, &args.output, &args.options())?;
+    let mut options = args.options();
+    if let Some(budget) = service::downsample_budget()? {
+        options.working_memory_bytes = budget;
+    }
+    let report = pdf_downsample::downsample(&args.input, &args.output, &options)?;
     print_downsample_output(&report)
 }
 

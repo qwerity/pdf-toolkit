@@ -11,6 +11,7 @@ pub struct State {
     pub token: Option<String>,
     pub started: Instant,
     pub workers: Arc<Semaphore>,
+    pub memory: Arc<Semaphore>,
     pub admission: Arc<Semaphore>,
     pub stop: watch::Sender<bool>,
     pub tasks: TaskTracker,
@@ -20,7 +21,9 @@ impl State {
     pub fn new(config: Config, executable: PathBuf, token: Option<String>) -> Arc<Self> {
         let workers = usize::from(config.max_workers);
         let capacity = workers + usize::from(config.max_queue);
+        let memory = Arc::new(Semaphore::new(config.memory_budget_mib as usize));
         Arc::new(Self {
+            memory,
             config,
             executable,
             token,

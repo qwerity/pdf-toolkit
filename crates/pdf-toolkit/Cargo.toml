@@ -30,10 +30,12 @@ axum.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 futures-core.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+sysinfo.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]
+socket2 = { version = "0.6", default-features = false }
 image.workspace = true
 pdfium-render.workspace = true
-serde_json.workspace = true
-tempfile.workspace = true

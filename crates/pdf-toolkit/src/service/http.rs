@@ -27,6 +27,9 @@ pub fn router(state: Arc<State>) -> Router {
         .route("/status", get(status))
         .route("/shutdown", post(shutdown))
         .route("/v1/{command}", post(job))
+        .method_not_allowed_fallback(|| async {
+            ApiError(StatusCode::METHOD_NOT_ALLOWED, "method not allowed".into())
+        })
         .fallback(|| async { ApiError(StatusCode::NOT_FOUND, "unknown endpoint".into()) })
         .layer(middleware::from_fn_with_state(state.clone(), authenticate))
         .with_state(state)
@@ -85,6 +88,12 @@ async fn status(ExtractState(state): ExtractState<Arc<State>>) -> Json<Value> {
         "active_workers": workers - state.workers.available_permits(),
         "outstanding_requests": capacity - state.admission.available_permits(),
         "worker_threads": state.config.worker_threads,
+        "memory_budget_mib": state.config.memory_budget_mib,
+        "worker_memory_mib": state.config.worker_memory_mib,
+        "reserved_memory_mib": state.config.memory_budget_mib as usize - state.memory.available_permits(),
+        "max_render_pixels": state.config.max_render_pixels,
+        "write_timeout_seconds": state.config.write_timeout_seconds,
+        "max_connections": state.config.max_connections,
         "timeout_seconds": state.config.timeout_seconds,
         "shutdown_grace_seconds": state.config.shutdown_grace_seconds
     }))
@@ -97,9 +106,11 @@ async fn shutdown(ExtractState(state): ExtractState<Arc<State>>) -> (StatusCode,
 
 async fn job(
     ExtractState(state): ExtractState<Arc<State>>,
-    Path(command): Path<String>,
+    command: Result<Path<String>, axum::extract::rejection::PathRejection>,
     request: Request,
 ) -> Result<Response, ApiError> {
+    let Path(command) =
+        command.map_err(|error| ApiError(StatusCode::BAD_REQUEST, error.to_string()))?;
     if state.stopping() {
         return Err(ApiError::unavailable("service is stopping"));
     }

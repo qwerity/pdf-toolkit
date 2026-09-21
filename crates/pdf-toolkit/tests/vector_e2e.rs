@@ -391,6 +391,82 @@ fn every_page_reports_a_classification_beside_its_geometry() {
     assert!(features["control_rows"].as_u64().expect("control_rows") >= 4);
 }
 
+/// A sheet that names itself over the drawing, with no title block.
+///
+/// Both halves of this matter and both were broken. The interpreter cleared
+/// the selected font at `ET`, so a heading split across text objects reached
+/// the classifier as its first word; and the classifier read a sheet name
+/// only out of a labelled `Անվանում :` row, which one corpus dossier in
+/// fourteen prints. Together they left thirteen sets with no sheet roles,
+/// and `model` refused them for want of a floor plan.
+#[test]
+fn a_sheet_names_itself_without_a_title_block() {
+    if !corpus_available("a_sheet_names_itself_without_a_title_block") {
+        return;
+    }
+
+    let features = page("13.pdf", 30)["classification"]["features"].clone();
+    assert_eq!(
+        features["sheet_title"], "ԱՌԱՋԻՆ ՀԱՐԿԻ ՀԱՏԱԿԱԳԻԾ ±0.000 ՆԻՇԻ ՎՐԱ Մ 1։50",
+        "the whole heading, not the first word of it"
+    );
+    assert_eq!(features["sheet_role"], "floor_plan");
+    assert_eq!(features["sheet_level_m"], 0.0);
+    assert_eq!(page("13.pdf", 30)["classification"]["class"], "floor_plan");
+}
+
+/// A dossier whose Armenian is drawn on Latin code points.
+///
+/// Dossier 8's font carries the letters on their ArmSCII-8 bytes and names
+/// them in `/Encoding /Differences` by the Latin glyph that byte would be —
+/// `twosuperior` for `Ա`. Nothing in the file says otherwise: the embedded
+/// program's `post` table is version 3.0 with the names stripped, its `cmap`
+/// is a `(3, 0)` symbol table, and the font has no `ToUnicode` at all. Before
+/// the encoding was read its codes fell below the ASCII passthrough and the
+/// sheet decoded to nothing.
+#[test]
+fn a_sheet_lettered_in_armscii_reads_as_armenian() {
+    if !corpus_available("a_sheet_lettered_in_armscii_reads_as_armenian") {
+        return;
+    }
+
+    let features = page("8.pdf", 16)["classification"]["features"].clone();
+    assert_eq!(
+        features["sheet_title"], "ԱՌԱՋԻՆ ՀԱՐԿԻ ՀԱՏԱԿԱԳԻԾ ՄԱՍՇՏԱԲ 1:100",
+        "Armenian, not the Latin-1 aliases of its bytes"
+    );
+    assert_eq!(features["sheet_role"], "floor_plan");
+    assert_eq!(page("8.pdf", 16)["classification"]["class"], "floor_plan");
+}
+
+/// A set whose plan sheets name the storey and never the word "plan".
+///
+/// Dossier 10 titles its three plans `ԱՌԱՋԻՆ ՀԱՐԿ`, `ՆԿՈՒՂԱՅԻՆ ՀԱՐԿ` and
+/// `ԵՐԿՐՈՐԴ ՀԱՐԿ` — first, basement and second storey — with no word for
+/// "plan" on any of them, and no title block in the document. It was the
+/// last corpus set `model` refused for want of a floor plan.
+#[test]
+fn a_sheet_that_names_only_its_storey_is_read() {
+    if !corpus_available("a_sheet_that_names_only_its_storey_is_read") {
+        return;
+    }
+    for (number, name) in [
+        (14, "ԱՌԱՋԻՆ ՀԱՐԿ"),
+        (15, "ՆԿՈՒՂԱՅԻՆ ՀԱՐԿ"),
+        (16, "ԵՐԿՐՈՐԴ ՀԱՐԿ"),
+    ] {
+        let features = page("10.pdf", number)["classification"]["features"].clone();
+        assert_eq!(features["sheet_title"], name, "page {number}");
+        assert_eq!(features["sheet_role"], "floor_plan", "page {number}");
+    }
+    // The elevations of the same set still read as elevations, which is the
+    // precedence this rule sits under.
+    assert_eq!(
+        page("10.pdf", 17)["classification"]["class"],
+        "elevation_or_section"
+    );
+}
+
 #[test]
 fn a_document_reports_its_own_page_count_and_source() {
     if !corpus_available("a_document_reports_its_own_page_count_and_source") {

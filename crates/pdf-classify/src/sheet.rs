@@ -83,7 +83,11 @@ const ROLE_RULES: &[(SheetRole, &[&str])] = &[
     (
         SheetRole::SituationPlan,
         &[
-            "իրադրական",
+            // The stem, not one inflection: the same sheet is titled
+            // `իրադրական հատակագիծ` in one office and `իրադրության
+            // հատակագիծ` in the next, and the second used to fall through
+            // to the generic floor-plan keyword below.
+            "իրադր",
             "իրավիճակ",
             "situation",
             "location plan",
@@ -265,6 +269,211 @@ pub fn role_of(title: &str) -> Option<SheetRole> {
         .map(|(role, _)| *role)
 }
 
+/// A sheet name printed as a heading over the drawing rather than in a
+/// title block wraps no further than this; past it the line is prose.
+const MAX_HEADING_CHARS: usize = 120;
+
+/// Words that turn the generic "plan" into a *storey* plan.
+///
+/// `հատակագիծ` on its own is Armenian for any plan at all — the parcel's,
+/// the site's, the construction-organisation one — so the generic keyword
+/// in [`ROLE_RULES`] names a floor plan only for a heading that also names
+/// a storey or the level it is drawn at.
+const STOREY_WORDS: &[&str] = &[
+    "հարկ",
+    "նկուղ",
+    "ձեղնահարկ",
+    "этаж",
+    "подвал",
+    "floor",
+    "storey",
+    "story",
+    "basement",
+];
+
+/// Words that make a heading a *plan* of something rather than a mention of
+/// it: `ՏԱՆԻՔԻ ՀԱՏԱԿԱԳԻԾ` is the roof plan, a bare `ՏԱՆԻՔ` on an elevation
+/// is a note about the roofing material.
+const PLAN_WORDS: &[&str] = &["հատակագ", "plan", "план"];
+
+/// How many DIFFERENT sheet kinds one page may name before it is the sheet
+/// list rather than a sheet. The explanatory note prints every drawing's
+/// name in a table; three kinds in one place is a table of contents and
+/// never a drawing's own heading.
+const SHEET_LIST_ROLES: usize = 3;
+
+/// Sheet kinds that name a drawing, as opposed to describing the set.
+fn names_a_drawing(role: SheetRole) -> bool {
+    !matches!(role, SheetRole::SheetIndex | SheetRole::Views3d)
+}
+
+/// The same text with every space taken out.
+fn despace(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Whether `haystack`, already despaced, contains `keyword`.
+///
+/// Only 13 of the 43 keywords in [`ROLE_RULES`] contain a space at all, and
+/// the rest are their own despaced form -- so the allocation is skipped for
+/// them rather than repeated for every keyword on every candidate line.
+fn despaced_contains(haystack: &str, keyword: &str) -> bool {
+    if keyword.contains(' ') {
+        haystack.contains(&despace(keyword))
+    } else {
+        haystack.contains(keyword)
+    }
+}
+
+/// Whether a line reads as a sentence rather than a name.
+///
+/// The Armenian full stop closes a sentence and never sits inside a sheet
+/// name; the one place it appears in a heading is a scale (`Մ1:75`, written
+/// `Մ1։75` with the same character), where no space follows it. The
+/// explanatory note's prose — `... իրականացվել է 1-5 առանցքներով
+/// ճակատից։ Այդ ...` — is the reason a drawing-bearing note page could
+/// otherwise be read as an elevation.
+fn is_prose(line: &str) -> bool {
+    line.contains("։ ")
+}
+
+/// A heading that is only a storey's name wraps no further than this; past
+/// it the line has joined its neighbours and is no longer a name.
+const MAX_STOREY_NAME_CHARS: usize = 24;
+
+/// The nouns a storey is called by, as a heading ends on one.
+const STOREY_NOUNS: &[&str] = &["հարկ", "հարկը", "նկուղ", "ձեղնահարկ", "этаж", "подвал"];
+
+/// Whether the whole line names a storey and says nothing else.
+///
+/// DELIBERATELY NARROW. `հարկ` runs through a dossier's prose — `2-րդ
+/// հարկում՝ միջանցք`, `ԱՌԱՋԻՆ ՀԱՐԿԻ ԿԱՌՈՒՑԱՊԱՏՄԱՆ ՄԱԿԵՐԵՍ` — and labels a
+/// floor level down the side of an elevation. Only a short line that ENDS on
+/// the noun is the sheet naming itself, which is why the ordinal in front of
+/// it is not spelled out here: whatever precedes, the line has to stop there.
+/// Sheets that also carry a keyword from [`ROLE_RULES`] never reach this,
+/// since that match is tried first and outranks a floor plan.
+fn names_a_storey(line: &str) -> bool {
+    let text = line.trim();
+    if !(4..=MAX_STOREY_NAME_CHARS).contains(&text.chars().count()) {
+        return false;
+    }
+    let lower = text.to_lowercase();
+    let tail = lower.trim_end_matches(|c: char| c.is_whitespace() || c == ':' || c == '.');
+    STOREY_NOUNS.iter().any(|noun| tail.ends_with(noun))
+}
+
+/// The role a free-standing heading names.
+///
+/// STRICTER THAN [`role_of`], and deliberately so. A title block's row is
+/// the office SAYING what the sheet is, so a loose keyword match on it is
+/// safe. A heading is picked out of the page's ordinary text, where the
+/// same words occur as annotations, so each loose keyword is required to
+/// appear in the company that makes it a sheet name.
+fn heading_role(line: &str) -> Option<SheetRole> {
+    if is_prose(line) {
+        return None;
+    }
+    // A CAD exporter that tracks letters individually prints the spacing as
+    // real spaces — `ՀԱ ՏԱ ԿԱԳԻԾ` for `ՀԱՏԱԿԱԳԻԾ` — so every keyword here is
+    // matched with the whitespace taken out of both sides.
+    let lower = despace(&line.to_lowercase());
+    let says = |words: &[&str]| words.iter().any(|w| despaced_contains(&lower, w));
+    let role = match ROLE_RULES
+        .iter()
+        .find(|(_, keywords)| says(keywords))
+        .map(|(role, _)| *role)
+    {
+        Some(role) => role,
+        // A sheet may name only the storey it draws. `ԱՌԱՋԻՆ ՀԱՐԿ` — first
+        // storey — is the whole heading, with no word for "plan" anywhere on
+        // the sheet, and one corpus dossier titles all three of its plans
+        // that way.
+        None if names_a_storey(line) => SheetRole::FloorPlan,
+        None => return None,
+    };
+    match role {
+        // `ՏԱՆԻՔԻ ԾԱԼՔԱՎՈՐ ԹԻԹԵՂ` (folded roof sheeting) and `ՊԱՐԻՍՊ`
+        // (fence) label materials and objects on sheets that are neither.
+        SheetRole::RoofPlan | SheetRole::Fence if !says(PLAN_WORDS) => None,
+        // Reached only through the generic `հատակագիծ`; every specific
+        // floor-plan keyword in ROLE_RULES already names the storey.
+        SheetRole::FloorPlan
+            if !says(&["հարկի հատակագիծ", "floor plan", "план этажа"])
+                && !says(STOREY_WORDS)
+                && !says(&["նիշ", "отм"])
+                // A level mark carries its own sign and separator, so it
+                // reads the same with the spacing gone.
+                && levels_in(&lower).next().is_none() =>
+        {
+            None
+        }
+        role => Some(role),
+    }
+}
+
+/// Reads the sheet name where the set prints no title block at all.
+///
+/// WHY THIS EXISTS. [`sheet_title`] reads the name out of a labelled
+/// title-block row (`Անվանում :`), which is what a large-format CAD sheet
+/// carries. Most permit dossiers are not drawn that way: the sheet prints
+/// its name as a plain heading over the drawing — `ԱՌԱՋԻՆ ՀԱՐԿԻ
+/// ՀԱՏԱԿԱԳԻԾ Մ1։75` — and nothing labels it. Across this project's corpus
+/// exactly one document in fourteen has a title block, so reading only
+/// labelled rows left thirteen sets with no sheet roles at all, and
+/// `pdf_model`'s reconstruction refused them for want of a floor plan.
+///
+/// It is a SECOND reading, never a competing one: the caller tries
+/// [`sheet_title`] first and comes here only when the page labels nothing,
+/// so a document that does print title blocks is decided exactly as before.
+///
+/// The page must already be known to carry line work. A heading is only
+/// evidence about a drawing, and the same words run through the prose of
+/// the application letter.
+pub fn sheet_heading(page: &PageContent) -> Option<SheetTitle> {
+    let lines = lines(page);
+    // `lines` has already collapsed each line's whitespace and trimmed it, so
+    // `text` is the normalised form throughout this function.
+    let named: Vec<(&Line, SheetRole)> = lines
+        .iter()
+        .filter(|line| (3..=MAX_HEADING_CHARS).contains(&line.text.chars().count()))
+        .filter_map(|line| heading_role(&line.text).map(|role| (line, role)))
+        .filter(|(_, role)| names_a_drawing(*role))
+        .collect();
+
+    // How many DIFFERENT kinds of drawing the page names: a sheet index lists
+    // several, a sheet names its own. Counted by scanning the handful of
+    // matches rather than sorting, since `SheetRole` has no `Ord` and the list
+    // is never longer than the page has headings.
+    let mut kinds: Vec<SheetRole> = Vec::new();
+    for (_, role) in &named {
+        if !kinds.contains(role) {
+            kinds.push(*role);
+        }
+    }
+    if kinds.len() >= SHEET_LIST_ROLES {
+        return None;
+    }
+
+    // ROLE_RULES is ordered by precedence, so the earliest rule that any
+    // heading on the page matches is the page's kind — the same order that
+    // decides a title block naming a fence elevation.
+    let (line, role) = named.into_iter().min_by_key(|(_, role)| {
+        ROLE_RULES
+            .iter()
+            .position(|(r, _)| r == role)
+            .unwrap_or(usize::MAX)
+    })?;
+
+    let title = line.text.clone();
+    let level_m = levels_in(&title).next();
+    Some(SheetTitle {
+        role: Some(role),
+        level_m,
+        title,
+    })
+}
+
 /// Reads the sheet name off the title block, when the page prints one.
 pub fn sheet_title(page: &PageContent) -> Option<SheetTitle> {
     let lines = lines(page);
@@ -357,6 +566,110 @@ mod tests {
         assert_eq!(title.title, "+0,00 նիշով հարկի հատակագիծ");
         assert_eq!(title.role, Some(SheetRole::FloorPlan));
         assert_eq!(title.level_m, Some(0.0));
+    }
+
+    #[test]
+    fn a_sheet_with_no_title_block_is_read_from_its_heading() {
+        // Thirteen of the fourteen corpus dossiers print no `Անվանում :`
+        // row at all; the sheet names itself over the drawing.
+        let page = page(vec![
+            text("ԱՌԱՋԻՆ ՀԱՐԿԻ ՀԱՏԱԿԱԳԻԾ ±0.000 ՆԻՇԻ ՎՐԱ Մ1։50", 267.5, 288.2),
+            text("2 100", 268.5, 361.7),
+        ]);
+        assert!(sheet_title(&page).is_none(), "no labelled row to read");
+        let heading = sheet_heading(&page).expect("a heading");
+        assert_eq!(heading.role, Some(SheetRole::FloorPlan));
+        assert_eq!(heading.level_m, Some(0.0));
+    }
+
+    #[test]
+    fn a_heading_needs_more_than_the_generic_word_for_plan() {
+        // `հատակագիծ` is Armenian for any plan; only a storey or a level
+        // makes it a floor plan. Both of these are site sheets.
+        for name in ["հողամասի հատակագիծը", "ՇԻՆ. ԿԱԶՄԱԿԵՐՊՄԱՆ ՀԱՏԱԿԱԳԻԾ"]
+        {
+            let page = page(vec![text(name, 100.0, 700.0)]);
+            assert_eq!(sheet_heading(&page).and_then(|t| t.role), None, "{name}");
+        }
+        // ...and an inflected situation plan is a situation plan, not the
+        // generic keyword falling through.
+        let page = page(vec![text("ԻՐԱԴՐՈՒԹՅԱՆ ՀԱՏԱԿԱԳԻԾ Մ 1:2000", 100.0, 700.0)]);
+        assert_eq!(
+            sheet_heading(&page).and_then(|t| t.role),
+            Some(SheetRole::SituationPlan)
+        );
+    }
+
+    #[test]
+    fn a_roof_named_in_an_annotation_is_not_a_roof_plan() {
+        // `ՏԱՆԻՔ` labels the roofing material on an elevation; the roof
+        // PLAN says so. Without this the elevations of one dossier all
+        // came back as its roof plan.
+        let page = page(vec![
+            text("ՏԱՆԻՔԻ ԾԱԼՔԱՎՈՐ ԹԻԹԵՂ", 100.0, 600.0),
+            text("ԿՏՐՎԱԾՔ 1-1 Մ 1։100", 100.0, 700.0),
+        ]);
+        assert_eq!(
+            sheet_heading(&page).and_then(|t| t.role),
+            Some(SheetRole::Section)
+        );
+    }
+
+    /// A sheet may name the storey and never the word "plan".
+    #[test]
+    fn a_sheet_that_names_only_its_storey_is_a_floor_plan() {
+        for name in ["ԱՌԱՋԻՆ ՀԱՐԿ", "ՆԿՈՒՂԱՅԻՆ ՀԱՐԿ", "ԵՐԿՐՈՐԴ ՀԱՐԿ", "1-ԻՆ ՀԱՐԿ"]
+        {
+            let page = page(vec![text(name, 267.5, 288.2)]);
+            assert_eq!(
+                sheet_heading(&page).and_then(|t| t.role),
+                Some(SheetRole::FloorPlan),
+                "{name}"
+            );
+        }
+    }
+
+    /// ...but only when the line stops there. `հարկ` runs through a
+    /// dossier's prose and labels a level down the side of an elevation.
+    #[test]
+    fn a_storey_named_mid_sentence_is_not_a_sheet_name() {
+        for line in [
+            "2-րդ հարկում՝ միջանցք, սանհանգույց, լոգախցիկ",
+            "ԱՌԱՋԻՆ ՀԱՐԿԻ ԿԱՌՈՒՑԱՊԱՏՄԱՆ ՄԱԿԵՐԵՍ",
+            "ԿԻՍԱՆԿՈՒՂԱՅԻՆ ՀԱՐԿԻ ՎԵՐԱԿԱՌՈՒՑՎԱԾ ՀԱՏՎԱԾԻ ՄԱԿԵՐԵՍԸ",
+        ] {
+            let page = page(vec![text(line, 100.0, 700.0)]);
+            assert_eq!(sheet_heading(&page).and_then(|t| t.role), None, "{line}");
+        }
+        // And a sheet that names its kind outranks the storey it draws.
+        let page = page(vec![
+            text("ՃԱԿԱՏ ԸՍՏ Ա-Բ ԱՌԱՆՑՔՆԵՐԻ", 100.0, 760.0),
+            text("1-ԻՆ ՀԱՐԿ", 100.0, 700.0),
+        ]);
+        assert_eq!(
+            sheet_heading(&page).and_then(|t| t.role),
+            Some(SheetRole::Elevation)
+        );
+    }
+
+    #[test]
+    fn the_sheet_list_is_not_every_sheet_it_names() {
+        let page = page(vec![
+            text("ԳԼԽԱՎՈՐ ՀԱՏԱԿԱԳԻԾ Մ1։500", 100.0, 760.0),
+            text("ԱՌԱՋԻՆ ՀԱՐԿԻ ՀԱՏԱԿԱԳԻԾ ±0.000", 100.0, 740.0),
+            text("ՃԱԿԱՏ 1-5 ԱՌԱՆՑՔՆԵՐՈՎ Մ1։50", 100.0, 720.0),
+        ]);
+        assert!(sheet_heading(&page).is_none());
+    }
+
+    #[test]
+    fn a_sentence_that_mentions_a_facade_is_not_a_facade_sheet() {
+        let page = page(vec![text(
+            "Շինության գլխավոր մուտքը իրականացվել է 1-5 առանցքներով ճակատից։ Այդ",
+            100.0,
+            700.0,
+        )]);
+        assert!(sheet_heading(&page).is_none());
     }
 
     #[test]

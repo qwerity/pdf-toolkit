@@ -272,6 +272,37 @@ impl SubPath {
             }
     }
 
+    /// The perimeter of the ring [`SubPath::signed_area`] measures: the closing
+    /// segment included whether or not the subpath declares itself closed.
+    ///
+    /// [`SubPath::length`] is the painted path and stops where the path stops.
+    /// This is the boundary of the area, and any ratio between the two (see
+    /// [`SubPath::mean_thickness`]) needs them to agree about closure or it
+    /// comes out overstated.
+    pub fn closed_length(&self) -> f64 {
+        self.length()
+            + if !self.closed && self.points.len() > 2 {
+                self.points[self.points.len() - 1].distance(&self.points[0])
+            } else {
+                0.0
+            }
+    }
+
+    /// Twice the area over the closed perimeter, in page units.
+    ///
+    /// For a long thin shape this is the shape's own width, however it is bent
+    /// -- unlike a bounding box, which measures the shape's extent rather than
+    /// the shape. A square of side `s` reads as `s / 2`, and a ring of `n`
+    /// segments reads the same whether it was drawn as one subpath or `n`.
+    pub fn mean_thickness(&self) -> f64 {
+        let perimeter = self.closed_length();
+        if perimeter <= 0.0 {
+            0.0
+        } else {
+            2.0 * self.signed_area().abs() / perimeter
+        }
+    }
+
     /// Signed shoelace area; the sign encodes winding direction.
     pub fn signed_area(&self) -> f64 {
         let n = self.points.len();

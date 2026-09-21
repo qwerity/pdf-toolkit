@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use pdf_geo::control::table_candidates_from_text_layer;
 use pdf_geometry::model::{PageContent, PaintMode};
 
+use crate::heuristic::has_drawing;
 use crate::sheet::{self, SheetRole};
 
 /// Structural summary of one page.
@@ -96,7 +97,16 @@ impl PageFeatures {
 
         let text = page.concatenated_text();
         let tables = table_candidates_from_text_layer(page);
-        let title = sheet::sheet_title(page);
+        // A free-standing heading is evidence about a DRAWING; the same words
+        // run through the prose of the application letter, so the fallback is
+        // offered only to a page whose line work already says it is a sheet.
+        // The test is the one `heuristic_label` uses to the same end.
+        let line_density = length / diagonal;
+        let title = sheet::sheet_title(page).or_else(|| {
+            has_drawing(page.paths.len(), line_density)
+                .then(|| sheet::sheet_heading(page))
+                .flatten()
+        });
         Self {
             page_number: page.page_number,
             path_count: page.paths.len(),
@@ -106,7 +116,7 @@ impl PageFeatures {
             image_count: page.image_count,
             image_coverage: page.image_coverage,
             vector_coverage: (page.vector_bbox().area() / page_area).min(1.0),
-            line_density: length / diagonal,
+            line_density,
             distinct_colors: colors.len(),
             layer_count: layers.len(),
             cadastral_codes: cadastral_regex().find_iter(&text).count(),

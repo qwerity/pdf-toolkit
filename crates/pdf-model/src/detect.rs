@@ -452,7 +452,17 @@ fn detect_colours(content: &PageContent, metres_per_unit: f64) -> Option<(FillCo
             stat.count += 1;
             stat.largest_m2 = stat.largest_m2.max(area);
             let bbox = subpath.bbox();
-            let across = bbox.width().min(bbox.height()) * metres_per_unit;
+            // The narrowest honest measure of the shape, because offices differ
+            // in how they emit a storey's walls. One draws a rectangle per
+            // segment, where the bounding box's short side *is* the thickness.
+            // Another draws the whole wall network as one ring of forty
+            // vertices, where the bounding box is the building: on one corpus
+            // dossier that put nine of ten wall polygons outside `WALL_BAND_M`
+            // -- a 5.9 x 12.3 m box around a 0.39 m wall -- and every storey
+            // came out empty. `mean_thickness` does not care what shape the
+            // band is bent into.
+            let across =
+                (bbox.width().min(bbox.height())).min(subpath.mean_thickness()) * metres_per_unit;
             let along = bbox.width().max(bbox.height()) * metres_per_unit;
             if WALL_BAND_M.contains(&across) && along >= WALL_BAND_MIN_M {
                 stat.bands += 1;
@@ -562,6 +572,57 @@ mod tests {
 
     /// Page units in a metre at 1:75.
     const UNITS_PER_M: f64 = 72.0 / (75.0 * 0.0254);
+
+    /// A closed ring of `points`, in metres on a 1:75 sheet.
+    fn ring(points: &[(f64, f64)]) -> SubPath {
+        SubPath {
+            points: points
+                .iter()
+                .map(|(x, y)| Point::new(x * UNITS_PER_M, y * UNITS_PER_M))
+                .collect(),
+            closed: true,
+        }
+    }
+
+    /// A wall reads as its own thickness however the office bent it.
+    ///
+    /// The office whose plans prompted this draws a storey's whole wall
+    /// network as one polygon: a 10 x 8 m rectangle with a 9.4 x 7.4 m hole,
+    /// traced as a single ring. Its bounding box is the building, which is
+    /// what used to be measured, and its walls are 300 mm.
+    #[test]
+    fn a_wall_bent_into_a_ring_is_still_a_wall() {
+        let outer = [(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)];
+        let inner = [(0.3, 0.3), (0.3, 7.7), (9.7, 7.7), (9.7, 0.3)];
+        // One ring out and back, the way a filled wall network is emitted.
+        let mut points: Vec<(f64, f64)> = outer.to_vec();
+        points.push((0.0, 0.0));
+        points.extend_from_slice(&inner);
+        points.push((0.3, 0.3));
+        let wall = ring(&points);
+        let m = 1.0 / UNITS_PER_M;
+        let thickness = wall.mean_thickness() * m;
+        assert!(
+            WALL_BAND_M.contains(&thickness),
+            "a 0.3 m wall measured {thickness:.3} m"
+        );
+        // ...while its bounding box says the whole building, which is the
+        // measurement that used to reject it.
+        let bbox = wall.bbox();
+        let across = bbox.width().min(bbox.height()) * m;
+        assert!(!WALL_BAND_M.contains(&across), "bbox across {across:.3} m");
+    }
+
+    /// And a compact fill is still not a wall: a square room of side `s` has
+    /// a mean thickness of `s / 2`, far outside any wall band.
+    #[test]
+    fn a_room_sized_square_is_not_a_wall_band() {
+        let square = ring(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]);
+        let m = 1.0 / UNITS_PER_M;
+        let thickness = square.mean_thickness() * m;
+        assert!((thickness - 2.0).abs() < 1e-6, "{thickness}");
+        assert!(!WALL_BAND_M.contains(&thickness));
+    }
 
     /// A filled rectangle of that colour, given in metres on a 1:75 sheet.
     fn fill(colour: [f64; 3], x0: f64, y0: f64, x1: f64, y1: f64) -> VectorPath {

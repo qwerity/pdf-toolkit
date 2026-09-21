@@ -287,12 +287,38 @@ fn propagate_from(
         if let Ok(mut placed) = georeference_page(&pages[index], donors, constraints)
             .or_else(|_| georeference_page(&pages[index], donors, relaxed))
             && borrowed_fit_is_credible(&placed)
+            && fit_matches_the_printed_scale(&placed)
             && (!placed.table.is_external() || external_fit_is_credible(&placed))
         {
             placed.borrowed_table = true;
             *result = Ok(placed);
         }
     }
+}
+
+/// How far a borrowed placement's fitted scale may sit from the scale the
+/// sheet prints on itself.
+///
+/// [`narrow_to_declared_scale`] already allows [`MAX_PAGE_RESCALE`], which
+/// is the right latitude for a page a PDF tool resized — that rescales the
+/// drawing and leaves the printed text saying the original. It is far too
+/// much latitude for a BORROWED table, the weakest evidence the pipeline
+/// accepts, where a wrong polygon is the failure to guard against and the
+/// sheet's own printed scale is the one independent witness available.
+///
+/// The bound is what the corpus shows: every correct borrowed placement in
+/// it that prints a scale fits within 2.6% of it (most within 0.1%), while a
+/// floor plan matched by chance to the parcel outline came out 25.6% away.
+const MAX_BORROWED_SCALE_DISAGREEMENT: f64 = 1.10;
+
+/// Whether a borrowed placement agrees with the scale the sheet prints.
+///
+/// A sheet that states no scale is judged on its geometry alone, as before.
+fn fit_matches_the_printed_scale(result: &GeoreferenceResult) -> bool {
+    let Some(ratio) = scale_agreement(&result.georeference) else {
+        return true;
+    };
+    (1.0 / MAX_BORROWED_SCALE_DISAGREEMENT..=MAX_BORROWED_SCALE_DISAGREEMENT).contains(&ratio)
 }
 
 /// The extra evidence a borrowed-table placement must show.

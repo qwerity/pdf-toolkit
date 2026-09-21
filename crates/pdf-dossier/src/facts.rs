@@ -165,6 +165,25 @@ static CERT_ADDRESS: LazyLock<Regex> = LazyLock::new(|| {
 static ADDRESS_LINE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)հասցե[նը]?\s*[՝`'ª:]\s*([^\n]*\d[^\n]*)").expect("valid regex")
 });
+/// Where an address stops, when it is not on a line of its own.
+///
+/// An application form gives the address a line; a drawing's title block runs
+/// it into the next field — `ՀԱՍՑԵ՝ … ՓՈՂՈՑ 12/2 ԲՆԱԿԵԼԻ ՏՈՒՆ ՀԱՍՑԵՈՒՄ
+/// ՊԱՏՎԻՐԱՏՈՒ՝ <name>` is one line — and [`ADDRESS_LINE`] reads to the end of
+/// it, so the client's name ended up inside the address key. These pages only
+/// became readable when the legacy Armenian fonts did.
+const ADDRESS_ENDS_AT: &[&str] = &["ԲՆԱԿԵԼԻ ՏՈՒՆ", "ՀԱՍՑԵՈՒՄ", "ՊԱՏՎԻՐԱՏՈՒ", "ՏՆՕՐԵՆ"];
+
+/// The address as printed, cut where the next field on the line begins.
+fn address_up_to_the_next_field(line: &str) -> &str {
+    let end = ADDRESS_ENDS_AT
+        .iter()
+        .filter_map(|label| line.find(label))
+        .min()
+        .unwrap_or(line.len());
+    line[..end].trim_end_matches([' ', ',', '.', '՝', '`'])
+}
+
 static TRAILING_WORDS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s*(?:\([^)]*\))?\s*$").expect("valid regex"));
 
@@ -486,7 +505,9 @@ fn address_facts(page: &PageInput<'_>, request_address: Option<&str>, out: &mut 
     if page.trust == Trust::Applicant
         && let Some(c) = ADDRESS_LINE.captures(page.text)
     {
-        let printed = c[1].trim_matches(|ch: char| ch == '*' || ch == '\\').trim();
+        let printed = address_up_to_the_next_field(
+            c[1].trim_matches(|ch: char| ch == '*' || ch == '\\').trim(),
+        );
         let key = address_key(printed);
         // A line with a number but no street word is a date or a phone.
         if key.starts_with('|') {

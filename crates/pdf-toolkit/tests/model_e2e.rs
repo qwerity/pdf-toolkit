@@ -36,6 +36,36 @@ fn report() -> Value {
     CACHE.get_or_init(|| model(&[])).clone()
 }
 
+/// A set whose walls are drawn as one polygon per storey, not per segment.
+///
+/// Dossier 8 draws each storey's whole wall network as a single ring of forty
+/// vertices. Its bounding box is the building, so measuring a fill's
+/// wall-likeness by that box rejected nine of its ten wall polygons and every
+/// storey came out empty. Measured by area over perimeter the same polygons
+/// are 0.115-0.549 m thick, which is what they are.
+#[test]
+fn walls_drawn_as_one_ring_per_storey_are_still_read() {
+    let pdf = common::data_dir().join("plan").join("8.pdf");
+    if !common::corpus_available(
+        "walls_drawn_as_one_ring_per_storey_are_still_read",
+        std::slice::from_ref(&pdf),
+    ) {
+        return;
+    }
+    let report = run_argv(&["model".to_string(), as_str(&pdf).to_string()])
+        .expect_success()
+        .json();
+    let floors = report["floors"].as_array().expect("floors");
+    assert!(!floors.is_empty(), "the set reconstructs at all");
+    let walls: u64 = floors.iter().filter_map(|f| f["walls"].as_u64()).sum();
+    assert!(walls >= 20, "walls found across the storeys, got {walls}");
+    let ground = floors[0]["slab_area_m2"].as_f64().expect("a ground slab");
+    assert!(
+        ground > 20.0,
+        "the ground storey is a building, not a speck: {ground} m²"
+    );
+}
+
 #[test]
 fn the_parameters_are_detected_from_the_sheets_themselves() {
     if !corpus_available("the_parameters_are_detected_from_the_sheets_themselves") {

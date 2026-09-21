@@ -223,10 +223,30 @@ fn deterministic_dossier_flags_what_it_cannot_read() {
         "the cadastral code is an entity, not part of the address"
     );
 
-    // A garbled CID text layer is present-but-wrong: flagged, not emitted.
-    let garbled = page(&report, 25);
-    assert_eq!(garbled["extraction"]["encoding_issue"], Value::Bool(true));
-    assert!(garbled["extraction"]["text"].is_null());
+    // Page 25 is a site plan titled in Armenian capitals. The garble test is
+    // a LATIN one — it weighs lowercase and Latin vowels, and a page in
+    // Armenian, Greek or Cyrillic capitals scores zero on both — so this page
+    // used to be called noise and dropped. It reads.
+    let armenian = page(&report, 25);
+    assert!(
+        armenian["extraction"]["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("ԳԼԽԱՎՈՐ ՀԱՏԱԿԱԳԻԾ")),
+        "the sheet names itself and the text layer says so"
+    );
+    assert_eq!(armenian["extraction"]["encoding_issue"], Value::Null);
+
+    // A genuinely broken CID layer is still called what it is. Dossier 7's
+    // page 11 decodes to `ɬʏʙʃ Թɼʗʀ` — letters from no alphabet the sheet is
+    // written in, which is a different thing from an alphabet this test
+    // cannot score.
+    let broken = run(&as_args(&argv::dossier("data/plan/7.pdf")))
+        .expect_success()
+        .json();
+    assert_eq!(
+        page(&broken, 11)["extraction"]["encoding_issue"],
+        Value::Bool(true)
+    );
 
     // Scans carry their vision-pass work order.
     let scan = page(&report, 4);

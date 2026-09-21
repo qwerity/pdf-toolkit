@@ -31,6 +31,7 @@ indexmap = { version = "2", features = ["serde"] }
 jpeg-encoder = "0.7"
 llm-providers = { path = "crates/llm-providers" }
 lopdf = { version = "0.45.0", default-features = false, features = ["chrono"] }
+pdf-armscii = { path = "crates/pdf-armscii" }
 pdf-classify = { path = "crates/pdf-classify" }
 pdf-core = { path = "crates/pdf-core" }
 pdf-dossier = { path = "crates/pdf-dossier" }

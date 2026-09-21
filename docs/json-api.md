@@ -391,11 +391,31 @@ with `certain` confidence:
 
 | Field | Type | Notes |
 |---|---|---|
-| `sheet_title` | string | The sheet name printed after the title-block label (`Անվանում :`, `Наименование:`, `Title:`), whitespace collapsed. **Absent** when the page prints no title block. |
-| `sheet_role` | string | What the title names: `floor_plan`, `roof_plan`, `elevation`, `section`, `site_plan`, `situation_plan`, `fence`, `views3d`, `sheet_index`. **Absent** when there is no title or it names no known kind. |
+| `sheet_title` | string | The sheet's own name for itself, whitespace collapsed: the text after the title-block label (`Անվանում :`, `Наименование:`, `Title:`), or — when the page prints no title block — the heading it carries over the drawing. **Absent** when the page names itself neither way. |
+| `sheet_role` | string | What that name says the sheet is: `floor_plan`, `roof_plan`, `elevation`, `section`, `site_plan`, `situation_plan`, `fence`, `views3d`, `sheet_index`. **Absent** when there is no name or it names no known kind. |
 | `sheet_level_m` | number | A level the title names (`+3,60 նիշով` → `3.6`), metres. **Absent** when none. |
 | `level_marks` | int | Distinct level marks printed on the page (`+7,200`, `±0,000`, `-0,350`). A plan prints one, an elevation one per storey, eaves and parapet. |
 | `filled_paths` | int | Painted fills, as opposed to strokes. A CAD plan is made of them. |
+
+A sheet that prints no title block is read from its heading instead, which
+most permit dossiers need: `ԱՌԱՋԻՆ ՀԱՐԿԻ ՀԱՏԱԿԱԳԻԾ ±0.000 ՆԻՇԻ ՎՐԱ Մ 1։50`
+over the drawing says the same thing a title-block row would. **This is why a
+page that used to report `unknown` may now report its kind with `certain`
+confidence, and `sheet_title` / `sheet_role` / `sheet_level_m` appear on
+pages that never carried them.** A heading is matched more strictly than a
+title-block row, because the same words occur in a sheet's annotations: a
+roof or fence heading must also say "plan", the generic word for a plan
+(`հատակագիծ`) must be joined by a storey or a level, a line that reads as a
+sentence is not a name, and a page naming three or more different sheet
+kinds is the sheet list rather than any of them. Only a page whose line work
+already marks it a drawing is read this way.
+
+A sheet may also name the storey and never the word "plan" at all —
+`ԱՌԱՋԻՆ ՀԱՐԿ`, first storey — and that is read as `floor_plan`. It is the
+narrowest of these rules: the line must be short and must END on the storey
+noun, because `հարկ` runs through a dossier's prose and labels a floor level
+down the side of an elevation. A sheet that names its own kind is matched
+first and outranks it.
 
 A titled drawing takes its class from `sheet_role` (`elevation` and `section`
 both map to `elevation_or_section`, `situation_plan` to `cadastral_plan`,
@@ -707,6 +727,21 @@ Branch on these enums, not on prose:
   layer may still be mapped deterministically) but are VLM-flagged with reason
   `legacy_encoding`. A CID-garbled layer that extraction refused has no `text`
   and routes `vlm`.
+  **Fewer pages carry this than once did**, for two reasons. Armenian written
+  on ArmSCII-8 bytes — what an older CAD font does, so the page arrives as
+  `¶ÈÊ²ìàð Ð²î²Î²¶ÆÌ` — is now transliterated back and emitted as Armenian,
+  in `text` and in `sheet_title` alike. And the garble test that sets this
+  flag is a *Latin* one, weighing lowercase and Latin vowels, so a page set in
+  Armenian, Greek or Cyrillic capitals scored zero on both and was discarded;
+  text that is not mostly Latin is no longer judged by it. Both change which
+  pages a caller must send to a vision model, and the second changes it for
+  any non-Latin document, not only Armenian ones.
+  **Two limits of the transliteration are worth knowing.** It covers the
+  ArmSCII-8 LETTER band (`0xB2..=0xFD`) and not the punctuation below it, so a
+  repaired page can still print `ª` where `՝` belongs and `¨` where `և` does.
+  And it is decided per page: a page that is mostly proper Armenian with a few
+  legacy characters scattered through it does not carry enough evidence to be
+  judged, and keeps them. Neither costs a page its text.
 - `pages[].qr_codes[].data` — the payload, or `null` with a `note` when a code
   is visible (per the vision pass) but undecodable. QR decoding is two-tier:
   a 1400 px pass over every page, and a 3000 px retry only for scans and

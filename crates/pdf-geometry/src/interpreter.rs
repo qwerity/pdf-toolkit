@@ -17,6 +17,7 @@ use super::textrun::{MergeOptions, merge_runs};
 use crate::model::{
     BBox, Matrix, PageContent, PaintMode, Point, Rgb, SubPath, TextItem, VectorPath,
 };
+use pdf_armscii as armscii;
 
 /// Caps applied per page so that a pathological drawing cannot exhaust memory.
 #[derive(Debug, Clone, Copy)]
@@ -139,6 +140,7 @@ impl<'a> Interpreter<'a> {
             ..Default::default()
         };
         self.execute(&content.operations, &resources, &mut state, 0);
+        repair_legacy_armenian(&mut self.texts);
 
         let (page_w, page_h) = if rotation % 180 == 0 {
             (media_box.width(), media_box.height())
@@ -362,7 +364,14 @@ impl<'a> Interpreter<'a> {
                     text.line_matrix = Matrix::IDENTITY;
                     text.horizontal_scale = 1.0;
                 }
-                "ET" => text.font = None,
+                // `ET` ends the text OBJECT, not the text STATE: the font a
+                // `Tf` selected persists until another `Tf` changes it, across
+                // as many `BT`/`ET` pairs as follow. Clearing it here left
+                // every block that did not repeat its own `Tf` with no font,
+                // and `show_text` decodes nothing without one — which is how a
+                // heading reached the classifier as its first word alone,
+                // `ԱՌԱՋԻՆ` for `ԱՌԱՋԻՆ ՀԱՐԿԻ ՀԱՏԱԿԱԳԻԾ ±0.000 ՆԻՇԻ ՎՐԱ`.
+                "ET" => {}
                 "Tf" => {
                     text.font_size = num(a, 1).unwrap_or(text.font_size);
                     text.font = self.resolve_font(resources, a);
@@ -518,32 +527,30 @@ impl<'a> Interpreter<'a> {
             .and_then(Object::as_name)
             .map(|n| n.starts_with(b"Identity"))
             .unwrap_or_else(|_| font.get(b"DescendantFonts").is_ok());
-        let fallback = ToUnicode::identity(if two_byte { 2 } else { 1 });
+        let code_bytes = if two_byte { 2 } else { 1 };
 
-        let Ok(tu) = font.get(b"ToUnicode") else {
-            return fallback;
-        };
-        let stream = match tu {
-            Object::Reference(r) => self
-                .doc
-                .get_object(*r)
-                .ok()
-                .and_then(|o| o.as_stream().ok()),
-            Object::Stream(s) => Some(s),
-            _ => None,
-        };
-        let Some(stream) = stream else {
-            return fallback;
-        };
-        let Ok(data) = stream.decompressed_content() else {
-            return fallback;
-        };
-        let mut map = ToUnicode::parse(&data);
-        if map.is_empty() {
-            return fallback;
+        let mut map = self
+            .parse_to_unicode(font)
+            .unwrap_or_else(|| ToUnicode::identity(code_bytes));
+        map.code_bytes = code_bytes;
+        // A simple font may say what its codes mean only in its encoding, and
+        // an Armenian one may say it in Latin-1 whichever way it speaks.
+        if !two_byte {
+            map.add_differences(encoding_differences(self.doc, font));
         }
-        map.code_bytes = if two_byte { 2 } else { 1 };
         map
+    }
+
+    /// The font's `ToUnicode` CMap, when it has a readable one that maps
+    /// anything.
+    fn parse_to_unicode(&self, font: &Dictionary) -> Option<ToUnicode> {
+        let stream = match font.get(b"ToUnicode").ok()? {
+            Object::Reference(r) => self.doc.get_object(*r).ok()?.as_stream().ok()?,
+            Object::Stream(s) => s,
+            _ => return None,
+        };
+        let map = ToUnicode::parse(&stream.decompressed_content().ok()?);
+        (!map.is_empty()).then_some(map)
     }
 
     fn do_xobject(
@@ -780,6 +787,63 @@ fn resolve_dict(doc: &Document, resources: &Dictionary, key: &[u8]) -> Option<Di
     resources.get(key).ok().and_then(|o| deref_dict(doc, o))
 }
 
+/// The `(code, glyph name)` pairs a font's `/Encoding /Differences` names.
+///
+/// The array is a sequence of runs: a number sets the next code, and each
+/// name after it takes that code and advances by one.
+fn encoding_differences(doc: &Document, font: &Dictionary) -> Vec<(u32, String)> {
+    let Some(encoding) = font.get(b"Encoding").ok().and_then(|o| deref_dict(doc, o)) else {
+        return Vec::new();
+    };
+    let Some(array) = encoding
+        .get(b"Differences")
+        .ok()
+        .and_then(|o| match o {
+            Object::Reference(r) => doc.get_object(*r).ok(),
+            other => Some(other),
+        })
+        .and_then(|o| o.as_array().ok())
+    else {
+        return Vec::new();
+    };
+    let mut named = Vec::new();
+    let mut code = 0u32;
+    for item in array {
+        match item {
+            Object::Integer(n) if *n >= 0 => code = *n as u32,
+            Object::Name(name) => {
+                named.push((code, String::from_utf8_lossy(name).into_owned()));
+                code = code.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    named
+}
+
+/// Reads back the runs of a page that spell Armenian on Latin-1 code points.
+///
+/// [`armscii::repair`] over a page's runs rather than over one string.
+///
+/// THE PAGE DECIDES, NOT THE RUN. An exporter that tracks letters
+/// individually emits runs one character wide, and no such run carries enough
+/// evidence to tell `Ø` in `Ø 1:25` from a Latin `Ø`.
+///
+/// AND NOT THE FONT'S CHARACTER MAP, which is where this started. A map holds
+/// what a font COULD draw rather than what the page drew with it, an
+/// unreferenced form font contributes text to no page at all, and an ordinary
+/// Latin font that names its accents through `/Encoding /Differences` has a
+/// map of nothing but the accent band -- so `band > latin` reads such a table
+/// as Armenian and transliterates a French page.
+fn repair_legacy_armenian(texts: &mut [TextItem]) {
+    if !armscii::Tally::of(texts.iter().flat_map(|t| t.text.chars())).has_legacy_text() {
+        return;
+    }
+    for item in texts {
+        item.text = armscii::transliterate(&item.text);
+    }
+}
+
 /// Collects the page's own `/Resources` plus any inherited from its ancestors,
 /// with the nearest definition winning.
 pub fn page_resources(doc: &Document, page_id: ObjectId) -> Dictionary {
@@ -915,6 +979,49 @@ fn flatten_cubic(ctm: &Matrix, p0: Point, p1: Point, p2: Point, p3: Point, out: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run of text at the origin; only `text` matters to the repair.
+    fn run(text: &str) -> TextItem {
+        TextItem {
+            text: text.to_string(),
+            origin: Point::new(0.0, 0.0),
+            size: 10.0,
+            angle: 0.0,
+            color: Rgb::BLACK,
+        }
+    }
+
+    fn repaired(texts: &[&str]) -> Vec<String> {
+        let mut items: Vec<TextItem> = texts.iter().map(|t| run(t)).collect();
+        repair_legacy_armenian(&mut items);
+        items.into_iter().map(|i| i.text).collect()
+    }
+
+    /// The exporter that prompted this tracks letters individually, so no
+    /// single run carries enough of the band to judge -- but the page does.
+    #[test]
+    fn a_page_of_one_character_runs_is_read_back() {
+        let glyphs: Vec<&str> = vec!["¶", "È", "Ê", "²", "ì", "à", "ð", " ", "Ø", " ", "1", ":"];
+        assert_eq!(repaired(&glyphs).concat(), "ԳԼԽԱՎՈՐ Մ 1:");
+    }
+
+    /// One page in this corpus prints a legacy font beside a properly encoded
+    /// one. Judging the page as a whole left every mojibake run alone, because
+    /// the correctly spelled words vetoed the repair of everything else.
+    #[test]
+    fn a_mixed_page_repairs_only_the_unreadable_runs() {
+        assert_eq!(
+            repaired(&["¶ÈÊ²ìàð Ð²î²Î²¶ÆÌ", "ՀԱՏԱՀԱՏՎԱԾՔ 2 - 2", "Ø 1:25"]),
+            ["ԳԼԽԱՎՈՐ ՀԱՏԱԿԱԳԻԾ", "ՀԱՏԱՀԱՏՎԱԾՔ 2 - 2", "Մ 1:25"]
+        );
+    }
+
+    /// And a Latin page keeps its accents, which sit in the very same band.
+    #[test]
+    fn an_accented_latin_page_is_left_alone() {
+        let latin = ["Café de la Gare", "Ürün çeşitleri", "Grüße aus Köln"];
+        assert_eq!(repaired(&latin), latin);
+    }
 
     #[test]
     fn matrix_composition_matches_pdf_order() {

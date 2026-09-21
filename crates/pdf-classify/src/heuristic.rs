@@ -316,6 +316,16 @@ const MIN_DRAWING_PATHS: usize = 120;
 /// drawing regardless of how few paths it took to make. Catches sheets whose
 /// exporter emits one path per feature.
 const MIN_DRAWING_LINE_DENSITY: f64 = 40.0;
+
+/// Whether a page's line work says it is a drawing at all.
+///
+/// Takes the two numbers rather than a [`PageFeatures`] because the features
+/// themselves need the answer while they are still being assembled -- the
+/// sheet-heading fallback is offered to a drawing and not to a letter -- and a
+/// second copy of the test there would be free to drift from this one.
+pub(crate) fn has_drawing(path_count: usize, line_density: f64) -> bool {
+    path_count >= MIN_DRAWING_PATHS || line_density >= MIN_DRAWING_LINE_DENSITY
+}
 /// Above this raster coverage the page is a scan or a photograph, and its
 /// vector layer is at most a frame.
 const SCAN_IMAGE_COVERAGE: f64 = 0.35;
@@ -363,8 +373,7 @@ pub fn heuristic_label(f: &PageFeatures) -> PageVerdict {
         );
     }
 
-    let has_drawing =
-        f.path_count >= MIN_DRAWING_PATHS || f.line_density >= MIN_DRAWING_LINE_DENSITY;
+    let has_drawing = has_drawing(f.path_count, f.line_density);
 
     if f.image_coverage >= SCAN_IMAGE_COVERAGE && !has_drawing {
         // Ambiguous, not certain: structure can see that the page is a picture
@@ -392,14 +401,14 @@ pub fn heuristic_label(f: &PageFeatures) -> PageVerdict {
         );
     }
 
-    // The title block names the sheet in the office's own words, and that
-    // is a statement about the page rather than an inference from it.
+    // The sheet names itself in the office's own words -- in a title block
+    // where the set prints one, in a heading over the drawing otherwise --
+    // and that is a statement about the page rather than an inference from
+    // it. The reason does not distinguish the two, because most of this
+    // corpus prints no title block and naming one would be false on the
+    // majority of the pages this answers for.
     if let Some(class) = f.sheet_role.and_then(class_for_role) {
-        return verdict(
-            class,
-            Confidence::Certain,
-            "the title block names the sheet's kind",
-        );
+        return verdict(class, Confidence::Certain, "the sheet names its own kind");
     }
 
     // Cadastral identifiers only appear on drawings that sit in the cadastre's

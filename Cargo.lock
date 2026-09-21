@@ -1637,6 +1637,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "pdf-armscii"
+version = "0.16.0"
+
+[[package]]
 name = "pdf-classify"
 version = "0.16.0"
 dependencies = [
@@ -1651,6 +1655,7 @@ name = "pdf-core"
 version = "0.16.0"
 dependencies = [
  "image",
+ "pdf-armscii",
  "pdfium-render",
  "tempfile",
  "thiserror",
@@ -1708,6 +1713,7 @@ version = "0.16.0"
 dependencies = [
  "anyhow",
  "lopdf",
+ "pdf-armscii",
  "serde",
 ]
 
@@ -1761,6 +1767,7 @@ dependencies = [
 name = "pdf-text"
 version = "0.16.0"
 dependencies = [
+ "pdf-armscii",
  "pdf-core",
  "pdfium-render",
  "serde",

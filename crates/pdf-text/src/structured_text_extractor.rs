@@ -249,7 +249,8 @@ fn extract_page_structured(
         });
     }
 
-    let raw_chars = extract_raw_chars(&page, &text);
+    let mut raw_chars = extract_raw_chars(&page, &text);
+    repair_legacy_armenian(&mut raw_chars);
     let spans = group_chars_into_spans(&raw_chars);
     let markdown = spans_to_markdown(&spans);
 
@@ -266,6 +267,24 @@ fn extract_page_structured(
 }
 
 // ── Step 1: Extract raw characters ─────────────────────────────────
+
+/// [`pdf_armscii::repair`] over a page's characters rather than over a string.
+///
+/// The structured extractor never assembles the page into one string -- every
+/// span keeps its own coordinates -- so it cannot go through
+/// `sanitize_extracted_text`, which is where the other three text paths get
+/// this. The decision is still the page's: a single character carries no
+/// evidence at all about which alphabet it belongs to.
+fn repair_legacy_armenian(chars: &mut [RawChar]) {
+    if !pdf_armscii::Tally::of(chars.iter().map(|c| c.ch)).has_legacy_text() {
+        return;
+    }
+    for raw in chars {
+        if let Some(letter) = pdf_armscii::letter(raw.ch) {
+            raw.ch = letter;
+        }
+    }
+}
 
 fn extract_raw_chars(page: &PdfPage<'_>, text: &PdfPageText<'_>) -> Vec<RawChar> {
     let rotation = page.rotation().unwrap_or(PdfPageRenderRotation::None);
@@ -774,7 +793,8 @@ pub fn page_has_complex_tables(page: &PdfPage<'_>) -> bool {
         return false;
     };
 
-    let raw_chars = extract_raw_chars(page, &text);
+    let mut raw_chars = extract_raw_chars(page, &text);
+    repair_legacy_armenian(&mut raw_chars);
     if raw_chars.is_empty() {
         return false;
     }

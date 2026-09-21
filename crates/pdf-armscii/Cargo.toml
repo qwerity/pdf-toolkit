@@ -1,0 +1,12 @@
+[package]
+name = "pdf-armscii"
+description = "Armenian written on Latin-1 code points, and how to read it back."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+# DELIBERATELY DEPENDENCY-FREE. Both text paths need this -- the lopdf
+# interpreter in `pdf-geometry` and the pdfium extractors behind
+# `pdf-core::text_quality` -- and neither may depend on the other, so the
+# transliteration cannot live in either of them.
+[dependencies]

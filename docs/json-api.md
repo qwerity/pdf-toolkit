@@ -8,7 +8,7 @@ another program. `serve` is a long-running coordinator and logs to stderr.
 This file is the contract. It is the reference for integrating the tool; if you
 are wiring it into a service, this is all you need.
 
-- Version described here: **0.16.0** (matches the package version)
+- Version described here: **0.17.0** (matches the package version)
 - Warnings and progress go to **stderr**; stdout is only ever the JSON document
 - Files written under `--output` are the same whether or not you parse stdout
 - Exit code is `0` on success and non-zero on failure. **A failed run prints no

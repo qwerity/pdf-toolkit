@@ -1353,7 +1353,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "llm-providers"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -1638,11 +1638,11 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "pdf-armscii"
-version = "0.16.0"
+version = "0.17.0"
 
 [[package]]
 name = "pdf-classify"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "pdf-geo",
  "pdf-geometry",
@@ -1652,7 +1652,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-core"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "image",
  "pdf-armscii",
@@ -1663,7 +1663,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-dossier"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "indexmap",
@@ -1681,7 +1681,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-downsample"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "fast_image_resize",
@@ -1698,7 +1698,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-geo"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "geojson",
  "pdf-geometry",
@@ -1709,7 +1709,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-geometry"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "lopdf",
@@ -1719,7 +1719,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-inspect"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "pdf-core",
  "pdf-text",
@@ -1728,7 +1728,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-model"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "earcutr",
@@ -1746,7 +1746,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-pages"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "pdf-core",
  "pdf-inspect",
@@ -1756,7 +1756,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-render"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "image",
  "pdf-core",
@@ -1765,7 +1765,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-text"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "pdf-armscii",
  "pdf-core",
@@ -1775,7 +1775,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-toolkit"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1808,7 +1808,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-vector"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "geojson",
@@ -1821,7 +1821,7 @@ dependencies = [
 
 [[package]]
 name = "pdf-vlm"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "indexmap",

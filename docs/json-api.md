@@ -314,28 +314,62 @@ person reads it. What it does with each kind of content:
 - **A table drawn with rules** (a browser-printed HTML table, a typeset use
   table) is read from its drawing: the cells are the grid its rules draw, and
   every character is placed in the cell its centre falls in, so a value cannot
-  move into a neighbouring column. A cell edge with no rule is a merged cell: a
-  value merged over some of the columns is written in each of them (a check
-  mark across "Ground Story" and "Upper Story"), a row-wide cell once. Rows at
-  the top of a table that are one full-width cell (a table title) are written
-  as a paragraph above it. Where the column layout changes within touching
-  rules (a header block repeated with other widths), each layout is its own
-  table.
+  move into a neighbouring column. A cell edge with no rule is a merged cell,
+  and its value is written in every row and column it covers ("Unlimited" for
+  each zone a cell spans, a check mark across "Ground Story" and "Upper
+  Story"), so each row reads on its own. A group label (the only text in its
+  row) is written once, and so is a cell over most of its row with nothing
+  after it. Rows at the top of a table that are one full-width cell (a table
+  title) are written as paragraphs above it; a note printed across the middle
+  of a table ("Loading Space: …") is written as paragraphs between two parts
+  of the table, the header repeated above the second. Where the column layout
+  changes within touching rules (a header block repeated with other widths),
+  each layout is its own table.
+- **A table continued on the next page** under the same header keeps the
+  values the page break cut: a blank cell at the top of the continued table,
+  where the previous page's last row had a merged cell, holds that cell's
+  value ("Unlimited (9)" for R4 on one page, and for RAS4 and R5 under it on
+  the next), and a value cut mid-sentence ("… pursuant to" / "Sec. 12.21 A.16
+  of the LAMC") is written whole. A blank under a cell that was not merged
+  stays blank, since in a use table a blank means "not permitted". This needs
+  the previous page in the same request.
+- **Table cells** are escaped like the rest of the markdown (`R1\*\*§`), and
+  bold is kept where it sets part of a cell apart (`**Height:** 45 ft`,
+  `**Agriculture** One-Family Dwellings`); a cell set wholly in bold is plain.
+- **A table ruled between its rows only** (no vertical rules) takes its rows
+  from the rules and its columns from where text starts in two rows or more;
+  two such tables printed side by side are two tables.
+- **Headers.** A grouped heading over sub-headings becomes one header row
+  naming each column in full: `Maximum Height - Stories`. A table whose first
+  row is data (values, or cells of more than eight words, or bold keys styled
+  exactly like the row below) gets an empty header row, so that its first
+  entry is not presented as the columns' names. Numbers can be column names
+  (height districts `1 | 1L | 2 | 3 | 4`) when that row alone is set in bold.
 - **Rows of filled chips** with no rules (a plan's colour-coded zoning key)
   are a table whose cells are the chips. When a table's cells carry two or more
   colours, each cell's text is followed by its colour's name in brackets —
   `R-1 [green]`, `C-2 [yellow]`, `A-1 [red]`. The names are `red`, `orange`,
   `brown`, `yellow`, `green`, `blue`, `purple`, `pink`; white, black and greys
   are never named (they shade zebra rows and header bars).
-- **A framed text box** (a frame drawing no grid) is written as its own block
-  where it is printed, so two boxes side by side are not read across.
+- **A framed text box** (a frame drawing no grid), and a filled panel holding
+  a paragraph, is written as its own block where it is printed, so two boxes
+  side by side are not read across.
 - **A table with no drawing** is recognised from text lined up in columns, as
-  before; lines that read as sentences are not taken for one.
+  before; lines that read as sentences are not taken for one, including
+  sentences thick with zone codes ("for R1, RA, RE and RS properties in
+  Height Districts 2, 3 and 4").
 - **Page columns** are read one after another, including columns that share
   baselines and a heading printed to the left of the text it heads.
 - **Lists** keep their markers as printed: `1.`, `a.`, `(2)`, `iv.` stay in
   the text, since in an ordinance the marker is the provision's address.
   Nested items are indented two spaces per level; bullets are written `- `.
+  Note markers (`*`, `†`, `‡`, `§`) are kept as printed, escaped (`\*\*`),
+  also when printed tight against the note (`***Coastal Zone`).
+- **Paragraphs** end where a sentence ends well short of the column's right
+  edge: definitions or notes printed one per line stay one per line.
+- **A hyphen that ends a line** is kept: a word broken across lines inside a
+  table cell is rejoined whole (`cul-de-sac`). `spans` leaves it out, as
+  before.
 - **Text outside the page box** (the other half of a page cut from a two-page
   spread) is not in `markdown`; `spans` still carries it.
 

@@ -16,7 +16,10 @@
 //! cell carries its colour's name whenever a table uses more than one.
 
 use super::graphics::{Fill, PageGraphics, Rect, Rule, colour_name};
-use super::{RawChar, group_chars_into_spans, group_spans_into_lines_owned, line_to_text};
+use super::{
+    RawChar, TextSpan, escape_markdown_into, group_chars_into_spans, group_spans_into_lines_owned,
+    is_function_word, needs_space_between, spans_to_markdown,
+};
 
 /// Rules closer than this are one line: a border drawn by each of two
 /// adjacent cells, or a stroke and its fill.
@@ -65,7 +68,7 @@ pub(super) fn detect(graphics: &PageGraphics, chars: &[RawChar], page_area: f32)
     let centres: Vec<(f32, f32)> = chars.iter().map(centre).collect();
     let holds_text = |rect: &Rect| centres.iter().any(|&(x, y)| rect.contains(x, y, 0.5));
 
-    let mut regions: Vec<Region> = ruled_regions(&graphics.rules)
+    let mut regions: Vec<Region> = ruled_regions(&graphics.rules, chars)
         .into_iter()
         .filter(|region| holds_text(&region.rect))
         .collect();
@@ -122,12 +125,57 @@ pub(super) fn detect(graphics: &PageGraphics, chars: &[RawChar], page_area: f32)
                     .any(|r| r.rect.contains_rect(&fill.rect, SNAP))
         })
         .collect();
-    regions.extend(chip_tables(&free_fills));
+    let chips = chip_tables(&free_fills);
+    let boxes = filled_boxes(&free_fills, &chips, chars);
+    regions.extend(chips);
+    regions.extend(boxes);
     regions
+}
+
+/// Fills that are no chip of a table but hold a paragraph (two lines or
+/// more): coloured panels printed side by side, each read as its own block
+/// rather than line by line across all of them.
+fn filled_boxes(fills: &[&Fill], chips: &[Region], chars: &[RawChar]) -> Vec<Region> {
+    let mut boxes: Vec<Region> = Vec::new();
+    for fill in fills {
+        let rect = fill.rect;
+        if chips.iter().any(|t| t.rect.contains_rect(&rect, SNAP))
+            || boxes.iter().any(|b| same_rect(&b.rect, &rect))
+        {
+            continue;
+        }
+        let inside = chars_in(&rect, chars);
+        if group_spans_into_lines_owned(group_chars_into_spans(&inside)).len() >= 2 {
+            boxes.push(Region {
+                rect,
+                kind: Kind::TextBox,
+            });
+        }
+    }
+    boxes
 }
 
 fn centre(c: &RawChar) -> (f32, f32) {
     (c.x + c.width / 2.0, c.y - c.height / 2.0)
+}
+
+/// The characters whose centre falls in `rect`.
+fn chars_in(rect: &Rect, chars: &[RawChar]) -> Vec<RawChar> {
+    chars
+        .iter()
+        .filter(|c| {
+            let (x, y) = centre(c);
+            rect.contains(x, y, 0.5)
+        })
+        .cloned()
+        .collect()
+}
+
+/// The lowest start and highest end of a set of rules.
+fn extent<'a>(rules: impl IntoIterator<Item = &'a Rule>) -> (f32, f32) {
+    rules.into_iter().fold((f32::MAX, f32::MIN), |(lo, hi), r| {
+        (lo.min(r.start), hi.max(r.end))
+    })
 }
 
 fn is_near_white((r, g, b): (u8, u8, u8)) -> bool {
@@ -136,11 +184,18 @@ fn is_near_white((r, g, b): (u8, u8, u8)) -> bool {
 
 // ── Ruled tables ───────────────────────────────────────────────────
 
-fn ruled_regions(rules: &[Rule]) -> Vec<Region> {
+fn ruled_regions(rules: &[Rule], chars: &[RawChar]) -> Vec<Region> {
     let merged = merge_rules(rules);
     components(&merged)
         .into_iter()
-        .flat_map(|component| grid_regions(&component))
+        .flat_map(|component| {
+            let grids = grid_regions(&component);
+            if grids.is_empty() {
+                row_ruled_table(&component, chars).into_iter().collect()
+            } else {
+                grids
+            }
+        })
         .collect()
 }
 
@@ -180,7 +235,27 @@ fn crosses(h: &Rule, v: &Rule) -> bool {
         && h.pos <= v.end + SNAP
 }
 
-/// Groups of rules connected by crossings: each is one table or one frame.
+/// Tallest band two equal horizontal rules can border as one table row: a
+/// group label like "Agricultural", or a note of up to three lines ("Loading
+/// Space: ..."), printed across the full width with no vertical rule crossing
+/// it to connect the rows above to the rows below.
+const MAX_BAND_HEIGHT: f32 = 48.0;
+
+/// Shortest rule that can join two parts of a table this way; a table's own
+/// row rules are this long, an underline or a tick is not.
+const MIN_BAND_RULE: f32 = 100.0;
+
+/// Two horizontal rules of the same extent, one band apart: the top and
+/// bottom of a full-width row inside one table.
+fn borders_one_band(a: &Rule, b: &Rule) -> bool {
+    a.end - a.start >= MIN_BAND_RULE
+        && (a.start - b.start).abs() <= GRID_SNAP
+        && (a.end - b.end).abs() <= GRID_SNAP
+        && (a.pos - b.pos).abs() <= MAX_BAND_HEIGHT
+}
+
+/// Groups of rules connected by crossings, or by bordering one full-width
+/// band: each is one table or one frame.
 fn components(rules: &[Rule]) -> Vec<Vec<Rule>> {
     let mut parent: Vec<usize> = (0..rules.len()).collect();
     for i in 0..rules.len() {
@@ -189,7 +264,8 @@ fn components(rules: &[Rule]) -> Vec<Vec<Rule>> {
             let touching = match (a.horizontal, b.horizontal) {
                 (true, false) => crosses(a, b),
                 (false, true) => crosses(b, a),
-                _ => false,
+                (true, true) => borders_one_band(a, b),
+                (false, false) => false,
             };
             if touching {
                 union(&mut parent, i, j);
@@ -265,9 +341,27 @@ fn grid_regions(component: &[Rule]) -> Vec<Region> {
     if hs.len() < 2 || vs.len() < 2 {
         return Vec::new();
     }
-    let xs = cluster(vs.iter().map(|r| r.pos).collect(), GRID_SNAP);
+    let mut xs = cluster(vs.iter().map(|r| r.pos).collect(), GRID_SNAP);
     let mut ys = cluster(hs.iter().map(|r| r.pos).collect(), GRID_SNAP);
     ys.reverse();
+    // A table may draw no outer side borders (Word's default, as in the LA
+    // Generalized Summary of Zoning Regulations): its rows' rules still run to
+    // the table's edges, and those edges bound the outer columns. The same
+    // holds for an open top or bottom.
+    let (rules_left, rules_right) = extent(hs.iter().copied());
+    let (rules_bottom, rules_top) = extent(vs.iter().copied());
+    if xs.first().is_some_and(|&x| rules_left < x - GRID_SNAP) {
+        xs.insert(0, rules_left);
+    }
+    if xs.last().is_some_and(|&x| rules_right > x + GRID_SNAP) {
+        xs.push(rules_right);
+    }
+    if ys.first().is_some_and(|&y| rules_top > y + GRID_SNAP) {
+        ys.insert(0, rules_top);
+    }
+    if ys.last().is_some_and(|&y| rules_bottom < y - GRID_SNAP) {
+        ys.push(rules_bottom);
+    }
     if xs.len() < 2 || ys.len() < 2 {
         return Vec::new();
     }
@@ -354,24 +448,20 @@ fn build_grid(xs: &[f32], ys: &[f32], hs: &[&Rule], vs: &[&Rule]) -> Option<Regi
         }
     }
 
-    let mut bounds: Vec<(usize, usize, usize, usize, usize)> = Vec::new(); // root, r0, c0, r1, c1
+    let mut groups: Vec<(usize, Vec<(usize, usize)>)> = Vec::new(); // root, member positions
     for r in 0..rows {
         for c in 0..cols {
             let root = find(&mut parent, id(r, c));
-            match bounds.iter_mut().find(|b| b.0 == root) {
-                Some(b) => {
-                    b.1 = b.1.min(r);
-                    b.2 = b.2.min(c);
-                    b.3 = b.3.max(r);
-                    b.4 = b.4.max(c);
-                }
-                None => bounds.push((root, r, c, r, c)),
+            match groups.iter_mut().find(|g| g.0 == root) {
+                Some(g) => g.1.push((r, c)),
+                None => groups.push((root, vec![(r, c)])),
             }
         }
     }
-    let cells: Vec<Cell> = bounds
-        .into_iter()
-        .map(|(_, r0, c0, r1, c1)| Cell {
+    let cells: Vec<Cell> = groups
+        .iter()
+        .flat_map(|(_, members)| rectangles(members))
+        .map(|(r0, c0, r1, c1)| Cell {
             row: r0,
             col: c0,
             row_span: r1 - r0 + 1,
@@ -396,6 +486,46 @@ fn build_grid(xs: &[f32], ys: &[f32], hs: &[&Rule], vs: &[&Rule]) -> Option<Regi
             Kind::TextBox
         },
     })
+}
+
+/// A merged region as rectangles `(r0, c0, r1, c1)`. Most are one rectangle;
+/// where a drawing leaves out edges, merges can join into an L (a header cell
+/// with no rule beneath it running into a merged data cell). Its bounding box
+/// would overlap other cells and take their text, so it is cut into column
+/// runs per row, and runs over the same columns in consecutive rows are
+/// stacked back together.
+fn rectangles(members: &[(usize, usize)]) -> Vec<(usize, usize, usize, usize)> {
+    let (r0, r1) = members
+        .iter()
+        .fold((usize::MAX, 0), |(lo, hi), &(r, _)| (lo.min(r), hi.max(r)));
+    let (c0, c1) = members
+        .iter()
+        .fold((usize::MAX, 0), |(lo, hi), &(_, c)| (lo.min(c), hi.max(c)));
+    if members.len() == (r1 - r0 + 1) * (c1 - c0 + 1) {
+        return vec![(r0, c0, r1, c1)];
+    }
+    let mut runs: Vec<(usize, usize, usize)> = Vec::new(); // row, first col, last col
+    for r in r0..=r1 {
+        let mut cols: Vec<usize> = members.iter().filter(|m| m.0 == r).map(|m| m.1).collect();
+        cols.sort_unstable();
+        for c in cols {
+            match runs.last_mut() {
+                Some(run) if run.0 == r && run.2 + 1 == c => run.2 = c,
+                _ => runs.push((r, c, c)),
+            }
+        }
+    }
+    let mut out: Vec<(usize, usize, usize, usize)> = Vec::new();
+    for (r, a, b) in runs {
+        match out
+            .iter_mut()
+            .find(|o| o.1 == a && o.3 == b && o.2 + 1 == r)
+        {
+            Some(o) => o.2 = r,
+            None => out.push((r, a, r, b)),
+        }
+    }
+    out
 }
 
 // ── Chip tables ────────────────────────────────────────────────────
@@ -492,6 +622,110 @@ fn same_rect(a: &Rect, b: &Rect) -> bool {
         && (a.bottom - b.bottom).abs() < SNAP
 }
 
+// ── Tables ruled between rows only ─────────────────────────────────
+
+/// Span starts closer than this begin one column.
+const COLUMN_SNAP: f32 = 4.0;
+
+/// A table that draws only the rules between its rows (Word's horizontal
+/// borders, the LA summary's lists of districts): the rules give the rows,
+/// and the columns begin where text starts in two rows or more. A text
+/// running across a column's start (a caption band) merges the columns it
+/// covers. Two such tables printed side by side are two sets of rules, so
+/// two tables, never one row read across both.
+fn row_ruled_table(component: &[Rule], chars: &[RawChar]) -> Option<Region> {
+    if component.iter().any(|r| !r.horizontal) {
+        return None;
+    }
+    let mut ys = cluster(component.iter().map(|r| r.pos).collect(), GRID_SNAP);
+    ys.reverse();
+    if ys.len() < 3 {
+        return None;
+    }
+    let (left, right) = extent(component);
+    let rect = Rect {
+        left,
+        bottom: ys[ys.len() - 1],
+        right,
+        top: ys[0],
+    };
+
+    // Each row's spans, as (start, end).
+    let mut bands: Vec<Vec<(f32, f32)>> = vec![Vec::new(); ys.len() - 1];
+    for span in group_chars_into_spans(&chars_in(&rect, chars)) {
+        let mid = span.y - span.height / 2.0;
+        if let Some(r) = ys.windows(2).position(|b| mid <= b[0] && mid >= b[1]) {
+            bands[r].push((span.x, span.x + span.width));
+        }
+    }
+    let starts = column_starts(&bands);
+    let rows = bands.iter().filter(|b| !b.is_empty()).count();
+    if starts.len() < 2 || rows < 2 {
+        return None;
+    }
+    // The first column runs from the rules' left end, wherever its text starts.
+    let mut xs = vec![rect.left];
+    xs.extend(starts[1..].iter().map(|x| x - COLUMN_SNAP));
+    xs.push(rect.right);
+
+    Some(Region {
+        rect,
+        kind: Kind::Table(Grid {
+            rows: ys.len() - 1,
+            cols: xs.len() - 1,
+            cells: band_cells(&bands, &xs, &ys),
+        }),
+    })
+}
+
+/// Where text starts in two rows or more, left to right.
+fn column_starts(bands: &[Vec<(f32, f32)>]) -> Vec<f32> {
+    let starts_in = |x: f32| {
+        bands
+            .iter()
+            .filter(|b| b.iter().any(|s| (s.0 - x).abs() <= COLUMN_SNAP))
+            .count()
+    };
+    cluster(bands.iter().flatten().map(|s| s.0).collect(), COLUMN_SNAP)
+        .into_iter()
+        .filter(|&x| starts_in(x) >= 2)
+        .collect()
+}
+
+/// Each row's cells between column edges `xs`, a cell spanning every column
+/// start its text runs across.
+fn band_cells(bands: &[Vec<(f32, f32)>], xs: &[f32], ys: &[f32]) -> Vec<Cell> {
+    let cols = xs.len() - 1;
+    let crosses = |band: &[(f32, f32)], x: f32| {
+        band.iter()
+            .any(|s| s.0 < x - GRID_SNAP && s.1 > x + GRID_SNAP)
+    };
+    let mut cells = Vec::new();
+    for (r, band) in bands.iter().enumerate() {
+        let mut col = 0;
+        while col < cols {
+            let mut span = 1;
+            while col + span < cols && crosses(band, xs[col + span]) {
+                span += 1;
+            }
+            cells.push(Cell {
+                row: r,
+                col,
+                row_span: 1,
+                col_span: span,
+                rect: Rect {
+                    left: xs[col],
+                    bottom: ys[r + 1],
+                    right: xs[col + span],
+                    top: ys[r],
+                },
+            });
+            col += span;
+        }
+    }
+    cells
+}
+
 // ── Assigning text and rendering ───────────────────────────────────
 
 /// Splits the page's characters into those each region holds and those it
@@ -516,21 +750,367 @@ pub(super) fn assign(regions: &[Region], chars: Vec<RawChar>) -> (Vec<RawChar>, 
 }
 
 /// The text of a set of characters as one line of words, lines joined by a
-/// space, with markdown table delimiters escaped.
+/// space, escaped like the rest of the page's markdown ("R1**§" keeps its
+/// note markers rather than turning bold). Bold is kept where it sets part of
+/// a cell apart ("**Agriculture** One-Family Dwellings", "**Height:** 45 ft");
+/// a cell set wholly in bold is plain text.
 fn cell_text(chars: &[RawChar]) -> String {
-    let spans = group_chars_into_spans(chars);
-    let lines = group_spans_into_lines_owned(spans);
-    let text: Vec<String> = lines
-        .iter()
-        .map(|line| line_to_text(line).trim().to_string())
-        .filter(|t| !t.is_empty())
-        .collect();
-    text.join(" ").replace('|', "\\|")
+    let lines = group_spans_into_lines_owned(group_chars_into_spans(chars));
+    let wordy = |s: &&TextSpan| s.text.chars().any(char::is_alphanumeric);
+    let spans = || lines.iter().flat_map(|l| &l.spans).filter(wordy);
+    let mixed = spans().any(|s| s.bold) && spans().any(|s| !s.bold);
+
+    // Escaping only prefixes a character, so the text written so far starts,
+    // is empty and ends a broken word exactly as the plain text would.
+    let mut out = String::new();
+    let mut bold = false;
+    for line in &lines {
+        for (i, span) in line.spans.iter().enumerate() {
+            let text = span.text.trim();
+            if text.is_empty() {
+                continue;
+            }
+            let space = !out.is_empty()
+                && if i == 0 {
+                    !ends_broken_word(&out)
+                } else {
+                    needs_space_between(&line.spans[i - 1], span)
+                };
+            let span_bold = mixed && if wordy(&span) { span.bold } else { bold };
+            if bold && !span_bold {
+                out.push_str("**");
+            }
+            if space {
+                out.push(' ');
+            }
+            if span_bold && !bold {
+                out.push_str("**");
+            }
+            bold = span_bold;
+            escape_markdown_into(&mut out, text);
+        }
+    }
+    if bold {
+        out.push_str("**");
+    }
+    out
 }
 
-/// A table region as markdown: a caption paragraph for full-width title rows
-/// at its top, then the grid.
-pub(super) fn render_table(grid: &Grid, chars: &[RawChar], fills: &[Fill]) -> String {
+/// Whether text ends in a word broken at a hyphen ("cul-" before "de-sac"):
+/// the next line continues the word, with no space.
+pub(super) fn ends_broken_word(text: &str) -> bool {
+    let mut tail = text.chars().rev();
+    tail.next() == Some('-') && tail.next().is_some_and(char::is_alphabetic)
+}
+
+/// A table region as markdown: captions for title rows at its top, one header
+/// row naming each column in full, then one row per data row with every value
+/// it holds, merged values included.
+pub(super) fn render_table(
+    grid: &Grid,
+    chars: &[RawChar],
+    fills: &[Fill],
+    carried: Option<&TableTail>,
+) -> RenderedTable {
+    let by_cell = chars_by_cell(grid, chars);
+    let texts: Vec<String> = by_cell.iter().map(|cs| cell_text(cs)).collect();
+    let labels = colour_labels(grid, &texts, fills);
+
+    // Rows are read in grid order; a row holding nothing is skipped.
+    let rows_with_text: Vec<usize> = (0..grid.rows)
+        .filter(|&r| holding(grid, &texts, r).next().is_some())
+        .collect();
+    let (mut md, remaining) = captions(grid, &texts, &rows_with_text);
+    let Some(&first) = remaining.first() else {
+        return RenderedTable {
+            markdown: md.trim_end().to_string(),
+            tail: None,
+        };
+    };
+
+    let header_height = header_rows(grid, first, &texts);
+    let has_header = header_height > 1
+        || (looks_like_header(grid, &by_cell, &texts, remaining)
+            && !keyed_rows(grid, &by_cell, remaining));
+    let data_start = if has_header {
+        first + header_height
+    } else {
+        first
+    };
+    let (header_part, data_part) = split_at_header(grid, &by_cell, &texts, first, data_start);
+    let mut matrix = filled_matrix(grid, &labels, &header_part, &data_part, data_start);
+    let header = column_names(&matrix[first..data_start], grid.cols);
+    if let Some(tail) = carried.filter(|t| t.header == header) {
+        continue_from(grid, &mut matrix, &data_part, data_start, tail);
+    }
+
+    push_header(&mut md, &header);
+    push_body(
+        &mut md,
+        grid,
+        &by_cell,
+        &texts,
+        &matrix[data_start..],
+        data_start,
+        &header,
+    );
+    RenderedTable {
+        markdown: md.trim_end().to_string(),
+        tail: table_tail(grid, &matrix, data_start, header),
+    }
+}
+
+/// Each column's name: the header rows' texts in it, top to bottom, joined
+/// ("Maximum Height - Stories").
+fn column_names(header_rows: &[Vec<String>], cols: usize) -> Vec<String> {
+    (0..cols)
+        .map(|c| {
+            let mut parts: Vec<&str> = Vec::new();
+            for row in header_rows {
+                let part = row[c].as_str();
+                if !part.is_empty() && !parts.contains(&part) {
+                    parts.push(part);
+                }
+            }
+            parts.join(" - ")
+        })
+        .collect()
+}
+
+/// The data rows (`body`, grid rows from `data_start`), with a note printed
+/// across the table written as paragraphs and the header repeated after it.
+fn push_body(
+    md: &mut String,
+    grid: &Grid,
+    by_cell: &[Vec<RawChar>],
+    texts: &[String],
+    body: &[Vec<String>],
+    data_start: usize,
+    header: &[String],
+) {
+    let mut under_header = true;
+    let mut previous: Option<&Vec<String>> = None;
+    for (r, row) in (data_start..).zip(body) {
+        if let Some(i) = note_cell(grid, texts, r) {
+            if grid.cells[i].row == r {
+                md.push('\n');
+                md.push_str(&spans_to_markdown(&group_chars_into_spans(&by_cell[i])));
+                md.push_str("\n\n");
+                under_header = false;
+                previous = None;
+            }
+            continue;
+        }
+        // Rows the grid divides only for some column's sake can repeat an
+        // earlier row exactly once every value is filled in.
+        if !has_value(row) || previous == Some(row) {
+            continue;
+        }
+        if !under_header {
+            push_header(md, header);
+            under_header = true;
+        }
+        push_row(md, row);
+        previous = Some(row);
+    }
+}
+
+fn has_value(row: &[String]) -> bool {
+    row.iter().any(|v| !v.is_empty())
+}
+
+/// The cells holding text in grid row `r`, merged cells from rows above
+/// included, with their indices.
+fn holding<'a>(
+    grid: &'a Grid,
+    texts: &'a [String],
+    r: usize,
+) -> impl Iterator<Item = (usize, &'a Cell, &'a String)> {
+    grid.cells
+        .iter()
+        .zip(texts)
+        .enumerate()
+        .filter(move |(_, (c, t))| !t.is_empty() && covers(c, r))
+        .map(|(i, (c, t))| (i, c, t))
+}
+
+/// The one cell holding text in row `r`, if there is exactly one.
+fn sole_text(grid: &Grid, texts: &[String], r: usize) -> Option<usize> {
+    let mut cells = holding(grid, texts, r);
+    match (cells.next(), cells.next()) {
+        (Some((i, _, _)), None) => Some(i),
+        _ => None,
+    }
+}
+
+/// A table's markdown, and what the next page needs to continue it.
+pub(super) struct RenderedTable {
+    pub markdown: String,
+    pub tail: Option<TableTail>,
+}
+
+/// A table's column names and its last row. A table printed across a page
+/// break goes on under the same header, and a merged cell the break cuts
+/// holds its value on both sides of it (the LA summary's "Unlimited (9)" for
+/// R4 on one page and RAS4 and R5 on the next).
+pub(super) struct TableTail {
+    header: Vec<String>,
+    /// Each column's value in the last row, with the columns of the merged
+    /// cell that held it (`None` for a cell of its own).
+    last: Vec<(String, Option<(usize, usize)>)>,
+}
+
+fn table_tail(
+    grid: &Grid,
+    matrix: &[Vec<String>],
+    data_start: usize,
+    header: Vec<String>,
+) -> Option<TableTail> {
+    let r = (data_start..grid.rows)
+        .rev()
+        .find(|&r| has_value(&matrix[r]))?;
+    let last = (0..grid.cols)
+        .map(|c| {
+            let merged = grid
+                .cells
+                .iter()
+                .find(|cell| {
+                    covers(cell, r)
+                        && (cell.col..cell.col + cell.col_span).contains(&c)
+                        && (cell.row_span > 1 || cell.col_span > 1)
+                })
+                .map(|cell| (cell.col, cell.col_span));
+            (matrix[r][c].clone(), merged)
+        })
+        .collect();
+    Some(TableTail { header, last })
+}
+
+/// Writes the previous page's values into the cells that continue them: a
+/// blank cell at the top of the table as wide as a merged cell ending the
+/// previous page, and a cell completing a value the break cut mid-sentence
+/// ("… pursuant to" / "Sec. 12.21 A.16 of the LAMC"). A table that starts
+/// with a group label ("Commercial") starts afresh; a blank under a cell
+/// that was not merged may mean "not permitted", and stays blank.
+fn continue_from(
+    grid: &Grid,
+    matrix: &mut [Vec<String>],
+    texts: &[String],
+    data_start: usize,
+    tail: &TableTail,
+) {
+    let Some(first) = (data_start..grid.rows).find(|&r| has_value(&matrix[r])) else {
+        return;
+    };
+    if holding(grid, texts, first).any(|(_, c, _)| c.col_span == grid.cols) {
+        return;
+    }
+    for (cell, text) in grid.cells.iter().zip(texts) {
+        if !covers(cell, first) {
+            continue;
+        }
+        for c in cell.col..cell.col + cell.col_span {
+            let (value, merged) = &tail.last[c];
+            if value.is_empty() {
+                continue;
+            }
+            if text.is_empty() {
+                if *merged == Some((cell.col, cell.col_span)) {
+                    for row in &mut matrix[first..cell.row + cell.row_span] {
+                        if row[c].is_empty() {
+                            row[c].clone_from(value);
+                        }
+                    }
+                }
+            } else if cut_off(value) && matrix[first][c] == *text {
+                matrix[first][c] = format!("{value} {text}");
+            }
+        }
+    }
+}
+
+/// Whether a value stops mid-sentence, on a word that needs another after it.
+fn cut_off(value: &str) -> bool {
+    value
+        .split_whitespace()
+        .last()
+        .is_some_and(is_function_word)
+}
+
+/// The cell holding a note printed across a table ("Loading Space: …; Open
+/// Space: …" between two groups of zones): the only text in its row, as wide
+/// as the table, longer than a group label and ending a sentence, which a
+/// group label ("… Land Use Class/Type:") never does. It is read as
+/// paragraphs between two parts of the table, each under the header.
+fn note_cell(grid: &Grid, texts: &[String], r: usize) -> Option<usize> {
+    sole_text(grid, texts, r).filter(|&i| {
+        grid.cells[i].col_span == grid.cols
+            && texts[i].split_whitespace().count() > HEADER_MAX_WORDS
+            && texts[i].trim_end().ends_with('.')
+    })
+}
+
+fn covers(cell: &Cell, r: usize) -> bool {
+    cell.row <= r && r < cell.row + cell.row_span
+}
+
+/// Title bands at the top of a table (one text across most of the width) as
+/// paragraphs, and the rows after them.
+fn captions<'a>(grid: &Grid, texts: &[String], rows: &'a [usize]) -> (String, &'a [usize]) {
+    let mut md = String::new();
+    let mut remaining = rows;
+    while let Some(&row) = remaining.first() {
+        let Some(i) = sole_text(grid, texts, row)
+            .filter(|&i| grid.cells[i].col_span * 2 > grid.cols && grid.cells[i].row == row)
+        else {
+            break;
+        };
+        md.push_str(&texts[i]);
+        md.push_str("\n\n");
+        remaining = &remaining[1..];
+    }
+    (md, remaining)
+}
+
+/// Each cell's text as the header reads it and as the data rows read it.
+///
+/// A header cell with no rule beneath it runs on over data rows (the LA
+/// summary's "Parking Required"): what it holds below the header's bottom
+/// edge is the data rows' value (text carried over from the previous page),
+/// what it holds above is the column's name.
+fn split_at_header(
+    grid: &Grid,
+    by_cell: &[Vec<RawChar>],
+    texts: &[String],
+    first: usize,
+    data_start: usize,
+) -> (Vec<String>, Vec<String>) {
+    let mut header_part = texts.to_vec();
+    let mut data_part = texts.to_vec();
+    let header_bottom = grid
+        .cells
+        .iter()
+        .filter(|c| data_start > first && c.row >= first && c.row + c.row_span == data_start)
+        .map(|c| c.rect.bottom)
+        .fold(f32::NEG_INFINITY, f32::max);
+    if !header_bottom.is_finite() {
+        return (header_part, data_part);
+    }
+    for (i, cell) in grid.cells.iter().enumerate() {
+        if cell.row < data_start && cell.row + cell.row_span > data_start {
+            let (above, below): (Vec<RawChar>, Vec<RawChar>) = by_cell[i]
+                .iter()
+                .cloned()
+                .partition(|c| centre(c).1 >= header_bottom);
+            header_part[i] = cell_text(&above);
+            data_part[i] = cell_text(&below);
+        }
+    }
+    (header_part, data_part)
+}
+
+/// Each character in the cell its centre falls in (or the nearest).
+fn chars_by_cell(grid: &Grid, chars: &[RawChar]) -> Vec<Vec<RawChar>> {
     let mut by_cell: Vec<Vec<RawChar>> = grid.cells.iter().map(|_| Vec::new()).collect();
     for c in chars {
         let (x, y) = centre(c);
@@ -541,8 +1121,14 @@ pub(super) fn render_table(grid: &Grid, chars: &[RawChar], fills: &[Fill]) -> St
             .unwrap_or_else(|| nearest_cell(&grid.cells, x, y));
         by_cell[index].push(c.clone());
     }
+    by_cell
+}
 
-    let texts: Vec<String> = by_cell.iter().map(|cs| cell_text(cs)).collect();
+/// Each cell's text, followed by its colour's name when colour is what the
+/// table says (a zoning key of coloured chips, most cells coloured, two
+/// colours or more), not when it only shades one column or the group rows of
+/// a plain table (the zone column of the LA summary).
+fn colour_labels(grid: &Grid, texts: &[String], fills: &[Fill]) -> Vec<Option<&'static str>> {
     let colours: Vec<Option<&'static str>> = grid
         .cells
         .iter()
@@ -550,56 +1136,229 @@ pub(super) fn render_table(grid: &Grid, chars: &[RawChar], fills: &[Fill]) -> St
         .collect();
     let mut distinct: Vec<&str> = colours
         .iter()
-        .zip(&texts)
+        .zip(texts)
         .filter(|(_, t)| !t.is_empty())
         .filter_map(|(c, _)| *c)
         .collect();
+    let coloured = distinct.len();
     distinct.sort_unstable();
     distinct.dedup();
-    let annotate = distinct.len() >= 2;
+    let text_cells = texts.iter().filter(|t| !t.is_empty()).count();
+    if distinct.len() >= 2 && coloured * 2 >= text_cells {
+        colours
+    } else {
+        vec![None; colours.len()]
+    }
+}
 
+/// The grid with every value written in each position it covers.
+///
+/// A value merged over rows or columns holds for each ("Unlimited (9)" for
+/// every zone the cell spans, a check mark across "Ground Story" and "Upper
+/// Story"), so a reader of one row never has to look at another. Two
+/// exceptions: a cell as wide as the table (a title or a group label) is
+/// written once, and so is a cell over most of the row with nothing after it
+/// ("1.000 Residential" across every zone of Juneau's use table); a wide
+/// value followed by other values in its row (RFAR across five height
+/// districts of the LA summary) is still repeated.
+fn filled_matrix(
+    grid: &Grid,
+    labels: &[Option<&'static str>],
+    header_part: &[String],
+    data_part: &[String],
+    data_start: usize,
+) -> Vec<Vec<String>> {
     let mut matrix = vec![vec![String::new(); grid.cols]; grid.rows];
-    for ((cell, text), colour) in grid.cells.iter().zip(&texts).zip(&colours) {
-        if text.is_empty() {
-            continue;
+    let text_at = |i: usize, r: usize| {
+        if r < data_start {
+            &header_part[i]
+        } else {
+            &data_part[i]
         }
-        let value = match colour {
-            Some(name) if annotate => format!("{text} [{name}]"),
-            _ => text.clone(),
+    };
+    for (i, cell) in grid.cells.iter().enumerate() {
+        let last_row = cell.row + cell.row_span;
+        let beside = || {
+            grid.cells.iter().enumerate().filter(move |&(k, other)| {
+                k != i && other.row < last_row && other.row + other.row_span > cell.row
+            })
         };
-        // A value merged over a few columns holds for each of them (a check
-        // mark across "Ground Story" and "Upper Story"); a row-wide cell is a
-        // heading and is written once.
-        let repeat = if cell.col_span < grid.cols {
+        let followed = || {
+            beside().any(|(k, other)| {
+                !header_part[k].is_empty() && other.col >= cell.col + cell.col_span
+            })
+        };
+        // A label alone in its row ("Variable Mass" over the rows it groups)
+        // is written once, however many columns it spans.
+        let alone = || !beside().any(|(k, _)| !data_part[k].is_empty());
+        let full_width = cell.col_span == grid.cols;
+        let cols = if cell.col_span > 1
+            && !full_width
+            && (cell.col_span * 2 <= grid.cols || followed())
+            && (cell.row < data_start || !alone())
+        {
             cell.col_span
         } else {
             1
         };
-        for slot in matrix[cell.row].iter_mut().skip(cell.col).take(repeat) {
-            slot.clone_from(&value);
+        let rows = if full_width { 1 } else { cell.row_span };
+        for (r, row) in matrix.iter_mut().enumerate().skip(cell.row).take(rows) {
+            let text = text_at(i, r);
+            if text.is_empty() {
+                continue;
+            }
+            let value = match labels[i] {
+                Some(name) => format!("{text} [{name}]"),
+                None => text.clone(),
+            };
+            for slot in row.iter_mut().skip(cell.col).take(cols) {
+                slot.clone_from(&value);
+            }
         }
     }
-    matrix.retain(|row| row.iter().any(|v| !v.is_empty()));
+    matrix
+}
 
-    let mut md = String::new();
-    while matrix.len() > 1 && matrix[0][1..].iter().all(String::is_empty) {
-        md.push_str(&matrix.remove(0)[0]);
-        md.push_str("\n\n");
+/// One markdown table row.
+pub(super) fn push_row(md: &mut String, row: &[String]) {
+    md.push_str("| ");
+    md.push_str(&row.join(" | "));
+    md.push_str(" |\n");
+}
+
+/// A markdown table's header row and the separator below it.
+pub(super) fn push_header(md: &mut String, header: &[String]) {
+    push_row(md, header);
+    md.push('|');
+    md.push_str(&" --- |".repeat(header.len()));
+    md.push('\n');
+}
+
+/// A value, not a name: digits and punctuation only (".65", "50%", "6,000").
+fn is_numeric(text: &str) -> bool {
+    let t = text.trim();
+    !t.is_empty() && t.chars().any(|c| c.is_ascii_digit()) && !t.chars().any(char::is_alphabetic)
+}
+
+/// Words above which a cell is content, not a column name ("Lot Size and
+/// Residential Floor Area Ratio" is seven).
+const HEADER_MAX_WORDS: usize = 8;
+
+/// Whether a row's cells name columns: short cells, no values. A table
+/// without a header (a continuation page, a two-column list of terms) starts
+/// with data, and data must not be made the column names.
+pub(super) fn is_header_row<S: AsRef<str>>(cells: &[S]) -> bool {
+    short_cells(cells) && !holds_values(cells)
+}
+
+/// Whether a row has text, and no cell longer than a column name.
+fn short_cells<S: AsRef<str>>(cells: &[S]) -> bool {
+    let cells: Vec<&str> = cells
+        .iter()
+        .map(AsRef::as_ref)
+        .filter(|t| !t.trim().is_empty())
+        .collect();
+    !cells.is_empty()
+        && cells
+            .iter()
+            .all(|t| t.split_whitespace().count() <= HEADER_MAX_WORDS)
+}
+
+/// Whether every cell holding text in grid row `r` is set mostly in bold,
+/// judged on letters and digits (a note mark like "‡" often has no bold face).
+fn bold_row(grid: &Grid, by_cell: &[Vec<RawChar>], r: usize) -> bool {
+    bold_cells(grid, by_cell, r).iter().all(|&(_, bold)| bold)
+}
+
+/// Each cell starting in grid row `r` that holds letters or digits, and
+/// whether most of them are bold (a note mark like "‡" often has no bold
+/// face, so marks are not counted).
+fn bold_cells(grid: &Grid, by_cell: &[Vec<RawChar>], r: usize) -> Vec<(usize, bool)> {
+    grid.cells
+        .iter()
+        .zip(by_cell)
+        .filter(|(c, _)| c.row == r)
+        .filter_map(|(c, cs)| {
+            let (bold, all) = cs
+                .iter()
+                .filter(|ch| ch.ch.is_alphanumeric())
+                .fold((0, 0), |(b, a), ch| (b + usize::from(ch.bold), a + 1));
+            (all > 0).then_some((c.col, bold * 2 > all))
+        })
+        .collect()
+}
+
+/// Two values or more make a row data, whatever else it holds.
+fn holds_values<S: AsRef<str>>(cells: &[S]) -> bool {
+    cells.iter().filter(|t| is_numeric(t.as_ref())).count() >= 2
+}
+
+/// The texts of the cells starting in grid row `r`.
+fn row_texts<'a>(grid: &Grid, texts: &'a [String], r: usize) -> Vec<&'a String> {
+    grid.cells
+        .iter()
+        .zip(texts)
+        .filter(|(c, _)| c.row == r)
+        .map(|(_, t)| t)
+        .collect()
+}
+
+/// Whether the first of `rows` names columns. Numbers can be column names
+/// (height districts "1 1L 2 3 4"): a row of them is the header when it
+/// alone is set in bold.
+fn looks_like_header(
+    grid: &Grid,
+    by_cell: &[Vec<RawChar>],
+    texts: &[String],
+    rows: &[usize],
+) -> bool {
+    let [first, rest @ ..] = rows else {
+        return false;
+    };
+    let cells = row_texts(grid, texts, *first);
+    is_header_row(&cells)
+        || (short_cells(&cells)
+            && rest.first().is_some_and(|&next| {
+                bold_row(grid, by_cell, *first) && !bold_row(grid, by_cell, next)
+            }))
+}
+
+/// Whether the first two of `rows` are entries of a list keyed by bold terms
+/// ("**O** Oil Drilling District"). A header is styled alike across its
+/// columns; a row that bolds only some of its cells, exactly as the row below
+/// does, is data.
+fn keyed_rows(grid: &Grid, by_cell: &[Vec<RawChar>], rows: &[usize]) -> bool {
+    let [a, b, ..] = rows else {
+        return false;
+    };
+    let (first, second) = (bold_cells(grid, by_cell, *a), bold_cells(grid, by_cell, *b));
+    first == second && first.iter().any(|p| p.1) && first.iter().any(|p| !p.1)
+}
+
+/// How many grid rows, from `first`, the header occupies. More than one only
+/// when `first` holds a group heading (spanning several columns, not the
+/// whole width) that the row below divides into sub-headings: the header
+/// then ends where those sub-headings end ("Maximum Height" over "Stories"
+/// and "Feet"). Taken from the headings, not the tallest cell: a header cell
+/// with no rule beneath it ("Parking Required" in the LA summary) runs on
+/// through data rows. A row below that holds values (".65 .55 .45") is data,
+/// not sub-headings, whatever spans above it.
+fn header_rows(grid: &Grid, first: usize, texts: &[String]) -> usize {
+    if holds_values(&row_texts(grid, texts, first + 1)) {
+        return 1;
     }
-    if matrix.is_empty() {
-        return md.trim_end().to_string();
-    }
-    for (i, row) in matrix.iter().enumerate() {
-        md.push_str("| ");
-        md.push_str(&row.join(" | "));
-        md.push_str(" |\n");
-        if i == 0 {
-            md.push('|');
-            md.push_str(&" --- |".repeat(row.len()));
-            md.push('\n');
-        }
-    }
-    md.trim_end().to_string()
+    let end = grid
+        .cells
+        .iter()
+        .filter(|g| g.row == first && g.row_span == 1 && g.col_span > 1 && g.col_span < grid.cols)
+        .flat_map(|g| {
+            grid.cells.iter().filter(move |c| {
+                c.row == first + 1 && c.col >= g.col && c.col + c.col_span <= g.col + g.col_span
+            })
+        })
+        .map(|c| c.row + c.row_span)
+        .max();
+    end.map_or(1, |end| end - first)
 }
 
 fn nearest_cell(cells: &[Cell], x: f32, y: f32) -> usize {
@@ -670,7 +1429,7 @@ mod tests {
             v(100.0, 240.0, 300.0),
             v(200.0, 240.0, 300.0),
         ]);
-        let regions = ruled_regions(&rules);
+        let regions = ruled_regions(&rules, &[]);
         assert_eq!(regions.len(), 1);
         let grid = table(&regions);
         assert_eq!((grid.rows, grid.cols, grid.cells.len()), (3, 2, 6));
@@ -689,7 +1448,7 @@ mod tests {
             v(200.0, 260.0, 300.0),
             v(100.0, 260.0, 280.0),
         ]);
-        let regions = ruled_regions(&rules);
+        let regions = ruled_regions(&rules, &[]);
         let grid = table(&regions);
         let title = grid.cells.iter().find(|c| c.row == 0).expect("title cell");
         assert_eq!(title.col_span, 2);
@@ -712,7 +1471,7 @@ mod tests {
             v(80.0, 240.0, 280.0),
             v(140.0, 240.0, 280.0),
         ]);
-        let regions = ruled_regions(&rules);
+        let regions = ruled_regions(&rules, &[]);
         assert_eq!(regions.len(), 2);
         // The lone header row is too short to be a table on its own; the rows
         // below keep their own three columns instead of five slivers.
@@ -732,13 +1491,13 @@ mod tests {
             v(0.0, 200.0, 300.0),
             v(200.0, 200.0, 300.0),
         ];
-        let regions = ruled_regions(&rules);
+        let regions = ruled_regions(&rules, &[]);
         assert!(matches!(regions[0].kind, Kind::TextBox));
     }
 
     #[test]
     fn a_lone_underline_is_no_region() {
-        assert!(ruled_regions(&[h(300.0, 0.0, 120.0)]).is_empty());
+        assert!(ruled_regions(&[h(300.0, 0.0, 120.0)], &[]).is_empty());
     }
 
     #[test]
@@ -792,5 +1551,311 @@ mod tests {
             .collect();
         let refs: Vec<&Fill> = fills.iter().collect();
         assert!(chip_tables(&refs).is_empty());
+    }
+
+    #[test]
+    fn an_l_shaped_merge_is_cut_into_rectangles() {
+        // A header cell (0,2)-(1,2) with no rule beneath it joins a merged data
+        // cell (2,0)-(2,2): its bounding box would swallow (0..1, 0..1).
+        let l = [(0, 2), (1, 2), (2, 0), (2, 1), (2, 2)];
+        let mut got = rectangles(&l);
+        got.sort_unstable();
+        assert_eq!(got, vec![(0, 2, 1, 2), (2, 0, 2, 2)]);
+        assert_eq!(
+            rectangles(&[(0, 0), (0, 1), (1, 0), (1, 1)]),
+            vec![(0, 0, 1, 1)]
+        );
+    }
+
+    /// One word's characters, 5 pt wide each, top at `top`.
+    fn word(text: &str, x: f32, top: f32, bold: bool) -> Vec<RawChar> {
+        text.chars()
+            .enumerate()
+            .map(|(i, ch)| RawChar {
+                ch,
+                x: x + i as f32 * 5.0,
+                y: top,
+                width: 5.0,
+                height: 8.0,
+                font_size: 8.0,
+                font_name: "Helvetica".into(),
+                bold,
+                italic: false,
+                space_before: false,
+            })
+            .collect()
+    }
+
+    /// A bold key and its plain name per row, between rules at `ys`.
+    fn keyed_list(left: f32, ys: &[f32], keys: &[(&str, &str)]) -> (Vec<Rule>, Vec<RawChar>) {
+        let rules = ys.iter().map(|&y| h(y, left, left + 250.0)).collect();
+        let mut chars = Vec::new();
+        for (band, (key, name)) in ys.windows(2).zip(keys) {
+            chars.extend(word(key, left + 2.0, band[0] - 6.0, true));
+            chars.extend(word(name, left + 100.0, band[0] - 6.0, false));
+        }
+        (rules, chars)
+    }
+
+    #[test]
+    fn rules_between_rows_only_draw_a_table_with_columns_where_text_starts() {
+        let (rules, chars) = keyed_list(
+            50.0,
+            &[100.0, 80.0, 60.0],
+            &[("O", "Oil"), ("S", "Slaughter")],
+        );
+        let region = row_ruled_table(&rules, &chars).expect("a table");
+        let grid = table(std::slice::from_ref(&region));
+        assert_eq!((grid.rows, grid.cols, grid.cells.len()), (2, 2, 4));
+        assert_eq!(
+            render_table(grid, &chars, &[], None).markdown,
+            "|  |  |\n| --- | --- |\n| O | Oil |\n| S | Slaughter |"
+        );
+    }
+
+    #[test]
+    fn row_ruled_lists_side_by_side_are_two_tables() {
+        let ys = [100.0, 80.0, 60.0];
+        let (mut rules, mut chars) = keyed_list(50.0, &ys, &[("O", "Oil"), ("S", "Slaughter")]);
+        let (right_rules, right_chars) =
+            keyed_list(320.0, &ys, &[("SN", "Sign"), ("RG", "Garage")]);
+        rules.extend(right_rules);
+        chars.extend(right_chars);
+        let regions = ruled_regions(&rules, &chars);
+        assert_eq!(regions.len(), 2);
+        assert!(
+            regions
+                .iter()
+                .all(|r| matches!(&r.kind, Kind::Table(g) if g.cols == 2))
+        );
+    }
+
+    #[test]
+    fn rules_with_one_column_of_text_are_no_table() {
+        let rules = vec![
+            h(100.0, 50.0, 300.0),
+            h(80.0, 50.0, 300.0),
+            h(60.0, 50.0, 300.0),
+        ];
+        let mut chars = word("First", 52.0, 94.0, false);
+        chars.extend(word("Second", 52.0, 74.0, false));
+        assert!(row_ruled_table(&rules, &chars).is_none());
+    }
+
+    #[test]
+    fn a_header_names_columns_and_holds_no_values() {
+        assert!(is_header_row(&[
+            "Zone",
+            "Lot Size and Residential Floor Area Ratio",
+            ""
+        ]));
+        assert!(!is_header_row(&["Up to 6,000 SF", ".65", ".55"]));
+        assert!(!is_header_row(&[
+            "(T)",
+            "Tentative zone classification, pending certain required dedications, payments or improvements"
+        ]));
+        assert!(!is_header_row(&["", ""]));
+    }
+
+    #[test]
+    fn a_word_broken_at_a_line_end_hyphen_is_rejoined() {
+        let mut chars = word("cul-", 0.0, 100.0, false);
+        chars.extend(word("de-sac", 0.0, 90.0, false));
+        assert_eq!(cell_text(&chars), "cul-de-sac");
+        let mut chars = word("10", 0.0, 100.0, false);
+        chars.extend(word("ft", 0.0, 90.0, false));
+        assert_eq!(cell_text(&chars), "10 ft");
+    }
+
+    #[test]
+    fn a_filled_panel_holding_a_paragraph_is_a_text_box() {
+        let panel = Fill {
+            rect: Rect {
+                left: 0.0,
+                bottom: 50.0,
+                right: 150.0,
+                top: 100.0,
+            },
+            rgb: (198, 217, 241),
+        };
+        let mut chars = word("Height", 2.0, 95.0, true);
+        chars.extend(word("district", 2.0, 85.0, false));
+        let boxes = filled_boxes(&[&panel], &[], &chars);
+        assert!(matches!(
+            boxes.as_slice(),
+            [Region {
+                kind: Kind::TextBox,
+                ..
+            }]
+        ));
+        assert!(filled_boxes(&[&panel], &[], &chars[..6]).is_empty());
+    }
+
+    fn cell(row: usize, col: usize, row_span: usize, col_span: usize) -> Cell {
+        Cell {
+            row,
+            col,
+            row_span,
+            col_span,
+            rect: Rect {
+                left: col as f32 * 100.0,
+                bottom: 100.0 - (row + row_span) as f32 * 20.0,
+                right: (col + col_span) as f32 * 100.0,
+                top: 100.0 - row as f32 * 20.0,
+            },
+        }
+    }
+
+    /// Words placed in grid cells: (row, col, text, bold).
+    fn in_cells(words: &[(usize, usize, &str, bool)]) -> Vec<RawChar> {
+        words
+            .iter()
+            .flat_map(|&(r, c, text, bold)| {
+                word(
+                    text,
+                    c as f32 * 100.0 + 5.0,
+                    100.0 - r as f32 * 20.0 - 6.0,
+                    bold,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn numbers_set_apart_in_bold_name_columns() {
+        let grid = Grid {
+            rows: 2,
+            cols: 3,
+            cells: vec![
+                cell(0, 0, 1, 1),
+                cell(0, 1, 1, 1),
+                cell(0, 2, 1, 1),
+                cell(1, 0, 1, 1),
+                cell(1, 1, 1, 1),
+                cell(1, 2, 1, 1),
+            ],
+        };
+        let chars = in_cells(&[
+            (0, 0, "Zone", true),
+            (0, 1, "2", true),
+            (0, 2, "3", true),
+            (1, 0, "A1", true),
+            (1, 1, "45", false),
+            (1, 2, "n/a", false),
+        ]);
+        let md = render_table(&grid, &chars, &[], None).markdown;
+        assert!(md.starts_with("| Zone | 2 | 3 |\n| --- |"), "{md}");
+    }
+
+    #[test]
+    fn a_merged_value_cut_by_a_page_break_continues_on_the_next_page() {
+        let header = [
+            (0, 0, "Zone", true),
+            (0, 1, "Stories", true),
+            (0, 2, "Feet", true),
+            (0, 3, "Front", true),
+            (0, 4, "Rear", true),
+        ];
+        let header_cells = (0..5).map(|c| cell(0, c, 1, 1));
+        // Previous page: R4, "Unlimited" merged over Stories and Feet.
+        let before = Grid {
+            rows: 2,
+            cols: 5,
+            cells: header_cells
+                .clone()
+                .chain([
+                    cell(1, 0, 1, 1),
+                    cell(1, 1, 1, 2),
+                    cell(1, 3, 1, 1),
+                    cell(1, 4, 1, 1),
+                ])
+                .collect(),
+        };
+        let mut words = header.to_vec();
+        words.extend([
+            (1, 0, "R4", false),
+            (1, 1, "Unlimited", false),
+            (1, 3, "15", false),
+            (1, 4, "20", false),
+        ]);
+        let tail = render_table(&before, &in_cells(&words), &[], None).tail;
+
+        // This page: RAS4 and R5 beside a blank cell merged over both rows
+        // and both height columns; their yards are printed.
+        let after = Grid {
+            rows: 3,
+            cols: 5,
+            cells: header_cells
+                .chain([
+                    cell(1, 0, 1, 1),
+                    cell(1, 1, 2, 2),
+                    cell(1, 3, 1, 1),
+                    cell(1, 4, 1, 1),
+                    cell(2, 0, 1, 1),
+                    cell(2, 3, 1, 1),
+                    cell(2, 4, 1, 1),
+                ])
+                .collect(),
+        };
+        let mut words = header.to_vec();
+        words.extend([
+            (1, 0, "RAS4", false),
+            (1, 3, "5", false),
+            (1, 4, "5", false),
+            (2, 0, "R5", false),
+            (2, 3, "15", false),
+            (2, 4, "15", false),
+        ]);
+        let chars = in_cells(&words);
+        let md = render_table(&after, &chars, &[], tail.as_ref()).markdown;
+        assert!(
+            md.contains("| RAS4 | Unlimited | Unlimited | 5 | 5 |"),
+            "{md}"
+        );
+        assert!(
+            md.contains("| R5 | Unlimited | Unlimited | 15 | 15 |"),
+            "{md}"
+        );
+        // Without the previous page, the page prints them blank.
+        let alone = render_table(&after, &chars, &[], None).markdown;
+        assert!(alone.contains("| RAS4 |  |  | 5 | 5 |"), "{alone}");
+    }
+
+    #[test]
+    fn a_note_across_a_table_is_a_paragraph_between_two_headed_parts() {
+        let grid = Grid {
+            rows: 4,
+            cols: 2,
+            cells: vec![
+                cell(0, 0, 1, 1),
+                cell(0, 1, 1, 1),
+                cell(1, 0, 1, 1),
+                cell(1, 1, 1, 1),
+                cell(2, 0, 1, 2),
+                cell(3, 0, 1, 1),
+                cell(3, 1, 1, 1),
+            ],
+        };
+        let mut chars = in_cells(&[
+            (0, 0, "Zone", true),
+            (0, 1, "Height", true),
+            (1, 0, "R5", false),
+            (1, 1, "45", false),
+            (3, 0, "CR", false),
+            (3, 1, "75", false),
+        ]);
+        let note = "Loading Space: required for the zones in accordance with the code.";
+        chars.extend(word(note, 5.0, 100.0 - 2.0 * 20.0 - 6.0, false));
+        let md = render_table(&grid, &chars, &[], None).markdown;
+        assert_eq!(md.matches("| Zone | Height |").count(), 2, "{md}");
+        assert!(md.contains("\n\nLoading Space:"), "{md}");
+    }
+
+    #[test]
+    fn table_cells_escape_markdown_and_mark_bold_that_sets_part_apart() {
+        let mut chars = word("Height:", 0.0, 100.0, true);
+        chars.extend(word("45", 50.0, 100.0, false));
+        assert_eq!(cell_text(&chars), "**Height:** 45");
+        assert_eq!(cell_text(&word("R1**§", 0.0, 100.0, true)), "R1\\*\\*§");
     }
 }

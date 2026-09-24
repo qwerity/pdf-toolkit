@@ -247,10 +247,20 @@ pub fn extract_structured_text(
     let selected_page_count = page_numbers.len();
 
     let mut structured_pages = Vec::with_capacity(selected_page_count);
+    // A table continued from the page before, when that page was read too.
+    let mut carry: Option<regions::TableTail> = None;
+    let mut previous_page: Option<u16> = None;
     for &page_number in &page_numbers {
-        match extract_page_structured(pages, page_number, output_format) {
+        if previous_page.map(|p| p + 1) != Some(page_number.get()) {
+            carry = None;
+        }
+        previous_page = Some(page_number.get());
+        match extract_page_structured(pages, page_number, output_format, &mut carry) {
             Ok(page) => structured_pages.push(page),
-            Err(warning) => warnings.push(warning),
+            Err(warning) => {
+                carry = None;
+                warnings.push(warning);
+            }
         }
     }
 
@@ -267,6 +277,7 @@ fn extract_page_structured(
     pages: &PdfPages<'_>,
     page_number: NonZeroU16,
     format: StructuredOutputFormat,
+    carry: &mut Option<regions::TableTail>,
 ) -> std::result::Result<StructuredPage, ExtractionWarning> {
     let page = pages
         .get(page_index(page_number))
@@ -290,13 +301,11 @@ fn extract_page_structured(
 
     let mut raw_chars = extract_raw_chars(&page, &text);
     repair_legacy_armenian(&mut raw_chars);
-    let spans = group_chars_into_spans_with(&raw_chars, LEGACY_SPANS);
-    let markdown = page_markdown(&page, raw_chars);
-
     let output_spans = match format {
-        StructuredOutputFormat::Full => spans,
+        StructuredOutputFormat::Full => legacy_spans(&raw_chars),
         StructuredOutputFormat::MarkdownOnly => Vec::new(),
     };
+    let markdown = page_markdown(&page, raw_chars, carry);
 
     Ok(StructuredPage {
         page: page_number.get(),
@@ -317,7 +326,14 @@ const REGION_CLOSE: char = '\u{E001}';
 /// Each region stands in the flow as one placeholder span at its top-left
 /// corner, the size of the body text, so bands, columns and paragraphs are
 /// decided exactly as before and the region lands where it is printed.
-fn page_markdown(page: &PdfPage<'_>, mut chars: Vec<RawChar>) -> String {
+///
+/// `carry` holds the previous page's last table, for the top table here to
+/// continue, and receives this page's last table.
+fn page_markdown(
+    page: &PdfPage<'_>,
+    mut chars: Vec<RawChar>,
+    carry: &mut Option<regions::TableTail>,
+) -> String {
     // A glyph off the page is not printed: a page cut from a two-page spread
     // still carries the other page's text, placed beside it. Dropped here, not
     // at extraction, so `spans` and the routing flag read what they always did.
@@ -331,12 +347,30 @@ fn page_markdown(page: &PdfPage<'_>, mut chars: Vec<RawChar>) -> String {
         let (cx, cy) = (c.x + c.width / 2.0, c.y - c.height / 2.0);
         (0.0..=width).contains(&cx) && (0.0..=height).contains(&cy)
     });
+    for c in &mut chars {
+        if c.ch == LINE_END_HYPHEN {
+            c.ch = '-';
+        }
+    }
     let drawing = graphics::collect(page);
     let page_area = page.width().value * page.height().value;
     let found = regions::detect(&drawing, &chars, page_area);
+    let incoming = carry.take();
     if found.is_empty() {
         return spans_to_markdown(&group_chars_into_spans(&chars));
     }
+    let tables = || {
+        found
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| matches!(r.kind, regions::Kind::Table(_)))
+    };
+    let top = tables()
+        .max_by(|a, b| a.1.rect.top.total_cmp(&b.1.rect.top))
+        .map(|(i, _)| i);
+    let bottom = tables()
+        .min_by(|a, b| a.1.rect.bottom.total_cmp(&b.1.rect.bottom))
+        .map(|(i, _)| i);
 
     let body_size =
         estimate_body_font_size(&group_spans_into_lines(&group_chars_into_spans(&chars)));
@@ -345,7 +379,14 @@ fn page_markdown(page: &PdfPage<'_>, mut chars: Vec<RawChar>) -> String {
     let mut rendered = Vec::with_capacity(found.len());
     for (i, (region, region_chars)) in found.iter().zip(&held).enumerate() {
         rendered.push(match &region.kind {
-            regions::Kind::Table(grid) => regions::render_table(grid, region_chars, &drawing.fills),
+            regions::Kind::Table(grid) => {
+                let continued = incoming.as_ref().filter(|_| top == Some(i));
+                let table = regions::render_table(grid, region_chars, &drawing.fills, continued);
+                if bottom == Some(i) {
+                    *carry = table.tail;
+                }
+                table.markdown
+            }
             regions::Kind::TextBox => spans_to_markdown(&group_chars_into_spans(region_chars)),
         });
         spans.push(TextSpan {
@@ -374,7 +415,10 @@ fn substitute_regions(markdown: &str, rendered: &[String]) -> String {
         let Some(close) = rest[open..].find(REGION_CLOSE).map(|c| open + c) else {
             break;
         };
-        out.push_str(rest[..open].trim_end());
+        // A region can stand where a heading would have begun: drop the
+        // heading marker it leaves behind rather than print an empty heading.
+        let before = rest[..open].trim_end().trim_end_matches('#').trim_end();
+        out.push_str(before);
         let index: Option<usize> = rest[open + REGION_OPEN.len_utf8()..close].parse().ok();
         if let Some(md) = index
             .and_then(|i| rendered.get(i))
@@ -426,7 +470,7 @@ fn extract_raw_chars(page: &PdfPage<'_>, text: &PdfPageText<'_>) -> Vec<RawChar>
             None => continue,
         };
 
-        if ch.is_control() && !matches!(ch, '\n' | '\r' | '\t') {
+        if ch.is_control() && !matches!(ch, '\n' | '\r' | '\t' | LINE_END_HYPHEN) {
             continue;
         }
 
@@ -498,10 +542,32 @@ fn extract_raw_chars(page: &PdfPage<'_>, text: &PdfPageText<'_>) -> Vec<RawChar>
             italic: font_italic,
             space_before: pending_space,
         });
-        pending_space = false;
+        // The next character keeps the space that preceded a line-end
+        // hyphen, as it did when the hyphen was dropped.
+        if ch != LINE_END_HYPHEN {
+            pending_space = false;
+        }
     }
 
     chars
+}
+
+/// pdfium's code for a hyphen that ends a line ("cul-" before "de-sac"). It is
+/// printed, so markdown keeps it as `-`; `spans` and the routing flag leave it
+/// out, as they always have.
+const LINE_END_HYPHEN: char = '\u{2}';
+
+/// The page's `spans` as 0.17 reported them: without line-end hyphens.
+fn legacy_spans(chars: &[RawChar]) -> Vec<TextSpan> {
+    if !chars.iter().any(|c| c.ch == LINE_END_HYPHEN) {
+        return group_chars_into_spans_with(chars, LEGACY_SPANS);
+    }
+    let kept: Vec<RawChar> = chars
+        .iter()
+        .filter(|c| c.ch != LINE_END_HYPHEN)
+        .cloned()
+        .collect();
+    group_chars_into_spans_with(&kept, LEGACY_SPANS)
 }
 
 /// Maps a glyph box from unrotated page space into visual (display) space
@@ -1151,14 +1217,26 @@ const FUNCTION_WORDS: [&str; 25] = [
 /// "Single-family detached, one 1 1 1 1"), never as a sentence. Strict, since
 /// it decides that something detected as a table is not one.
 fn is_prose_line(line: &str) -> bool {
-    is_wordy_line(line)
-        && line.split_whitespace().any(|w| {
-            let bare = w
-                .trim_matches(|c: char| !c.is_alphanumeric())
-                .to_lowercase();
-            FUNCTION_WORDS.contains(&bare.as_str())
-        })
+    let function_words = || line.split_whitespace().filter(|w| is_function_word(w));
+    // A sentence about zones is thick with codes ("for R1, RA, RE and RS
+    // properties in Height Districts 2, 3 and 4") that are not words, but
+    // still carries its function words.
+    (is_wordy_line(line) && function_words().next().is_some())
+        || (line.split_whitespace().count() >= PROSE_MIN_WORDS
+            && function_words().take(PROSE_FUNCTION_WORDS).count() == PROSE_FUNCTION_WORDS)
 }
+
+/// Whether a word, bare of punctuation and case ("To", "to,"), is one of
+/// `FUNCTION_WORDS`.
+fn is_function_word(word: &str) -> bool {
+    let bare = word.trim_matches(|c: char| !c.is_alphanumeric());
+    FUNCTION_WORDS.iter().any(|f| f.eq_ignore_ascii_case(bare))
+}
+
+/// A line this long holding this many function words is a sentence however
+/// many of its other words are codes.
+const PROSE_MIN_WORDS: usize = 8;
+const PROSE_FUNCTION_WORDS: usize = 3;
 
 /// True when a detected table's lines are sentences: lines of one paragraph
 /// whose inline styles (small capitals, italics) split them into spans that
@@ -1186,6 +1264,7 @@ pub fn page_has_complex_tables(page: &PdfPage<'_>) -> bool {
     };
 
     let mut raw_chars = extract_raw_chars(page, &text);
+    raw_chars.retain(|c| c.ch != LINE_END_HYPHEN);
     repair_legacy_armenian(&mut raw_chars);
     if raw_chars.is_empty() {
         return false;
@@ -1442,6 +1521,20 @@ fn is_list_item_start(text: &str) -> bool {
 /// without the space. The marker is kept in the output: in an ordinance it is
 /// the address of the provision ("subsection (g)(1)"), not decoration.
 fn ordered_marker_len(text: &str) -> Option<usize> {
+    // A note's marker ("*", "**", "†", "‡", "¤", "§") is the reference the
+    // table's cells point to; it is kept, like an enumerator.
+    // Printed tight against its note too ("***Coastal Zone properties"). A
+    // section sign before a number cites a section ("§ 12.21"), no note.
+    let note = text.len() - text.trim_start_matches(['*', '†', '‡', '¤', '§']).len();
+    let rest = &text[note..];
+    let citation =
+        text.starts_with('§') && rest.trim_start().starts_with(|c: char| c.is_ascii_digit());
+    if note > 0
+        && !citation
+        && (rest.starts_with(' ') || rest.is_empty() || rest.starts_with(char::is_uppercase))
+    {
+        return Some(note);
+    }
     let open = text.starts_with('(');
     let body_start = usize::from(open);
     let body_len = text[body_start..]
@@ -1465,7 +1558,9 @@ fn ordered_marker_len(text: &str) -> Option<usize> {
         close == '.' || close == ')'
     };
     let marker_len = close_at + close.len_utf8();
-    (valid && text[marker_len..].starts_with(' ')).then_some(marker_len)
+    // A marker alone on its line ("(6)" above its sub-items) is still one.
+    let rest = &text[marker_len..];
+    (valid && (rest.starts_with(' ') || rest.is_empty())).then_some(marker_len)
 }
 
 /// A line opening with a list marker is a list item, never a table row, even
@@ -1498,6 +1593,15 @@ fn group_into_blocks(lines: &[TextLine], tables: &[DetectedTable], body_size: f3
         .map(|line| classify_line(line, body_size))
         .collect();
     let styles: Vec<(f32, bool, bool)> = lines.iter().map(dominant_style).collect();
+    let (left, right) = lines.iter().fold((f32::MAX, f32::MIN), |(l, r), line| {
+        let (line_left, line_right) = spans_extent(&line.spans);
+        (l.min(line_left), r.max(line_right))
+    });
+    let ends: Vec<bool> = lines
+        .iter()
+        .map(|line| ends_sentence_short(line, left, right))
+        .collect();
+    let ends_paragraph = |k: usize| ends[k];
 
     let mut blocks = Vec::new();
     let mut i = 0;
@@ -1531,7 +1635,7 @@ fn group_into_blocks(lines: &[TextLine], tables: &[DetectedTable], body_size: f3
                         items.push(vec![j]);
                         j += 1;
                     }
-                    LineKind::Paragraph => {
+                    LineKind::Paragraph if !ends_paragraph(j - 1) => {
                         // Continuation of the current item.
                         items.last_mut().unwrap().push(j);
                         j += 1;
@@ -1560,7 +1664,9 @@ fn group_into_blocks(lines: &[TextLine], tables: &[DetectedTable], body_size: f3
                 break;
             }
 
-            if matches!(kind, LineKind::Paragraph) && !same_style(styles[j - 1], styles[j]) {
+            if matches!(kind, LineKind::Paragraph)
+                && (!same_style(styles[j - 1], styles[j]) || ends_paragraph(j - 1))
+            {
                 break;
             }
 
@@ -1585,6 +1691,31 @@ fn group_into_blocks(lines: &[TextLine], tables: &[DetectedTable], body_size: f3
     }
 
     blocks
+}
+
+/// Share of the column's width a line must stop short of to end its
+/// paragraph when it also ends a sentence.
+const SHORT_LINE: f32 = 0.25;
+
+/// Whether a line ends a sentence well before the column's right edge
+/// (`left`..`right`), so the next line starts something new: definitions or
+/// notes printed one per line ("FAR – Floor Area Ratio – …" then "RFAR – …"),
+/// or a paragraph after a note, which a wrapped line never is. A marker or a
+/// label alone on its line ("i.", "Key:") is no sentence.
+fn ends_sentence_short(line: &TextLine, left: f32, right: f32) -> bool {
+    let (_, end) = spans_extent(&line.spans);
+    if end >= right - (right - left) * SHORT_LINE {
+        return false;
+    }
+    let text = line_to_text(line);
+    text.trim_end().ends_with(['.', ':', '!', '?']) && text.split_whitespace().nth(2).is_some()
+}
+
+/// The leftmost start and rightmost end of a set of spans.
+fn spans_extent(spans: &[TextSpan]) -> (f32, f32) {
+    spans.iter().fold((f32::MAX, f32::MIN), |(l, r), s| {
+        (l.min(s.x), r.max(s.x + s.width))
+    })
 }
 
 fn same_block_kind(a: &LineKind, b: &LineKind) -> bool {
@@ -1777,7 +1908,7 @@ fn render_block(md: &mut String, block: &Block, lines: &[TextLine], tables: &[De
                 md.push_str(&"  ".repeat(level));
                 match ordered_marker_len(text) {
                     Some(marker) => {
-                        md.push_str(&text[..marker]);
+                        escape_markdown_into(md, &text[..marker]);
                         md.push(' ');
                         escape_markdown_into(md, text[marker..].trim_start());
                     }
@@ -2019,7 +2150,8 @@ fn render_table_markdown(md: &mut String, lines: &[TextLine], table: &DetectedTa
 
     md.push('\n');
 
-    for (row_index, row) in table.rows.iter().enumerate() {
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(table.rows.len());
+    for row in &table.rows {
         let mut cells: Vec<String> = vec![String::new(); num_cols];
         // (previous span, its line index) per cell, to decide separators.
         let mut cell_state: Vec<Option<(&TextSpan, usize)>> = vec![None; num_cols];
@@ -2028,11 +2160,13 @@ fn render_table_markdown(md: &mut String, lines: &[TextLine], table: &DetectedTa
             for span in &lines[line_index].spans {
                 let col_idx = nearest_column(span.x, columns);
                 let wants_space = match cell_state[col_idx] {
-                    // Wrapped text from a later line always joins with a space;
-                    // same-line neighbors join on the geometric gap rule.
-                    Some((previous, previous_line)) => {
-                        previous_line != line_index || needs_space_between(previous, span)
+                    // Wrapped text from a later line joins with a space unless
+                    // the line ended in a word broken at a hyphen; same-line
+                    // neighbors join on the geometric gap rule.
+                    Some((_, previous_line)) if previous_line != line_index => {
+                        !regions::ends_broken_word(&cells[col_idx])
                     }
+                    Some((previous, _)) => needs_space_between(previous, span),
                     None => false,
                 };
                 if wants_space && !cells[col_idx].is_empty() {
@@ -2042,23 +2176,18 @@ fn render_table_markdown(md: &mut String, lines: &[TextLine], table: &DetectedTa
                 cell_state[col_idx] = Some((span, line_index));
             }
         }
+        rows.push(cells.iter().map(|c| c.trim().to_string()).collect());
+    }
 
-        md.push('|');
-        for cell in &cells {
-            md.push(' ');
-            md.push_str(cell.trim());
-            md.push_str(" |");
-        }
-        md.push('\n');
-
-        // Markdown tables require a separator after the first row.
-        if row_index == 0 {
-            md.push('|');
-            for _ in 0..num_cols {
-                md.push_str(" --- |");
-            }
-            md.push('\n');
-        }
+    // Markdown needs a header row. A table whose first row is data (terms and
+    // their definitions) gets an empty one, so that its first entry is not
+    // presented as the columns' names.
+    if !regions::is_header_row(&rows[0]) {
+        rows.insert(0, vec![String::new(); num_cols]);
+    }
+    regions::push_header(md, &rows[0]);
+    for cells in &rows[1..] {
+        regions::push_row(md, cells);
     }
 
     md.push('\n');
@@ -2934,6 +3063,9 @@ mod tests {
             assert!(ordered_marker_len(marker).is_some(), "{marker}");
         }
         assert_eq!(ordered_marker_len("(2) Procedures"), Some(3));
+        assert_eq!(ordered_marker_len("***Coastal Zone properties"), Some(3));
+        assert_eq!(ordered_marker_len("§ Height limited"), Some(2));
+        assert_eq!(ordered_marker_len("§ 12.21 Height"), None);
         for prose in [
             "4.9.2.C and:",
             "U.S. Code",
@@ -2955,6 +3087,10 @@ mod tests {
         assert!(is_prose_line(
             "1.The buildable area is delineated as anywhere behind the"
         ));
+        assert!(is_prose_line(
+            "March 2020 Correction: Corrected FAR/RFAR restrictions for R1, RA, RE and RS \
+             properties in Height Districts 2, 3 and 4."
+        ));
         for row in [
             "Office 100 percent 80 percent 100 percent",
             "Front yard 25 feet",
@@ -2965,5 +3101,33 @@ mod tests {
         ] {
             assert!(!is_prose_line(row), "{row}");
         }
+    }
+
+    #[test]
+    fn a_sentence_ending_short_of_the_column_ends_its_paragraph() {
+        let full = text_line(
+            700.0,
+            vec![span(
+                "Properties located in one of the zones are",
+                50.0,
+                700.0,
+                450.0,
+                10.0,
+            )],
+        );
+        let short = text_line(
+            688.0,
+            vec![span(
+                "FAR – Floor Area Ratio – defined.",
+                50.0,
+                688.0,
+                200.0,
+                10.0,
+            )],
+        );
+        let marker = text_line(676.0, vec![span("i.", 50.0, 676.0, 10.0, 10.0)]);
+        assert!(!ends_sentence_short(&full, 50.0, 500.0));
+        assert!(ends_sentence_short(&short, 50.0, 500.0));
+        assert!(!ends_sentence_short(&marker, 50.0, 500.0));
     }
 }

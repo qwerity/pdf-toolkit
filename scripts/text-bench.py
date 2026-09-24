@@ -100,7 +100,15 @@ def markdown_tables(md):
             current = []
     if current:
         tables.append(current)
-    return tables
+    # A table the page interrupts (a note printed across it) goes on under
+    # its header repeated: one table.
+    merged = []
+    for table in tables:
+        if merged and table[0] == merged[-1][0] and any(table[0]):
+            merged[-1].extend(table[1:])
+        else:
+            merged.append(table)
+    return merged
 
 
 def row_matches(cell_texts, label):
@@ -212,21 +220,43 @@ def score_layout_table(text, spec):
 COLOURS = ('red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink', 'brown', 'grey')
 
 
+def header_named(firsts, spec):
+    """1 when one of `firsts` (each table's first row, squashed; for a layout
+    text, each line) names every column of the spec, else 0 — values under a
+    header lost to the data rows are values without names."""
+    labels = [squash(label) for label in spec['columns']]
+    return int(any(all(any(label in c for c in row) for label in labels) for row in firsts))
+
+
+def units(text):
+    """Every line and every blank-line-separated block of a text, squashed."""
+    blocks = re.split(r'\n\s*\n', text)
+    return {squash(u) for u in text.splitlines() + blocks if u.strip()}
+
+
 def score(output, ledger, kind):
     """{check: (correct, total)} for one output against one ledger."""
     result = {}
+    text = plain_markdown(output) if kind == 'markdown' else output
     tables = ledger.get('tables', [])
     if tables:
         got = [(score_layout_table if kind == 'layout' else score_markdown_table)(output, t) for t in tables]
         result['cells'] = (sum(g[0] for g in got), sum(g[1] for g in got))
+        named = [t for t in tables if t['columns']]
+        if named:
+            firsts = ([[squash(c) for c in t[0]] for t in markdown_tables(output)] if kind == 'markdown'
+                      else [[squash(line)] for line in output.splitlines()])
+            result['headers'] = (sum(header_named(firsts, t) for t in named), len(named))
     if ledger.get('passages'):
-        body = squash(plain_markdown(output) if kind == 'markdown' else output)
+        body = squash(text)
         result['passages'] = (sum(squash(p) in body for p in ledger['passages']), len(ledger['passages']))
+    if ledger.get('separate'):
+        found = units(text)
+        result['separate'] = (sum(squash(p) in found for p in ledger['separate']), len(ledger['separate']))
     if ledger.get('no_tables'):
         invented = kind == 'markdown' and bool(markdown_tables(output))
         result['no_tables'] = (0 if invented else 1, 1)
     if ledger.get('chips'):
-        text = plain_markdown(output) if kind == 'markdown' else output
         ok = 0
         for chip in ledger['chips']:
             pattern = re.escape(chip['text']) + r'\s*[\[(]\s*(' + '|'.join(COLOURS) + r')\s*[\])]'

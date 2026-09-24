@@ -13,6 +13,7 @@ mod common;
 use common::{data_dir, pdfium};
 use pdf_toolkit::{PageSelection, StructuredOutputFormat, extract_structured_text};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 fn squash(s: &str) -> String {
@@ -31,11 +32,11 @@ fn squash(s: &str) -> String {
 /// Markdown without the markup that is not text.
 fn plain(md: &str) -> String {
     md.lines()
-        .filter(|l| {
-            let t = l.trim().trim_start_matches('|').trim();
-            !(t.starts_with("---") || t.starts_with(":--"))
-        })
         .map(|l| {
+            let t = l.trim().trim_start_matches('|').trim();
+            if t.starts_with("---") || t.starts_with(":--") {
+                return String::new();
+            }
             let l = l.trim_start();
             let l = l.trim_start_matches('#').trim_start();
             let l = l.strip_prefix("- ").unwrap_or(l);
@@ -70,7 +71,18 @@ fn tables(md: &str) -> Vec<Vec<Vec<String>>> {
     if !current.is_empty() {
         out.push(current);
     }
-    out
+    // A table the page interrupts (a note printed across it) goes on under
+    // its header repeated: one table.
+    let mut merged: Vec<Vec<Vec<String>>> = Vec::new();
+    for table in out {
+        match merged.last_mut() {
+            Some(last) if last[0] == table[0] && table[0].iter().any(|c| !c.is_empty()) => {
+                last.extend(table.into_iter().skip(1))
+            }
+            _ => merged.push(table),
+        }
+    }
+    merged
 }
 
 fn cell_ok(got: &str, want: &str, prefix: bool) -> bool {
@@ -166,6 +178,42 @@ fn score_table(md: &str, spec: &Value) -> (usize, usize) {
     (best, total)
 }
 
+/// Whether some table names every column of `spec` in its first row: values
+/// under a header lost to the data rows are values without names.
+fn header_named(firsts: &[Vec<String>], spec: &Value) -> bool {
+    let labels: Vec<String> = spec["columns"]
+        .as_array()
+        .expect("columns")
+        .iter()
+        .map(|l| squash(l.as_str().expect("label")))
+        .collect();
+    firsts.iter().any(|row| {
+        labels
+            .iter()
+            .all(|label| row.iter().any(|c| c.contains(label.as_str())))
+    })
+}
+
+/// Every line and every block between blank lines of the markdown, squashed.
+fn units(md: &str) -> HashSet<String> {
+    let text = plain(md);
+    let mut units: HashSet<String> = HashSet::new();
+    let mut block = String::new();
+    for line in text.lines().chain(std::iter::once("")) {
+        if line.trim().is_empty() {
+            if !block.trim().is_empty() {
+                units.insert(squash(&block));
+            }
+            block.clear();
+        } else {
+            units.insert(squash(line));
+            block.push_str(line);
+            block.push('\n');
+        }
+    }
+    units
+}
+
 /// Every failed check of one page, as "check: correct/total".
 fn grade(md: &str, ledger: &Value) -> Vec<String> {
     let mut failures = Vec::new();
@@ -180,6 +228,21 @@ fn grade(md: &str, ledger: &Value) -> Vec<String> {
             .map(|s| score_table(md, s))
             .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
         report("cells", got);
+        let named: Vec<&Value> = specs.iter().filter(|s| s["columns"].is_array()).collect();
+        let firsts: Vec<Vec<String>> = tables(md)
+            .iter()
+            .map(|t| t[0].iter().map(|c| squash(c)).collect())
+            .collect();
+        let headed = named.iter().filter(|s| header_named(&firsts, s)).count();
+        report("headers", (headed, named.len()));
+    }
+    if let Some(separate) = ledger["separate"].as_array() {
+        let found = units(md);
+        let ok = separate
+            .iter()
+            .filter(|p| found.contains(&squash(p.as_str().expect("separate"))))
+            .count();
+        report("separate", (ok, separate.len()));
     }
     if let Some(passages) = ledger["passages"].as_array() {
         let body = squash(&plain(md));

@@ -546,6 +546,7 @@ mod tests {
                         y: 700.06,
                         width: 33.33,
                         height: 12.01,
+                        glyphs: Vec::new(),
                     }],
                     markdown: "Hello".to_string(),
                 },

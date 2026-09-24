@@ -306,6 +306,42 @@ representation noise: `9.96` prints as `9.960000038146973` and `44.1` as
 `44.099998474121094`. Compare with a tolerance, or round on your side; do not
 test these for exact equality.
 
+### What `markdown` contains
+
+`spans` is the text layer as it is; `markdown` is the page read the way a
+person reads it. What it does with each kind of content:
+
+- **A table drawn with rules** (a browser-printed HTML table, a typeset use
+  table) is read from its drawing: the cells are the grid its rules draw, and
+  every character is placed in the cell its centre falls in, so a value cannot
+  move into a neighbouring column. A cell edge with no rule is a merged cell: a
+  value merged over some of the columns is written in each of them (a check
+  mark across "Ground Story" and "Upper Story"), a row-wide cell once. Rows at
+  the top of a table that are one full-width cell (a table title) are written
+  as a paragraph above it. Where the column layout changes within touching
+  rules (a header block repeated with other widths), each layout is its own
+  table.
+- **Rows of filled chips** with no rules (a plan's colour-coded zoning key)
+  are a table whose cells are the chips. When a table's cells carry two or more
+  colours, each cell's text is followed by its colour's name in brackets —
+  `R-1 [green]`, `C-2 [yellow]`, `A-1 [red]`. The names are `red`, `orange`,
+  `brown`, `yellow`, `green`, `blue`, `purple`, `pink`; white, black and greys
+  are never named (they shade zebra rows and header bars).
+- **A framed text box** (a frame drawing no grid) is written as its own block
+  where it is printed, so two boxes side by side are not read across.
+- **A table with no drawing** is recognised from text lined up in columns, as
+  before; lines that read as sentences are not taken for one.
+- **Page columns** are read one after another, including columns that share
+  baselines and a heading printed to the left of the text it heads.
+- **Lists** keep their markers as printed: `1.`, `a.`, `(2)`, `iv.` stay in
+  the text, since in an ordinance the marker is the provision's address.
+  Nested items are indented two spaces per level; bullets are written `- `.
+- **Text outside the page box** (the other half of a page cut from a two-page
+  spread) is not in `markdown`; `spans` still carries it.
+
+Tables drawn inside Form XObjects, and the drawing of pages carrying
+`/Rotate`, are not read; their tables fall back to text alignment.
+
 ---
 
 ## `vector`

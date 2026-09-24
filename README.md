@@ -387,10 +387,14 @@ GeoJSON `building` emits. The shapes are the `model` section of
   markdown, `markdown` emits markdown only.
 - extracted text starts each page with a `____PageN____` marker
 - structured markdown reconstructs the page in visual reading order (bands,
-  multi-column layouts, and `/Rotate`d pages included), detects tables with
-  wrapped cells merged into logical rows, renders bold/italic inline styles,
-  repairs line-break hyphenation, and escapes markdown syntax characters in
-  extracted text
+  multi-column layouts, and `/Rotate`d pages included), reads tables from the
+  rules and filled cells the page draws (naming cell colours when a table uses
+  several), falls back to text alignment for tables drawn with neither, keeps
+  list markers and nesting, renders bold/italic inline styles, repairs
+  line-break hyphenation, and escapes markdown syntax characters in extracted
+  text; `docs/json-api.md` says what it does with each kind of content, and
+  `scripts/text-bench.py` grades it against `data/text` beside pdftotext and
+  Docling
 - pages whose text layer is statistically garbled (e.g. broken font mappings)
   are skipped with a per-page warning in both text extraction modes
 - `inspect` and `cut` report page dimensions in pixels at render scale `1.0`;

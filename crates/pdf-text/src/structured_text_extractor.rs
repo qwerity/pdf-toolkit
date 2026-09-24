@@ -11,6 +11,9 @@ use std::num::NonZeroU16;
 use std::path::Path;
 use std::rc::Rc;
 
+mod graphics;
+mod regions;
+
 // ── Tolerance constants ────────────────────────────────────────────
 
 /// Minimum vertical distance (in points) within which characters are on the
@@ -27,8 +30,39 @@ const SPAN_SPACE_GAP_FACTOR: f32 = 0.15;
 /// Characters with font properties within these tolerances are merged into one span.
 const FONT_SIZE_TOLERANCE: f32 = 0.3;
 
-/// Horizontal gap (in points) beyond which we start a new span on the same line.
-const SPAN_GAP_TOLERANCE_FACTOR: f32 = 1.8;
+/// Horizontal gap (× font size) beyond which we start a new span on the same line.
+/// A table's column gap can be narrower than two ems: at 1.8 the AIM Norman
+/// plan's compatibility matrix merged each row label with its first value
+/// ("UM 4") and its whole header into one span, so no column lined up. Word
+/// spaces, even stretched by justification, stay well under one em, and
+/// `line_to_text` rejoins spans with a space, so prose reads the same.
+const SPAN_GAP_TOLERANCE_FACTOR: f32 = 1.0;
+
+/// How characters join into spans: the largest gap (× font size) and the
+/// largest overlap (× font size) between one glyph and the next.
+#[derive(Clone, Copy)]
+struct SpanRules {
+    gap_factor: f32,
+    overlap_factor: f32,
+}
+
+/// The rules the markdown is read with.
+const READING_SPANS: SpanRules = SpanRules {
+    gap_factor: SPAN_GAP_TOLERANCE_FACTOR,
+    // A ligature's box ("ff" in "traffic") overlaps the next glyph by half an
+    // em; a full em back is a new line or overprinting, not the next letter.
+    overlap_factor: 1.0,
+};
+
+/// The 0.17 grouping, kept for two outputs whose values callers already rely
+/// on: the `spans` array of `structured` (a contract field), and the
+/// `complex_table` routing flag, which the reviewed dossier annotations pin
+/// page by page. Moving either is a decision of its own, not a side effect of
+/// reading the markdown better.
+const LEGACY_SPANS: SpanRules = SpanRules {
+    gap_factor: 1.8,
+    overlap_factor: 0.5,
+};
 
 /// Minimum number of aligned columns to consider a region a table.
 const MIN_TABLE_COLUMNS: usize = 2;
@@ -100,6 +134,10 @@ pub struct TextSpan {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    /// Left edge and width of each non-space glyph, so a table's lines can be
+    /// re-split at gaps narrower than the ones that end a span. Not output.
+    #[serde(skip)]
+    pub glyphs: Vec<(f32, f32)>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -110,6 +148,7 @@ pub enum StructuredOutputFormat {
 
 // ── Internal intermediate types ────────────────────────────────────
 
+#[derive(Clone)]
 struct RawChar {
     ch: char,
     x: f32,
@@ -251,8 +290,8 @@ fn extract_page_structured(
 
     let mut raw_chars = extract_raw_chars(&page, &text);
     repair_legacy_armenian(&mut raw_chars);
-    let spans = group_chars_into_spans(&raw_chars);
-    let markdown = spans_to_markdown(&spans);
+    let spans = group_chars_into_spans_with(&raw_chars, LEGACY_SPANS);
+    let markdown = page_markdown(&page, raw_chars);
 
     let output_spans = match format {
         StructuredOutputFormat::Full => spans,
@@ -264,6 +303,91 @@ fn extract_page_structured(
         spans: output_spans,
         markdown,
     })
+}
+
+/// Marks where a table or text box sits in the reading flow until its own
+/// markdown replaces it. Private-use code points never occur in extracted
+/// text, so the marker cannot collide with page content.
+const REGION_OPEN: char = '\u{E000}';
+const REGION_CLOSE: char = '\u{E001}';
+
+/// The page's markdown: tables and text boxes read from its drawing, and the
+/// rest of its text in visual reading order around them.
+///
+/// Each region stands in the flow as one placeholder span at its top-left
+/// corner, the size of the body text, so bands, columns and paragraphs are
+/// decided exactly as before and the region lands where it is printed.
+fn page_markdown(page: &PdfPage<'_>, mut chars: Vec<RawChar>) -> String {
+    // A glyph off the page is not printed: a page cut from a two-page spread
+    // still carries the other page's text, placed beside it. Dropped here, not
+    // at extraction, so `spans` and the routing flag read what they always did.
+    let (width, height) = match page.rotation().unwrap_or(PdfPageRenderRotation::None) {
+        PdfPageRenderRotation::Degrees90 | PdfPageRenderRotation::Degrees270 => {
+            (page.height().value, page.width().value)
+        }
+        _ => (page.width().value, page.height().value),
+    };
+    chars.retain(|c| {
+        let (cx, cy) = (c.x + c.width / 2.0, c.y - c.height / 2.0);
+        (0.0..=width).contains(&cx) && (0.0..=height).contains(&cy)
+    });
+    let drawing = graphics::collect(page);
+    let page_area = page.width().value * page.height().value;
+    let found = regions::detect(&drawing, &chars, page_area);
+    if found.is_empty() {
+        return spans_to_markdown(&group_chars_into_spans(&chars));
+    }
+
+    let body_size =
+        estimate_body_font_size(&group_spans_into_lines(&group_chars_into_spans(&chars)));
+    let (free, held) = regions::assign(&found, chars);
+    let mut spans = group_chars_into_spans(&free);
+    let mut rendered = Vec::with_capacity(found.len());
+    for (i, (region, region_chars)) in found.iter().zip(&held).enumerate() {
+        rendered.push(match &region.kind {
+            regions::Kind::Table(grid) => regions::render_table(grid, region_chars, &drawing.fills),
+            regions::Kind::TextBox => spans_to_markdown(&group_chars_into_spans(region_chars)),
+        });
+        spans.push(TextSpan {
+            text: format!("{REGION_OPEN}{i}{REGION_CLOSE}"),
+            font_size: body_size,
+            font_name: String::new(),
+            bold: false,
+            italic: false,
+            x: region.rect.left,
+            y: region.rect.top,
+            width: region.rect.width(),
+            height: body_size,
+            glyphs: Vec::new(),
+        });
+    }
+
+    substitute_regions(&spans_to_markdown(&spans), &rendered)
+}
+
+/// Replaces each region placeholder with the region's markdown as a block of
+/// its own, whatever paragraph the placeholder was joined into.
+fn substitute_regions(markdown: &str, rendered: &[String]) -> String {
+    let mut out = String::with_capacity(markdown.len());
+    let mut rest = markdown;
+    while let Some(open) = rest.find(REGION_OPEN) {
+        let Some(close) = rest[open..].find(REGION_CLOSE).map(|c| open + c) else {
+            break;
+        };
+        out.push_str(rest[..open].trim_end());
+        let index: Option<usize> = rest[open + REGION_OPEN.len_utf8()..close].parse().ok();
+        if let Some(md) = index
+            .and_then(|i| rendered.get(i))
+            .filter(|md| !md.is_empty())
+        {
+            out.push_str("\n\n");
+            out.push_str(md);
+        }
+        out.push_str("\n\n");
+        rest = rest[close + REGION_CLOSE.len_utf8()..].trim_start();
+    }
+    out.push_str(rest);
+    collapse_blank_lines(out.trim()).to_string()
 }
 
 // ── Step 1: Extract raw characters ─────────────────────────────────
@@ -438,6 +562,10 @@ fn font_weight_numeric(weight: &PdfFontWeight) -> u32 {
 // ── Step 2: Group characters into spans ────────────────────────────
 
 fn group_chars_into_spans(chars: &[RawChar]) -> Vec<TextSpan> {
+    group_chars_into_spans_with(chars, READING_SPANS)
+}
+
+fn group_chars_into_spans_with(chars: &[RawChar], rules: SpanRules) -> Vec<TextSpan> {
     if chars.is_empty() {
         return Vec::new();
     }
@@ -448,7 +576,7 @@ fn group_chars_into_spans(chars: &[RawChar]) -> Vec<TextSpan> {
         let should_merge = spans.last().is_some_and(|prev| {
             same_line_y(prev.y, raw.y, prev.font_size)
                 && same_font(prev, raw)
-                && horizontal_gap_ok(prev, raw)
+                && horizontal_gap_ok(prev, raw, rules)
         });
 
         if should_merge {
@@ -457,6 +585,7 @@ fn group_chars_into_spans(chars: &[RawChar]) -> Vec<TextSpan> {
                 prev.text.push(' ');
             }
             prev.text.push(raw.ch);
+            prev.glyphs.push((raw.x, raw.width));
             let new_right = raw.x + raw.width;
             prev.width = new_right - prev.x;
             if raw.height > prev.height {
@@ -473,11 +602,66 @@ fn group_chars_into_spans(chars: &[RawChar]) -> Vec<TextSpan> {
                 y: raw.y,
                 width: raw.width,
                 height: raw.height,
+                glyphs: vec![(raw.x, raw.width)],
             });
         }
     }
 
     spans
+}
+
+/// Gap (× font size) at which a table line's spans are split again once the
+/// line is known to be in a table. Narrow enough to part a row label from its
+/// first value; used only inside a detected table, where a split can move
+/// nothing into a wrong column that alignment has not already put there.
+const TABLE_SPAN_SPLIT_FACTOR: f32 = 0.4;
+
+/// A span cut wherever two consecutive glyphs are further apart than
+/// `gap_factor` em. Word spaces before a cut are dropped with it.
+fn split_span(span: &TextSpan, gap_factor: f32) -> Vec<TextSpan> {
+    let text_chars: Vec<char> = span.text.chars().collect();
+    if span.glyphs.len() != text_chars.iter().filter(|c| **c != ' ').count()
+        || span.glyphs.len() < 2
+    {
+        return vec![span.clone()];
+    }
+    let mut pieces: Vec<TextSpan> = Vec::new();
+    let mut text = String::new();
+    let mut glyphs: Vec<(f32, f32)> = Vec::new();
+    let flush = |text: &mut String, glyphs: &mut Vec<(f32, f32)>, pieces: &mut Vec<TextSpan>| {
+        let trimmed = text.trim();
+        if let (false, Some(first), Some(last)) =
+            (trimmed.is_empty(), glyphs.first(), glyphs.last())
+        {
+            pieces.push(TextSpan {
+                text: trimmed.to_string(),
+                x: first.0,
+                width: last.0 + last.1 - first.0,
+                glyphs: std::mem::take(glyphs),
+                ..span.clone()
+            });
+        }
+        text.clear();
+        glyphs.clear();
+    };
+    let mut g = 0;
+    for ch in text_chars {
+        if ch == ' ' {
+            text.push(ch);
+            continue;
+        }
+        let glyph = span.glyphs[g];
+        if let Some(prev) = glyphs.last()
+            && glyph.0 - (prev.0 + prev.1) > span.font_size * gap_factor
+        {
+            flush(&mut text, &mut glyphs, &mut pieces);
+        }
+        text.push(ch);
+        glyphs.push(glyph);
+        g += 1;
+    }
+    flush(&mut text, &mut glyphs, &mut pieces);
+    pieces
 }
 
 /// Same-line check with a tolerance proportional to the font size, so large
@@ -494,9 +678,9 @@ fn same_font(span: &TextSpan, raw: &RawChar) -> bool {
         && span.italic == raw.italic
 }
 
-fn horizontal_gap_ok(span: &TextSpan, raw: &RawChar) -> bool {
+fn horizontal_gap_ok(span: &TextSpan, raw: &RawChar, rules: SpanRules) -> bool {
     let gap = raw.x - (span.x + span.width);
-    gap < span.font_size * SPAN_GAP_TOLERANCE_FACTOR && gap > -span.font_size * 0.5
+    gap < span.font_size * rules.gap_factor && gap > -span.font_size * rules.overlap_factor
 }
 
 // ── Step 3: Group spans into lines ─────────────────────────────────
@@ -656,7 +840,9 @@ fn split_band_into_columns(lines: Vec<TextLine>, depth: usize) -> Vec<ColumnLine
 /// rows aligned across it), alongside any tables detected for the guard so
 /// the caller can reuse them when the lines are left unsplit.
 fn find_column_gutter(lines: &[TextLine]) -> (Option<f32>, Option<Vec<DetectedTable>>) {
-    if lines.len() < MIN_COLUMN_LINES {
+    // Two lines are enough for a side heading beside its text; every other
+    // split still needs MIN_COLUMN_LINES on each side (column_split_is_plausible).
+    if lines.len() < 2 {
         return (None, None);
     }
 
@@ -697,7 +883,7 @@ fn find_column_gutter(lines: &[TextLine]) -> (Option<f32>, Option<Vec<DetectedTa
         .map(|(start, end)| (end - start, min_x + (start + end) as f32 / 2.0 * bin_width))
         .filter(|&(_, center)| {
             let offset = center - min_x;
-            offset > extent * 0.2 && offset < extent * 0.8
+            offset > extent * 0.1 && offset < extent * 0.9
         })
         .collect();
     if candidates.is_empty() {
@@ -705,17 +891,97 @@ fn find_column_gutter(lines: &[TextLine]) -> (Option<f32>, Option<Vec<DetectedTa
     }
 
     // Table detection is the expensive pass; run it only for the rare bands
-    // that actually have a plausible-looking gap.
-    let tables = detect_tables(lines);
+    // that actually have a plausible-looking gap. Columns of running text line
+    // up row by row too; those are the columns being looked for, not a table.
+    let tables: Vec<DetectedTable> = detect_tables(lines)
+        .into_iter()
+        .filter(|table| !is_column_flow(lines, table))
+        .collect();
+    // Only a table that fills a real share of the band can veto a gutter: two
+    // or three lines of running text that happen to line up across the
+    // columns (the Form-Based Code's p.28 has two) are not a table the page
+    // is built around.
+    let min_veto_lines = (lines.len() as f32 * MIN_VETO_TABLE_SHARE).ceil() as usize;
+    let vetoing: Vec<DetectedTable> = tables
+        .iter()
+        .filter(|t| t.end_line() - t.start_line() >= min_veto_lines)
+        .map(|t| DetectedTable {
+            columns: t.columns.clone(),
+            rows: t.rows.clone(),
+        })
+        .collect();
 
     let gutter = candidates
         .into_iter()
-        .filter(|&(_, center)| !gutter_is_inside_table(&tables, center))
-        .filter(|&(_, center)| column_split_is_plausible(lines, center))
+        .filter(|&(_, center)| !gutter_is_inside_table(&vetoing, center))
+        .filter(|&(_, center)| {
+            // A gutter near the band's edge is usually a margin (line numbers,
+            // list markers); only a side heading justifies a split there.
+            let offset = center - min_x;
+            let near_edge = offset < extent * 0.2 || offset > extent * 0.8;
+            column_split_is_plausible(lines, center, near_edge)
+        })
         .max_by_key(|&(run_len, _)| run_len)
         .map(|(_, center)| center);
 
     (gutter, Some(tables))
+}
+
+/// Share of a band's lines a table must cover before a gutter inside it is
+/// read as the table's own column divider rather than a page column's edge.
+const MIN_VETO_TABLE_SHARE: f32 = 0.3;
+
+/// Share of its width a column's text must fill, line after line, in every
+/// column for aligned rows to be page columns of prose rather than a table.
+/// Measured: the four prose columns of the AIM Norman plan's p.59 fill 80-90%;
+/// the fullest column of a real table (the shared parking table's percentages)
+/// fills about half. A table has at least one column of short values.
+const COLUMN_FLOW_FILL: f32 = 0.65;
+
+/// True when a detected "table" is really several columns of running text:
+/// every one of its columns is filled nearly edge to edge on most lines.
+fn is_column_flow(lines: &[TextLine], table: &DetectedTable) -> bool {
+    let anchors = &table.columns;
+    let right_edge = (table.start_line()..table.end_line())
+        .flat_map(|i| &lines[i].spans)
+        .map(|s| s.x + s.width)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let table_lines = &lines[table.start_line()..table.end_line()];
+    (0..anchors.len()).all(|c| {
+        let column: Vec<&TextSpan> = table_lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .filter(|s| nearest_column(s.x, anchors) == c)
+            .collect();
+        // A side heading or a column of bullet glyphs belongs to the text beside it.
+        if is_side_heading(&column, table_lines)
+            || column.iter().all(|s| {
+                list_marker_len(s.text.trim()).is_some() && s.text.trim().chars().count() == 1
+            })
+        {
+            return true;
+        }
+        let width = anchors.get(c + 1).copied().unwrap_or(right_edge) - anchors[c];
+        if width <= 0.0 {
+            return false;
+        }
+        let mut fills: Vec<f32> = (table.start_line()..table.end_line())
+            .filter_map(|i| {
+                let filled: f32 = lines[i]
+                    .spans
+                    .iter()
+                    .filter(|s| nearest_column(s.x, anchors) == c)
+                    .map(|s| s.width)
+                    .sum();
+                (filled > 0.0).then_some(filled / width)
+            })
+            .collect();
+        if fills.is_empty() {
+            return false;
+        }
+        fills.sort_by(f32::total_cmp);
+        fills[fills.len() / 2] >= COLUMN_FLOW_FILL
+    })
 }
 
 /// Maximal runs of bins whose coverage does not exceed `allowed_crossings`,
@@ -754,7 +1020,7 @@ fn gutter_is_inside_table(tables: &[DetectedTable], x: f32) -> bool {
 /// both sides need several lines of their own, and lines spanning both sides
 /// (table rows, or wrapped cells sharing a row start) must stay a minority
 /// relative to either side.
-fn column_split_is_plausible(lines: &[TextLine], gutter_x: f32) -> bool {
+fn column_split_is_plausible(lines: &[TextLine], gutter_x: f32, near_edge: bool) -> bool {
     let mut left_only = 0usize;
     let mut right_only = 0usize;
     let mut both = 0usize;
@@ -777,9 +1043,135 @@ fn column_split_is_plausible(lines: &[TextLine], gutter_x: f32) -> bool {
         }
     }
 
-    left_only >= MIN_COLUMN_LINES
+    let (left, right): (Vec<&TextSpan>, Vec<&TextSpan>) = lines
+        .iter()
+        .flat_map(|line| &line.spans)
+        .partition(|span| span_is_left_of(span, gutter_x));
+    // A heading printed beside its text, in the band's first lines.
+    if is_side_heading(&left, lines) && right.len() >= 2 && is_running_text(&right) {
+        return true;
+    }
+    if near_edge {
+        return false;
+    }
+    if left_only >= MIN_COLUMN_LINES
         && right_only >= MIN_COLUMN_LINES
         && both <= left_only.min(right_only)
+    {
+        return true;
+    }
+    // Typeset columns often share baselines, so most lines cross the gutter.
+    // They are still columns when both sides are running text; a table always
+    // has a side of short values or single terms.
+    left.len() >= MIN_COLUMN_LINES
+        && right.len() >= MIN_COLUMN_LINES
+        && is_running_text(&left)
+        && is_running_text(&right)
+}
+
+/// Lines from the band's top within which a side heading must sit. A column
+/// of bold terms running down every row is a definitions table instead.
+const SIDE_HEADING_MAX_LINES: usize = 3;
+
+/// A few bold or capitalised spans, all in the band's first lines: the
+/// "LOCATIONAL CRITERIA" a plan prints to the left of the text it heads.
+fn is_side_heading(spans: &[&TextSpan], lines: &[TextLine]) -> bool {
+    let Some(limit) = lines
+        .get(SIDE_HEADING_MAX_LINES.min(lines.len()) - 1)
+        .map(|l| l.y)
+    else {
+        return false;
+    };
+    !spans.is_empty()
+        && spans.len() <= SIDE_HEADING_MAX_LINES * 2
+        && spans.iter().all(|s| {
+            let letters: Vec<char> = s.text.chars().filter(|c| c.is_alphabetic()).collect();
+            let styled =
+                s.bold || (!letters.is_empty() && letters.iter().all(|c| c.is_uppercase()));
+            styled && s.y >= limit - 0.5
+        })
+}
+
+/// Share of a side's lines that must read as prose for it to be running text
+/// rather than table cells.
+const RUNNING_TEXT_SHARE: f32 = 0.75;
+
+/// True when most of the side's lines are prose: three words or more, most of
+/// them lowercase words. Judged per line, not per span, since small capitals
+/// and inline styles cut a line of prose into many short spans, while a
+/// table's value column ("P P P", "1, 3") never reads as words.
+fn is_running_text(spans: &[&TextSpan]) -> bool {
+    let mut lines: Vec<(f32, String)> = Vec::new();
+    for span in spans {
+        // A bullet glyph marks the text; it is not a word of it.
+        let text = span.text.trim();
+        if list_marker_len(text).is_some() && text.chars().count() == 1 {
+            continue;
+        }
+        match lines
+            .iter_mut()
+            .find(|(y, _)| same_line_y(*y, span.y, span.font_size))
+        {
+            Some((_, line)) => {
+                line.push(' ');
+                line.push_str(text);
+            }
+            None => lines.push((span.y, text.to_string())),
+        }
+    }
+    let prose = lines.iter().filter(|(_, line)| is_wordy_line(line)).count();
+    !lines.is_empty() && prose as f32 >= lines.len() as f32 * RUNNING_TEXT_SHARE
+}
+
+/// Three words or more, at least three in five of them lowercase words: a line
+/// of text rather than a row of values. Deliberately loose, since a narrow
+/// column's line ("Norman's two main street mixed-use areas") may hold no
+/// function word at all.
+fn is_wordy_line(line: &str) -> bool {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let wordlike = words
+        .iter()
+        .filter(|w| {
+            w.chars().filter(|c| c.is_alphabetic()).count() >= 2
+                && w.chars().any(char::is_lowercase)
+        })
+        .count();
+    words.len() >= 3 && wordlike * 5 >= words.len() * 3
+}
+
+/// Words that carry a sentence and almost never a table cell. A label and its
+/// value ("Front yard 25 feet", "Lot area 6,000") has none of them.
+const FUNCTION_WORDS: [&str; 25] = [
+    "the", "of", "and", "to", "a", "an", "in", "for", "is", "are", "be", "shall", "may", "or",
+    "not", "any", "with", "by", "at", "on", "from", "as", "that", "this", "which",
+];
+
+/// A line of a sentence: wordy, and holding at least one function word. A
+/// table row reads as a label and values ("Office 100 percent 80 percent",
+/// "Single-family detached, one 1 1 1 1"), never as a sentence. Strict, since
+/// it decides that something detected as a table is not one.
+fn is_prose_line(line: &str) -> bool {
+    is_wordy_line(line)
+        && line.split_whitespace().any(|w| {
+            let bare = w
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase();
+            FUNCTION_WORDS.contains(&bare.as_str())
+        })
+}
+
+/// True when a detected table's lines are sentences: lines of one paragraph
+/// whose inline styles (small capitals, italics) split them into spans that
+/// happen to line up. Lines under three words (a heading, a wrapped last
+/// word) are evidence neither way.
+fn reads_as_prose(lines: &[TextLine], table: &DetectedTable) -> bool {
+    let judged: Vec<String> = lines[table.start_line()..table.end_line()]
+        .iter()
+        .map(line_to_text)
+        .filter(|text| text.split_whitespace().count() >= 3)
+        .collect();
+    let prose = judged.iter().filter(|text| is_prose_line(text)).count();
+    !judged.is_empty() && prose as f32 >= judged.len() as f32 * RUNNING_TEXT_SHARE
 }
 
 // ── Step 4: Detect tables ──────────────────────────────────────────
@@ -799,9 +1191,11 @@ pub fn page_has_complex_tables(page: &PdfPage<'_>) -> bool {
         return false;
     }
 
-    let spans = group_chars_into_spans(&raw_chars);
+    let spans = group_chars_into_spans_with(&raw_chars, LEGACY_SPANS);
     let lines = group_spans_into_lines(&spans);
-    detect_tables(&lines).iter().any(is_complex_table)
+    detect_tables_with(&lines, false)
+        .iter()
+        .any(is_complex_table)
 }
 
 fn is_complex_table(table: &DetectedTable) -> bool {
@@ -809,6 +1203,12 @@ fn is_complex_table(table: &DetectedTable) -> bool {
 }
 
 fn detect_tables(lines: &[TextLine]) -> Vec<DetectedTable> {
+    detect_tables_with(lines, true)
+}
+
+/// `guard_lists`: a line opening with a list marker cannot be a table row.
+/// Off only for the routing flag (see `LEGACY_SPANS`).
+fn detect_tables_with(lines: &[TextLine], guard_lists: bool) -> Vec<DetectedTable> {
     // Precomputed once: a rejected table attempt retries at the next line
     // and rescans largely the same lines.
     let line_xs: Vec<Vec<f32>> = lines
@@ -820,7 +1220,9 @@ fn detect_tables(lines: &[TextLine]) -> Vec<DetectedTable> {
     let mut i = 0;
 
     while i < lines.len() {
-        match detect_table_at(lines, &line_xs, i) {
+        match detect_table_at(lines, &line_xs, i, COLUMN_ANCHOR_TOLERANCE, guard_lists)
+            .filter(|table| !guard_lists || !reads_as_prose(lines, table))
+        {
             Some(table) => {
                 i = table.end_line();
                 tables.push(table);
@@ -841,8 +1243,11 @@ fn detect_table_at(
     lines: &[TextLine],
     line_xs: &[Vec<f32>],
     start: usize,
+    tolerance: f32,
+    guard_lists: bool,
 ) -> Option<DetectedTable> {
-    if line_xs[start].len() < MIN_TABLE_COLUMNS {
+    let is_list_line = |i: usize| guard_lists && starts_with_list_marker(&lines[i]);
+    if line_xs[start].len() < MIN_TABLE_COLUMNS || is_list_line(start) {
         return None;
     }
 
@@ -855,14 +1260,17 @@ fn detect_table_at(
 
     while end < lines.len() {
         let candidate = &line_xs[end];
+        if is_list_line(end) {
+            break;
+        }
 
         if candidate.len() >= MIN_TABLE_COLUMNS {
-            let aligned = count_aligned(&anchors, candidate);
+            let aligned = count_aligned(&anchors, candidate, tolerance);
 
             // A candidate is a row if a majority of its columns hit anchors.
             if aligned >= MIN_TABLE_COLUMNS && aligned * 2 >= candidate.len() {
                 for &cx in candidate {
-                    if !aligned_to_any(&anchors, cx) {
+                    if !aligned_to_any(&anchors, cx, tolerance) {
                         let position = anchors.partition_point(|&a| a < cx);
                         anchors.insert(position, cx);
                     }
@@ -873,7 +1281,7 @@ fn detect_table_at(
             }
         }
 
-        if is_continuation_line(&lines[end], &anchors) {
+        if is_continuation_line(&lines[end], &anchors, tolerance) {
             end += 1;
         } else {
             break;
@@ -885,12 +1293,12 @@ fn detect_table_at(
     }
 
     // Keep only anchors that have hits in at least half the rows (drops noise).
-    let final_anchors = filter_anchors(&anchors, &row_xs);
+    let final_anchors = filter_anchors(&anchors, &row_xs, tolerance);
     if final_anchors.len() < MIN_TABLE_COLUMNS {
         return None;
     }
 
-    let rows = cluster_lines_into_rows(lines, start, end, &final_anchors);
+    let rows = cluster_lines_into_rows(lines, start, end, &final_anchors, tolerance);
 
     Some(DetectedTable {
         columns: final_anchors,
@@ -902,17 +1310,17 @@ fn detect_table_at(
 /// aligned to an anchor and not reaching into the next column. Full-width
 /// paragraph text following a table fails this and ends the table.
 /// `sorted_anchors` must be in ascending order.
-fn is_continuation_line(line: &TextLine, sorted_anchors: &[f32]) -> bool {
+fn is_continuation_line(line: &TextLine, sorted_anchors: &[f32], tolerance: f32) -> bool {
     !line.spans.is_empty()
         && line
             .spans
             .iter()
-            .all(|span| span_stays_in_column(span, sorted_anchors))
+            .all(|span| span_stays_in_column(span, sorted_anchors, tolerance))
 }
 
-fn span_stays_in_column(span: &TextSpan, sorted_anchors: &[f32]) -> bool {
+fn span_stays_in_column(span: &TextSpan, sorted_anchors: &[f32], tolerance: f32) -> bool {
     let column = nearest_column(span.x, sorted_anchors);
-    if !is_aligned(sorted_anchors[column], span.x) {
+    if !is_aligned(sorted_anchors[column], span.x, tolerance) {
         return false;
     }
 
@@ -924,20 +1332,20 @@ fn span_stays_in_column(span: &TextSpan, sorted_anchors: &[f32]) -> bool {
 
 /// The single alignment rule shared by table growth, anchor filtering, row
 /// clustering, and the continuation check.
-fn is_aligned(anchor: f32, x: f32) -> bool {
-    (anchor - x).abs() < COLUMN_ANCHOR_TOLERANCE
+fn is_aligned(anchor: f32, x: f32, tolerance: f32) -> bool {
+    (anchor - x).abs() < tolerance
 }
 
 /// `sorted_anchors` must be ascending; only the two anchors flanking the
 /// insertion point can be within tolerance.
-fn aligned_to_any(sorted_anchors: &[f32], x: f32) -> bool {
+fn aligned_to_any(sorted_anchors: &[f32], x: f32, tolerance: f32) -> bool {
     let insertion = sorted_anchors.partition_point(|&a| a < x);
     let below = insertion.checked_sub(1).map(|i| sorted_anchors[i]);
     let above = sorted_anchors.get(insertion).copied();
     below
         .into_iter()
         .chain(above)
-        .any(|anchor| is_aligned(anchor, x))
+        .any(|anchor| is_aligned(anchor, x, tolerance))
 }
 
 /// Groups the table's lines into logical rows: a line with content in the
@@ -948,6 +1356,7 @@ fn cluster_lines_into_rows(
     start: usize,
     end: usize,
     columns: &[f32],
+    tolerance: f32,
 ) -> Vec<Vec<usize>> {
     let first_anchor = columns[0];
     let mut rows: Vec<Vec<usize>> = Vec::new();
@@ -957,10 +1366,9 @@ fn cluster_lines_into_rows(
         // A span opens a new row only when the first column is its nearest
         // anchor — plain distance would also match spans of a narrowly
         // indented second column.
-        let starts_row = line
-            .spans
-            .iter()
-            .any(|span| nearest_column(span.x, columns) == 0 && is_aligned(first_anchor, span.x));
+        let starts_row = line.spans.iter().any(|span| {
+            nearest_column(span.x, columns) == 0 && is_aligned(first_anchor, span.x, tolerance)
+        });
 
         match rows.last_mut() {
             Some(row) if !starts_row => row.push(index),
@@ -971,20 +1379,20 @@ fn cluster_lines_into_rows(
     rows
 }
 
-fn count_aligned(anchors: &[f32], candidate: &[f32]) -> usize {
+fn count_aligned(anchors: &[f32], candidate: &[f32], tolerance: f32) -> usize {
     candidate
         .iter()
-        .filter(|&&cx| aligned_to_any(anchors, cx))
+        .filter(|&&cx| aligned_to_any(anchors, cx, tolerance))
         .count()
 }
 
-fn filter_anchors(anchors: &[f32], rows: &[&[f32]]) -> Vec<f32> {
+fn filter_anchors(anchors: &[f32], rows: &[&[f32]], tolerance: f32) -> Vec<f32> {
     let threshold = (rows.len() / 2).max(1);
     anchors
         .iter()
         .filter(|&&anchor| {
             rows.iter()
-                .filter(|row| row.iter().any(|&cx| is_aligned(anchor, cx)))
+                .filter(|row| row.iter().any(|&cx| is_aligned(anchor, cx, tolerance)))
                 .count()
                 >= threshold
         })
@@ -1026,7 +1434,45 @@ fn classify_line(line: &TextLine, body_size: f32) -> LineKind {
 }
 
 fn is_list_item_start(text: &str) -> bool {
-    list_marker_len(text).is_some()
+    list_marker_len(text).is_some() || ordered_marker_len(text).is_some()
+}
+
+/// An enumerator as a code or a plan prints one: `1.`, `a.`, `iv.`, `A)`,
+/// `(2)`, `(b)`, followed by a space. Returns the marker's byte length,
+/// without the space. The marker is kept in the output: in an ordinance it is
+/// the address of the provision ("subsection (g)(1)"), not decoration.
+fn ordered_marker_len(text: &str) -> Option<usize> {
+    let open = text.starts_with('(');
+    let body_start = usize::from(open);
+    let body_len = text[body_start..]
+        .char_indices()
+        .find(|(_, c)| !c.is_ascii_alphanumeric())
+        .map(|(i, _)| i)?;
+    let body = &text[body_start..body_start + body_len];
+    let is_number = (1..=3).contains(&body.len()) && body.bytes().all(|b| b.is_ascii_digit());
+    let is_letter = body.len() == 1 && body.bytes().all(|b| b.is_ascii_alphabetic());
+    let is_roman = (1..=6).contains(&body.len())
+        && (body.bytes().all(|b| b"ivxlc".contains(&b))
+            || body.bytes().all(|b| b"IVXLC".contains(&b)));
+    if !(is_number || is_letter || is_roman) {
+        return None;
+    }
+    let close_at = body_start + body_len;
+    let close = text[close_at..].chars().next()?;
+    let valid = if open {
+        close == ')'
+    } else {
+        close == '.' || close == ')'
+    };
+    let marker_len = close_at + close.len_utf8();
+    (valid && text[marker_len..].starts_with(' ')).then_some(marker_len)
+}
+
+/// A line opening with a list marker is a list item, never a table row, even
+/// when an italic run heading it ("6. *Revocation*.") splits it into spans that
+/// happen to line up with the next item's.
+fn starts_with_list_marker(line: &TextLine) -> bool {
+    is_list_item_start(line_to_text(line).trim())
 }
 
 /// The single definition of a list marker, shared by classification and
@@ -1193,6 +1639,8 @@ fn lines_to_markdown(
     }
 
     let tables = detected_tables.unwrap_or_else(|| detect_tables(lines));
+    let (resplit, tables) = resplit_tables(lines, tables);
+    let lines = resplit.as_deref().unwrap_or(lines);
     let blocks = group_into_blocks(lines, &tables, body_size);
 
     let mut md = String::new();
@@ -1200,7 +1648,79 @@ fn lines_to_markdown(
         render_block(&mut md, block, lines, &tables);
     }
 
-    collapse_blank_lines(&md).trim().to_string()
+    // Leading spaces are a list's indentation: only blank lines are trimmed.
+    collapse_blank_lines(&md)
+        .trim_end()
+        .trim_start_matches('\n')
+        .to_string()
+}
+
+/// Re-splits the spans of each detected table's lines at narrow gaps and
+/// detects the table again on them, keeping the new reading when it still
+/// finds a table there. Lines outside tables are never re-split, so prose is
+/// unaffected. Returns the replaced lines, if any changed, and the tables.
+fn resplit_tables(
+    lines: &[TextLine],
+    tables: Vec<DetectedTable>,
+) -> (Option<Vec<TextLine>>, Vec<DetectedTable>) {
+    if tables.is_empty() {
+        return (None, tables);
+    }
+    let mut out: Vec<TextLine> = lines
+        .iter()
+        .map(|l| TextLine {
+            y: l.y,
+            spans: l.spans.clone(),
+        })
+        .collect();
+    let mut result = Vec::with_capacity(tables.len());
+    for table in tables {
+        let (start, end) = (table.start_line(), table.end_line());
+        let original: Vec<Vec<TextSpan>> =
+            out[start..end].iter().map(|l| l.spans.clone()).collect();
+        for line in &mut out[start..end] {
+            line.spans = line
+                .spans
+                .iter()
+                .flat_map(|s| split_span(s, TABLE_SPAN_SPLIT_FACTOR))
+                .collect();
+        }
+        let line_xs: Vec<Vec<f32>> = out
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.x).collect())
+            .collect();
+        let tolerance = pitch_tolerance(&line_xs[start..end]);
+        match detect_table_at(&out, &line_xs, start, tolerance, true)
+            .filter(|t| t.end_line() <= end)
+        {
+            Some(better) if better.columns.len() >= table.columns.len() => result.push(better),
+            _ => {
+                for (line, spans) in out[start..end].iter_mut().zip(original) {
+                    line.spans = spans;
+                }
+                result.push(table);
+            }
+        }
+    }
+    (Some(out), result)
+}
+
+/// Column tolerance for a table whose columns are closer than the default
+/// allows: under half its typical span-to-span pitch. The AIM Norman plan's
+/// compatibility matrix has row labels 29.7 pt left of the first values, so
+/// the default 30 pt tolerance read label and value as one column.
+fn pitch_tolerance(line_xs: &[Vec<f32>]) -> f32 {
+    let mut pitches: Vec<f32> = line_xs
+        .iter()
+        .flat_map(|xs| xs.windows(2).map(|w| w[1] - w[0]))
+        .filter(|d| *d > 0.0)
+        .collect();
+    if pitches.is_empty() {
+        return COLUMN_ANCHOR_TOLERANCE;
+    }
+    pitches.sort_by(f32::total_cmp);
+    let median = pitches[pitches.len() / 2];
+    COLUMN_ANCHOR_TOLERANCE.min(median * 0.45)
 }
 
 /// Limits consecutive newlines to two (one blank line) in a single pass.
@@ -1244,7 +1764,8 @@ fn render_block(md: &mut String, block: &Block, lines: &[TextLine], tables: &[De
             md.push_str("\n\n");
         }
         Block::List { items } => {
-            for item_lines in items {
+            let levels = list_levels(items, lines);
+            for (item_lines, level) in items.iter().zip(levels) {
                 let mut text = String::new();
                 for (i, &idx) in item_lines.iter().enumerate() {
                     if i > 0 {
@@ -1252,9 +1773,19 @@ fn render_block(md: &mut String, block: &Block, lines: &[TextLine], tables: &[De
                     }
                     text.push_str(&line_to_text(&lines[idx]));
                 }
-                let cleaned = strip_list_marker(text.trim());
-                md.push_str("- ");
-                escape_markdown_into(md, &cleaned);
+                let text = text.trim();
+                md.push_str(&"  ".repeat(level));
+                match ordered_marker_len(text) {
+                    Some(marker) => {
+                        md.push_str(&text[..marker]);
+                        md.push(' ');
+                        escape_markdown_into(md, text[marker..].trim_start());
+                    }
+                    None => {
+                        md.push_str("- ");
+                        escape_markdown_into(md, &strip_list_marker(text));
+                    }
+                }
                 md.push('\n');
             }
             md.push('\n');
@@ -1263,6 +1794,28 @@ fn render_block(md: &mut String, block: &Block, lines: &[TextLine], tables: &[De
             render_table_markdown(md, lines, &tables[*index]);
         }
     }
+}
+
+/// Each item's nesting depth: the rank of its left edge among the distinct
+/// left edges of the list's items, so "1. Starting date;" printed under
+/// "4. Any changes ..." reads as its sub-item.
+fn list_levels(items: &[Vec<usize>], lines: &[TextLine]) -> Vec<usize> {
+    const SAME_INDENT: f32 = 4.0;
+    let xs: Vec<f32> = items
+        .iter()
+        .map(|item| lines[item[0]].spans.first().map_or(0.0, |s| s.x))
+        .collect();
+    let mut indents: Vec<f32> = xs.clone();
+    indents.sort_by(f32::total_cmp);
+    indents.dedup_by(|a, b| (*a - *b).abs() < SAME_INDENT);
+    xs.iter()
+        .map(|x| {
+            indents
+                .iter()
+                .filter(|&&indent| indent < x - SAME_INDENT)
+                .count()
+        })
+        .collect()
 }
 
 fn strip_list_marker(text: &str) -> String {
@@ -1555,6 +2108,7 @@ mod tests {
             y,
             width,
             height: font_size,
+            glyphs: Vec::new(),
         }
     }
 
@@ -2364,5 +2918,52 @@ mod tests {
         assert_eq!(nearest_column(290.0, &columns), 1);
         assert_eq!(nearest_column(1000.0, &columns), 2);
         assert_eq!(nearest_column(10.0, &[]), 0);
+    }
+
+    #[test]
+    fn enumerators_are_list_markers_and_prose_is_not() {
+        for marker in [
+            "1. Starting date;",
+            "12. Items",
+            "a. the rbl",
+            "(2) Procedures",
+            "(b) text",
+            "iv. Roman",
+            "A) Upper",
+        ] {
+            assert!(ordered_marker_len(marker).is_some(), "{marker}");
+        }
+        assert_eq!(ordered_marker_len("(2) Procedures"), Some(3));
+        for prose in [
+            "4.9.2.C and:",
+            "U.S. Code",
+            "No. 5 applies",
+            "2024. The year",
+            "(2 Procedures",
+            "1.The",
+            "Sec. 704",
+        ] {
+            assert!(ordered_marker_len(prose).is_none(), "{prose}");
+        }
+    }
+
+    #[test]
+    fn sentences_read_as_prose_and_table_rows_do_not() {
+        assert!(is_prose_line(
+            "for the non-addressed street frontage shall be 65%."
+        ));
+        assert!(is_prose_line(
+            "1.The buildable area is delineated as anywhere behind the"
+        ));
+        for row in [
+            "Office 100 percent 80 percent 100 percent",
+            "Front yard 25 feet",
+            "Lot area 6,000",
+            "Single-family detached, one 1 1 1 1 1",
+            "UL - 4 3 2 4 4 5",
+            "Buildable Area",
+        ] {
+            assert!(!is_prose_line(row), "{row}");
+        }
     }
 }

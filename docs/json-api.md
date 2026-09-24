@@ -336,6 +336,10 @@ person reads it. What it does with each kind of content:
 - **Table cells** are escaped like the rest of the markdown (`R1\*\*§`), and
   bold is kept where it sets part of a cell apart (`**Height:** 45 ft`,
   `**Agriculture** One-Family Dwellings`); a cell set wholly in bold is plain.
+  A raised footnote mark follows the value it marks (`25(1)`), and text set
+  on its side (a rotated column heading) is read in reading order. A table
+  title of several lines, such as a title over a legend (`[1] Mayor and
+  Council …`), is written as paragraphs above the table.
 - **A table ruled between its rows only** (no vertical rules) takes its rows
   from the rules and its columns from where text starts in two rows or more;
   two such tables printed side by side are two tables.
@@ -345,6 +349,11 @@ person reads it. What it does with each kind of content:
   exactly like the row below) gets an empty header row, so that its first
   entry is not presented as the columns' names. Numbers can be column names
   (height districts `1 | 1L | 2 | 3 | 4`) when that row alone is set in bold.
+  A corner cell spanning several rows (San Diego's "Development Regulations"
+  beside four rows of zone designator) spans the header; every column is
+  named with the group headings above it, and parts ending in a hyphen run on
+  into a code (`Zones - RS-1-1`). A row label spanning the label columns is
+  written once.
 - **Rows of filled chips** with no rules (a plan's colour-coded zoning key)
   are a table whose cells are the chips. When a table's cells carry two or more
   colours, each cell's text is followed by its colour's name in brackets —
@@ -366,7 +375,11 @@ person reads it. What it does with each kind of content:
   Note markers (`*`, `†`, `‡`, `§`) are kept as printed, escaped (`\*\*`),
   also when printed tight against the note (`***Coastal Zone`).
 - **Paragraphs** end where a sentence ends well short of the column's right
-  edge: definitions or notes printed one per line stay one per line.
+  edge (a closing bracket after the full stop included): definitions or notes
+  printed one per line stay one per line.
+- **Headings.** A numbered line set larger than the body (`702. Use Table`)
+  is a heading, not a list item, and starts a heading of its own. Legend
+  markers in brackets (`[1]`, `[2]`) are enumerators.
 - **A hyphen that ends a line** is kept: a word broken across lines inside a
   table cell is rejoined whole (`cul-de-sac`). `spans` leaves it out, as
   before.

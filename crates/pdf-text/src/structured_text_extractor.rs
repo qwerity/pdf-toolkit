@@ -160,6 +160,9 @@ struct RawChar {
     bold: bool,
     italic: bool,
     space_before: bool,
+    /// Set on its side: the baseline runs up or down the page, as in a
+    /// rotated column heading ("Urban General" over a narrow use column).
+    vertical: bool,
 }
 
 struct TextLine {
@@ -541,6 +544,7 @@ fn extract_raw_chars(page: &PdfPage<'_>, text: &PdfPageText<'_>) -> Vec<RawChar>
             bold,
             italic: font_italic,
             space_before: pending_space,
+            vertical: is_vertical(char_ref.angle_degrees().unwrap_or(0.0), rotation),
         });
         // The next character keeps the space that preceded a line-end
         // hyphen, as it did when the hyphen was dropped.
@@ -550,6 +554,18 @@ fn extract_raw_chars(page: &PdfPage<'_>, text: &PdfPageText<'_>) -> Vec<RawChar>
     }
 
     chars
+}
+
+/// Whether a glyph drawn at `angle` degrees reads up or down the page as
+/// displayed, once the page's own `/Rotate` is taken out.
+fn is_vertical(angle: f32, rotation: PdfPageRenderRotation) -> bool {
+    let page = match rotation {
+        PdfPageRenderRotation::Degrees90 => 90.0,
+        PdfPageRenderRotation::Degrees180 => 180.0,
+        PdfPageRenderRotation::Degrees270 => 270.0,
+        PdfPageRenderRotation::None => 0.0,
+    };
+    ((angle - page).rem_euclid(180.0) - 90.0).abs() < 30.0
 }
 
 /// pdfium's code for a hyphen that ends a line ("cul-" before "de-sac"). It is
@@ -1492,10 +1508,8 @@ fn classify_line(line: &TextLine, body_size: f32) -> LineKind {
         return LineKind::Empty;
     }
 
-    if is_list_item_start(trimmed) {
-        return LineKind::ListItem;
-    }
-
+    // Set larger than the body, a numbered line is a section heading ("702.
+    // Use Table", "3. Zoning Districts"), not an item of a list.
     let max_size = line
         .spans
         .iter()
@@ -1507,6 +1521,10 @@ fn classify_line(line: &TextLine, body_size: f32) -> LineKind {
     }
     if max_size > body_size * H2_SIZE_RATIO {
         return LineKind::Heading(2);
+    }
+
+    if is_list_item_start(trimmed) {
+        return LineKind::ListItem;
     }
 
     LineKind::Paragraph
@@ -1535,8 +1553,9 @@ fn ordered_marker_len(text: &str) -> Option<usize> {
     {
         return Some(note);
     }
-    let open = text.starts_with('(');
-    let body_start = usize::from(open);
+    // "(2)", or a legend's "[1]".
+    let open = text.chars().next().filter(|c| matches!(c, '(' | '['));
+    let body_start = usize::from(open.is_some());
     let body_len = text[body_start..]
         .char_indices()
         .find(|(_, c)| !c.is_ascii_alphanumeric())
@@ -1552,10 +1571,10 @@ fn ordered_marker_len(text: &str) -> Option<usize> {
     }
     let close_at = body_start + body_len;
     let close = text[close_at..].chars().next()?;
-    let valid = if open {
-        close == ')'
-    } else {
-        close == '.' || close == ')'
+    let valid = match open {
+        Some('(') => close == ')',
+        Some(_) => close == ']',
+        None => close == '.' || close == ')',
     };
     let marker_len = close_at + close.len_utf8();
     // A marker alone on its line ("(6)" above its sub-items) is still one.
@@ -1660,6 +1679,14 @@ fn group_into_blocks(lines: &[TextLine], tables: &[DetectedTable], body_size: f3
                 break;
             }
 
+            // A numbered heading starts a heading of its own ("Part 1.
+            // General Provisions" then "101. Title").
+            if matches!(kind, LineKind::Heading(_))
+                && is_list_item_start(line_to_text(&lines[j]).trim())
+            {
+                break;
+            }
+
             if !is_vertically_close(&lines[j - 1], &lines[j]) {
                 break;
             }
@@ -1708,7 +1735,10 @@ fn ends_sentence_short(line: &TextLine, left: f32, right: f32) -> bool {
         return false;
     }
     let text = line_to_text(line);
-    text.trim_end().ends_with(['.', ':', '!', '?']) && text.split_whitespace().nth(2).is_some()
+    text.trim_end()
+        .trim_end_matches([')', ']', '"', '\u{201D}', '\u{2019}'])
+        .ends_with(['.', ':', '!', '?'])
+        && text.split_whitespace().nth(2).is_some()
 }
 
 /// The leftmost start and rightmost end of a set of spans.
@@ -2223,6 +2253,7 @@ mod tests {
             bold: false,
             italic: false,
             space_before: false,
+            vertical: false,
         }
     }
 
@@ -3066,6 +3097,8 @@ mod tests {
         assert_eq!(ordered_marker_len("***Coastal Zone properties"), Some(3));
         assert_eq!(ordered_marker_len("§ Height limited"), Some(2));
         assert_eq!(ordered_marker_len("§ 12.21 Height"), None);
+        assert_eq!(ordered_marker_len("[1] Mayor and Council"), Some(3));
+        assert_eq!(ordered_marker_len("[See Section 131.0430]"), None);
         for prose in [
             "4.9.2.C and:",
             "U.S. Code",
@@ -3129,5 +3162,45 @@ mod tests {
         assert!(!ends_sentence_short(&full, 50.0, 500.0));
         assert!(ends_sentence_short(&short, 50.0, 500.0));
         assert!(!ends_sentence_short(&marker, 50.0, 500.0));
+    }
+
+    #[test]
+    fn a_numbered_line_set_as_a_heading_is_a_heading() {
+        let heading = text_line(
+            700.0,
+            vec![span("702. Use Table", 50.0, 700.0, 120.0, 16.0)],
+        );
+        let item = text_line(
+            680.0,
+            vec![span("1. The building line", 50.0, 680.0, 120.0, 10.0)],
+        );
+        assert!(matches!(
+            classify_line(&heading, 10.0),
+            LineKind::Heading(_)
+        ));
+        assert_eq!(classify_line(&item, 10.0), LineKind::ListItem);
+    }
+
+    #[test]
+    fn a_sentence_closed_by_a_bracket_ends_short_too() {
+        let line = text_line(
+            700.0,
+            vec![span(
+                "(Amended 11-13-08 by O-19799 N.S; effective 12-13-2008.)",
+                50.0,
+                700.0,
+                250.0,
+                10.0,
+            )],
+        );
+        assert!(ends_sentence_short(&line, 50.0, 500.0));
+    }
+
+    #[test]
+    fn glyphs_on_their_side_are_vertical_on_an_upright_page() {
+        assert!(is_vertical(90.0, PdfPageRenderRotation::None));
+        assert!(is_vertical(270.0, PdfPageRenderRotation::None));
+        assert!(!is_vertical(0.0, PdfPageRenderRotation::None));
+        assert!(!is_vertical(90.0, PdfPageRenderRotation::Degrees90));
     }
 }

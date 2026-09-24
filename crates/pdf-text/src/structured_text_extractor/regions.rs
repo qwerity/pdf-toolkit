@@ -17,8 +17,9 @@
 
 use super::graphics::{Fill, PageGraphics, Rect, Rule, colour_name};
 use super::{
-    RawChar, TextSpan, escape_markdown_into, group_chars_into_spans, group_spans_into_lines_owned,
-    is_function_word, needs_space_between, spans_to_markdown,
+    RawChar, TextLine, TextSpan, escape_markdown_into, group_chars_into_spans,
+    group_spans_into_lines_owned, is_function_word, line_to_text, needs_space_between,
+    spans_to_markdown,
 };
 
 /// Rules closer than this are one line: a border drawn by each of two
@@ -755,7 +756,10 @@ pub(super) fn assign(regions: &[Region], chars: Vec<RawChar>) -> (Vec<RawChar>, 
 /// a cell apart ("**Agriculture** One-Family Dwellings", "**Height:** 45 ft");
 /// a cell set wholly in bold is plain text.
 fn cell_text(chars: &[RawChar]) -> String {
-    let lines = group_spans_into_lines_owned(group_chars_into_spans(chars));
+    if chars.iter().filter(|c| c.vertical).count() * 2 > chars.len() {
+        return vertical_text(chars);
+    }
+    let lines = with_raised_marks(group_spans_into_lines_owned(group_chars_into_spans(chars)));
     let wordy = |s: &&TextSpan| s.text.chars().any(char::is_alphanumeric);
     let spans = || lines.iter().flat_map(|l| &l.spans).filter(wordy);
     let mixed = spans().any(|s| s.bold) && spans().any(|s| !s.bold);
@@ -796,6 +800,65 @@ fn cell_text(chars: &[RawChar]) -> String {
     out
 }
 
+/// A cell set on its side ("Urban General" up a narrow column): its glyphs
+/// in the order the page draws them, which is reading order, not the order
+/// of their positions, which runs backwards or top to bottom.
+fn vertical_text(chars: &[RawChar]) -> String {
+    let mut text = String::new();
+    for c in chars {
+        if c.space_before && !text.is_empty() {
+            text.push(' ');
+        }
+        text.push(c.ch);
+    }
+    let mut out = String::new();
+    escape_markdown_into(&mut out, text.trim());
+    out
+}
+
+/// Lines with a raised, smaller mark set back on the line it marks: a
+/// footnote's "(1)" printed above "25" reads "25(1)", not "(1) 25".
+fn with_raised_marks(lines: Vec<TextLine>) -> Vec<TextLine> {
+    let size = |l: &TextLine| l.spans.iter().map(|s| s.font_size).fold(0.0_f32, f32::max);
+    let bottom = |l: &TextLine| {
+        l.spans
+            .iter()
+            .map(|s| s.y - s.height)
+            .fold(f32::MAX, f32::min)
+    };
+    let mut out: Vec<TextLine> = Vec::with_capacity(lines.len());
+    let mut raised: Vec<TextSpan> = Vec::new();
+    for (k, line) in lines.iter().enumerate() {
+        // Lines run top to bottom: a mark sits above the line it marks, set
+        // smaller, its bottom inside that line's height.
+        let mark = line_to_text(line);
+        let marks = mark.trim().chars().count() <= RAISED_MARK_CHARS
+            && !mark.trim().contains(' ')
+            && mark.chars().filter(|c| c.is_alphabetic()).count() <= 1
+            && lines.get(k + 1).is_some_and(|next| {
+                size(line) < size(next) * RAISED_MARK_SIZE
+                    && bottom(line) < next.y
+                    && bottom(line) > bottom(next)
+            });
+        if marks {
+            raised.extend(line.spans.iter().cloned());
+        } else {
+            let mut spans = line.spans.clone();
+            spans.append(&mut raised);
+            spans.sort_by(|a, b| a.x.total_cmp(&b.x));
+            out.push(TextLine { y: line.y, spans });
+        }
+    }
+    out
+}
+
+/// A line set below this share of the next line's size, and overlapping it,
+/// is a mark raised on it, when it is one short token of numbers or signs
+/// ("(1)", "(2,3)", "*", "(a)"): a smaller word above another ("FENCE") is a
+/// label of its own.
+const RAISED_MARK_SIZE: f32 = 0.85;
+const RAISED_MARK_CHARS: usize = 6;
+
 /// Whether text ends in a word broken at a hyphen ("cul-" before "de-sac"):
 /// the next line continues the word, with no space.
 pub(super) fn ends_broken_word(text: &str) -> bool {
@@ -820,7 +883,7 @@ pub(super) fn render_table(
     let rows_with_text: Vec<usize> = (0..grid.rows)
         .filter(|&r| holding(grid, &texts, r).next().is_some())
         .collect();
-    let (mut md, remaining) = captions(grid, &texts, &rows_with_text);
+    let (mut md, remaining) = captions(grid, &by_cell, &texts, &rows_with_text);
     let Some(&first) = remaining.first() else {
         return RenderedTable {
             markdown: md.trim_end().to_string(),
@@ -861,7 +924,8 @@ pub(super) fn render_table(
 }
 
 /// Each column's name: the header rows' texts in it, top to bottom, joined
-/// ("Maximum Height - Stories").
+/// ("Maximum Height - Stories"). A part ending in a hyphen is the start of a
+/// code the next part completes: "RS-", "1-", "1" name the zone "RS-1-1".
 fn column_names(header_rows: &[Vec<String>], cols: usize) -> Vec<String> {
     (0..cols)
         .map(|c| {
@@ -872,7 +936,14 @@ fn column_names(header_rows: &[Vec<String>], cols: usize) -> Vec<String> {
                     parts.push(part);
                 }
             }
-            parts.join(" - ")
+            let mut name = String::new();
+            for part in parts {
+                if !name.is_empty() && !name.ends_with('-') {
+                    name.push_str(" - ");
+                }
+                name.push_str(part);
+            }
+            name
         })
         .collect()
 }
@@ -1056,7 +1127,12 @@ fn covers(cell: &Cell, r: usize) -> bool {
 
 /// Title bands at the top of a table (one text across most of the width) as
 /// paragraphs, and the rows after them.
-fn captions<'a>(grid: &Grid, texts: &[String], rows: &'a [usize]) -> (String, &'a [usize]) {
+fn captions<'a>(
+    grid: &Grid,
+    by_cell: &[Vec<RawChar>],
+    texts: &[String],
+    rows: &'a [usize],
+) -> (String, &'a [usize]) {
     let mut md = String::new();
     let mut remaining = rows;
     while let Some(&row) = remaining.first() {
@@ -1065,7 +1141,15 @@ fn captions<'a>(grid: &Grid, texts: &[String], rows: &'a [usize]) -> (String, &'
         else {
             break;
         };
-        md.push_str(&texts[i]);
+        // A caption of several lines (a title over a legend: "P = Permitted
+        // Use", "[1] Mayor and Council …") is read as paragraphs, so its
+        // entries stay apart; a one-line title is its text.
+        let lines = group_spans_into_lines_owned(group_chars_into_spans(&by_cell[i]));
+        if lines.len() > 1 {
+            md.push_str(&spans_to_markdown(&group_chars_into_spans(&by_cell[i])));
+        } else {
+            md.push_str(&texts[i]);
+        }
         md.push_str("\n\n");
         remaining = &remaining[1..];
     }
@@ -1192,8 +1276,11 @@ fn filled_matrix(
         // is written once, however many columns it spans.
         let alone = || !beside().any(|(k, _)| !data_part[k].is_empty());
         let full_width = cell.col_span == grid.cols;
-        let cols = if cell.col_span > 1
+        // A row's label spanning the label columns is written once.
+        let label = cell.col == 0 && cell.row >= data_start;
+        let data_cols = if cell.col_span > 1
             && !full_width
+            && !label
             && (cell.col_span * 2 <= grid.cols || followed())
             && (cell.row < data_start || !alone())
         {
@@ -1207,6 +1294,13 @@ fn filled_matrix(
             if text.is_empty() {
                 continue;
             }
+            // In the header a group heading names every column under it
+            // ("RS-" over RS-1-1 … RS-1-7), however wide.
+            let cols = if r < data_start && !full_width {
+                cell.col_span
+            } else {
+                data_cols
+            };
             let value = match labels[i] {
                 Some(name) => format!("{text} [{name}]"),
                 None => text.clone(),
@@ -1344,6 +1438,9 @@ fn keyed_rows(grid: &Grid, by_cell: &[Vec<RawChar>], rows: &[usize]) -> bool {
 /// through data rows. A row below that holds values (".65 .55 .45") is data,
 /// not sub-headings, whatever spans above it.
 fn header_rows(grid: &Grid, first: usize, texts: &[String]) -> usize {
+    if let Some(rows) = corner_rows(grid, first, texts) {
+        return rows;
+    }
     if holds_values(&row_texts(grid, texts, first + 1)) {
         return 1;
     }
@@ -1359,6 +1456,27 @@ fn header_rows(grid: &Grid, first: usize, texts: &[String]) -> usize {
         .map(|c| c.row + c.row_span)
         .max();
     end.map_or(1, |end| end - first)
+}
+
+/// The rows a header's corner cell spans, when it spans several: the cell
+/// at the top of the first column that names the row labels ("Development
+/// Regulations" beside the four rows of San Diego's zone designator, "1st &
+/// 2nd >> RS-", "3rd >> 1-", "4th >> 1"). The rows beside it are header rows
+/// whatever they hold, numbers included; rows holding sentences are not.
+fn corner_rows(grid: &Grid, first: usize, texts: &[String]) -> Option<usize> {
+    let (corner, text) = grid
+        .cells
+        .iter()
+        .zip(texts)
+        .find(|(c, t)| c.row == first && c.col == 0 && !t.is_empty())?;
+    let rows = corner.row_span;
+    let beside_short = grid
+        .cells
+        .iter()
+        .zip(texts)
+        .filter(|(c, _)| c.col > 0 && c.row >= first && c.row < first + rows)
+        .all(|(_, t)| t.split_whitespace().count() <= HEADER_MAX_WORDS);
+    (rows > 1 && first + rows < grid.rows && !is_numeric(text) && beside_short).then_some(rows)
 }
 
 fn nearest_cell(cells: &[Cell], x: f32, y: f32) -> usize {
@@ -1582,6 +1700,7 @@ mod tests {
                 bold,
                 italic: false,
                 space_before: false,
+                vertical: false,
             })
             .collect()
     }
@@ -1857,5 +1976,113 @@ mod tests {
         chars.extend(word("45", 50.0, 100.0, false));
         assert_eq!(cell_text(&chars), "**Height:** 45");
         assert_eq!(cell_text(&word("R1**§", 0.0, 100.0, true)), "R1\\*\\*§");
+    }
+
+    #[test]
+    fn a_corner_cell_over_several_rows_spans_the_header() {
+        // San Diego's zone designator: "RS-" over "1-" over the zone numbers,
+        // beside a corner cell naming the row labels.
+        let grid = Grid {
+            rows: 4,
+            cols: 3,
+            cells: vec![
+                cell(0, 0, 3, 1),
+                cell(0, 1, 1, 2),
+                cell(1, 1, 1, 2),
+                cell(2, 1, 1, 1),
+                cell(2, 2, 1, 1),
+                cell(3, 0, 1, 1),
+                cell(3, 1, 1, 1),
+                cell(3, 2, 1, 1),
+            ],
+        };
+        let chars = in_cells(&[
+            (0, 0, "Regulations", true),
+            (0, 1, "RS-", false),
+            (1, 1, "1-", false),
+            (2, 1, "1", false),
+            (2, 2, "2", false),
+            (3, 0, "Density", false),
+            (3, 1, "1", false),
+            (3, 2, "1", false),
+        ]);
+        let md = render_table(&grid, &chars, &[], None).markdown;
+        assert!(md.starts_with("| Regulations | RS-1-1 | RS-1-2 |"), "{md}");
+        assert!(md.contains("| Density | 1 | 1 |"), "{md}");
+    }
+
+    #[test]
+    fn a_row_label_spanning_the_label_columns_is_written_once() {
+        let grid = Grid {
+            rows: 2,
+            cols: 3,
+            cells: vec![
+                cell(0, 0, 1, 1),
+                cell(0, 1, 1, 1),
+                cell(0, 2, 1, 1),
+                cell(1, 0, 1, 2),
+                cell(1, 2, 1, 1),
+            ],
+        };
+        let chars = in_cells(&[
+            (0, 0, "Use", true),
+            (0, 1, "Zone", true),
+            (0, 2, "RS", true),
+            (1, 0, "Offices", false),
+            (1, 2, "P", false),
+        ]);
+        let md = render_table(&grid, &chars, &[], None).markdown;
+        assert!(md.contains("| Offices |  | P |"), "{md}");
+    }
+
+    #[test]
+    fn a_raised_footnote_mark_follows_its_value() {
+        let mut chars = word("25", 0.0, 100.0, false);
+        let mark: Vec<RawChar> = word("(1)", 11.0, 103.0, false)
+            .into_iter()
+            .map(|c| RawChar {
+                height: 5.0,
+                font_size: 5.0,
+                width: 3.0,
+                ..c
+            })
+            .collect();
+        chars.extend(mark);
+        assert_eq!(cell_text(&chars), "25(1)");
+        // A smaller word above another is a label of its own.
+        let mut chars = word("FRONT", 0.0, 100.0, false);
+        chars.extend(
+            word("FENCE", 40.0, 103.0, false)
+                .into_iter()
+                .map(|c| RawChar {
+                    height: 5.0,
+                    font_size: 5.0,
+                    ..c
+                }),
+        );
+        assert_ne!(cell_text(&chars), "FRONTFENCE");
+    }
+
+    #[test]
+    fn a_cell_set_on_its_side_reads_in_drawing_order() {
+        let chars: Vec<RawChar> = "Urban General"
+            .chars()
+            .enumerate()
+            .filter(|(_, ch)| *ch != ' ')
+            .map(|(i, ch)| RawChar {
+                ch,
+                x: 10.0,
+                y: 10.0 + i as f32 * 5.0,
+                width: 8.0,
+                height: 5.0,
+                font_size: 8.0,
+                font_name: "Helvetica".into(),
+                bold: true,
+                italic: false,
+                space_before: ch == 'G',
+                vertical: true,
+            })
+            .collect();
+        assert_eq!(cell_text(&chars), "Urban General");
     }
 }

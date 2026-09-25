@@ -21,7 +21,7 @@ use pdf_core::PageSelection;
 use pdf_geo::local::Reference;
 use pdf_pages::OutputFormat;
 use pdf_render::PngSize;
-use pdf_text::StructuredOutputFormat;
+use pdf_text::{OcrPages, StructuredOutputFormat};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -71,6 +71,16 @@ pub enum Command {
     /// Shrink the PDF by resampling raster images drawn above a resolution,
     /// leaving text, fonts and vector content byte-identical.
     Downsample(DownsampleArgs),
+    /// Fetch the OCR models (RapidOCR's PP-OCRv5 English networks) into a
+    /// directory, verifying their checksums. The one networked step OCR
+    /// needs; `structured --ocr` then runs offline.
+    OcrModels(OcrModelsArgs),
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct OcrModelsArgs {
+    /// Directory to hold the models.
+    pub dir: PathBuf,
 }
 
 /// The source document and the pages wanted from it.
@@ -151,6 +161,17 @@ pub struct StructuredArgs {
     /// `full` includes spans and markdown; `markdown` emits markdown only.
     #[arg(long = "structured-format", default_value = "full")]
     pub structured_format: StructuredFormatArg,
+
+    /// Read pages by OCR: `scans` reads scanned pages (one image over the
+    /// page and no readable text of its own), `all` every page. The
+    /// markdown of such a page comes from OCR; its spans stay the text layer.
+    #[arg(long, default_value = "off")]
+    pub ocr: OcrArg,
+
+    /// Directory of the OCR models (fetched by `ocr-models`). Defaults to
+    /// `PDF_TOOLKIT_OCR_MODELS`.
+    #[arg(long = "ocr-models")]
+    pub ocr_models: Option<PathBuf>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -416,21 +437,22 @@ impl DownsampleArgs {
 }
 
 impl Command {
-    /// The source PDF, whichever command was asked for. Used by the one
-    /// check that applies to all of them: that the input exists and is a file.
-    pub fn input(&self) -> &PathBuf {
+    /// The source PDF, for every command that reads one: the one check that
+    /// applies to all of them is that it exists and is a file.
+    pub fn input(&self) -> Option<&PathBuf> {
         match self {
-            Self::Inspect(args) => &args.input,
-            Self::Cut(args) => &args.source.input,
-            Self::Render(args) => &args.source.input,
-            Self::Text(args) => &args.source.input,
-            Self::Structured(args) => &args.source.input,
-            Self::Vector(args) => &args.source.input,
-            Self::Dossier(args) => &args.input,
-            Self::Cadfix(args) => &args.input,
-            Self::Building(args) => &args.input,
-            Self::Model(args) => &args.input,
-            Self::Downsample(args) => &args.input,
+            Self::Inspect(args) => Some(&args.input),
+            Self::Cut(args) => Some(&args.source.input),
+            Self::Render(args) => Some(&args.source.input),
+            Self::Text(args) => Some(&args.source.input),
+            Self::Structured(args) => Some(&args.source.input),
+            Self::Vector(args) => Some(&args.source.input),
+            Self::Dossier(args) => Some(&args.input),
+            Self::Cadfix(args) => Some(&args.input),
+            Self::Building(args) => Some(&args.input),
+            Self::Model(args) => Some(&args.input),
+            Self::Downsample(args) => Some(&args.input),
+            Self::OcrModels(_) => None,
         }
     }
 }
@@ -465,6 +487,24 @@ impl RenderArgs {
 
 /// Applied when `render` is given neither sizing option.
 const DEFAULT_PNG_SCALE: f32 = 2.0;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum OcrArg {
+    Off,
+    Scans,
+    All,
+}
+
+impl OcrArg {
+    /// The pages to read by OCR, or `None` for no OCR.
+    pub fn pages(self) -> Option<OcrPages> {
+        match self {
+            Self::Off => None,
+            Self::Scans => Some(OcrPages::Scans),
+            Self::All => Some(OcrPages::All),
+        }
+    }
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum StructuredFormatArg {
@@ -618,7 +658,7 @@ mod tests {
         for args in cases {
             assert_eq!(
                 parse(&args).command.input(),
-                &PathBuf::from("a.pdf"),
+                Some(&PathBuf::from("a.pdf")),
                 "for {args:?}"
             );
         }

@@ -8,10 +8,11 @@ use pdfium_render::prelude::{
 };
 use serde::Serialize;
 use std::num::NonZeroU16;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 mod graphics;
+mod ocr;
 mod regions;
 
 // ── Tolerance constants ────────────────────────────────────────────
@@ -121,6 +122,51 @@ pub struct StructuredPage {
     pub page: u16,
     pub spans: Vec<TextSpan>,
     pub markdown: String,
+    /// The markdown was read by OCR from the rendered page (a scan), not from
+    /// its text layer. `spans` stay the text layer either way.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ocr: bool,
+}
+
+/// Which pages structured extraction reads by OCR.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OcrPages {
+    /// Scanned pages only: one image over most of the page and no readable
+    /// text of its own.
+    Scans,
+    /// Every page, text layer or not.
+    All,
+}
+
+/// OCR for structured extraction: the pages it reads, and the engine,
+/// loaded from the models on the first page that needs it, so a run over
+/// digital pages never pays for it.
+pub struct OcrOptions {
+    pub pages: OcrPages,
+    models: PathBuf,
+    engine: Option<pdf_ocr::Ocr>,
+}
+
+impl OcrOptions {
+    /// OCR with the models in `models`.
+    ///
+    /// # Errors
+    /// When `models` does not hold the model files.
+    pub fn new(models: &Path, pages: OcrPages) -> anyhow::Result<Self> {
+        pdf_ocr::check_models(models)?;
+        Ok(Self {
+            pages,
+            models: models.to_path_buf(),
+            engine: None,
+        })
+    }
+
+    fn engine(&mut self) -> anyhow::Result<&mut pdf_ocr::Ocr> {
+        if self.engine.is_none() {
+            self.engine = Some(pdf_ocr::Ocr::load(&self.models)?);
+        }
+        Ok(self.engine.as_mut().expect("invariant: loaded just above"))
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -228,6 +274,20 @@ pub fn extract_structured_text(
     selection: PageSelection,
     output_format: StructuredOutputFormat,
 ) -> Result<StructuredExtractionReport> {
+    extract_structured_text_with(pdfium, pdf_path, selection, output_format, None)
+}
+
+/// [`extract_structured_text`], reading the pages `ocr` names by OCR.
+///
+/// # Errors
+/// As [`extract_structured_text`]; an OCR failure on a page is a warning.
+pub fn extract_structured_text_with(
+    pdfium: &Pdfium,
+    pdf_path: &Path,
+    selection: PageSelection,
+    output_format: StructuredOutputFormat,
+    mut ocr: Option<&mut OcrOptions>,
+) -> Result<StructuredExtractionReport> {
     let document = open_document(pdfium, pdf_path)?;
     let pages = document.pages();
     let total_pages = page_count_u16(pages)?;
@@ -258,8 +318,12 @@ pub fn extract_structured_text(
             carry = None;
         }
         previous_page = Some(page_number.get());
-        match extract_page_structured(pages, page_number, output_format, &mut carry) {
-            Ok(page) => structured_pages.push(page),
+        let page_ocr = ocr.as_deref_mut();
+        match extract_page_structured(pages, page_number, output_format, &mut carry, page_ocr) {
+            Ok((page, warning)) => {
+                structured_pages.push(page);
+                warnings.extend(warning);
+            }
             Err(warning) => {
                 carry = None;
                 warnings.push(warning);
@@ -281,7 +345,8 @@ fn extract_page_structured(
     page_number: NonZeroU16,
     format: StructuredOutputFormat,
     carry: &mut Option<regions::TableTail>,
-) -> std::result::Result<StructuredPage, ExtractionWarning> {
+    ocr: Option<&mut OcrOptions>,
+) -> std::result::Result<(StructuredPage, Option<ExtractionWarning>), ExtractionWarning> {
     let page = pages
         .get(page_index(page_number))
         .map_err(|error| ExtractionWarning::LoadPage {
@@ -296,7 +361,10 @@ fn extract_page_structured(
 
     // Judge the same sanitized page text as the plain-text extractor, so the
     // shared heuristic's thresholds apply to one input distribution.
-    if is_probably_unreadable_text(&sanitize_extracted_text(&text.all())) {
+    let unreadable = is_probably_unreadable_text(&sanitize_extracted_text(&text.all()));
+    let reader =
+        ocr.filter(|o| o.pages == OcrPages::All || ocr::is_scanned(&page, &text, unreadable));
+    if unreadable && reader.is_none() {
         return Err(ExtractionWarning::UnreadableText {
             page_number: page_number.get(),
         });
@@ -308,13 +376,32 @@ fn extract_page_structured(
         StructuredOutputFormat::Full => legacy_spans(&raw_chars),
         StructuredOutputFormat::MarkdownOnly => Vec::new(),
     };
-    let markdown = page_markdown(&page, raw_chars, carry);
+    let read = reader
+        .map(|o| {
+            o.engine()
+                .and_then(|engine| ocr::ocr_markdown(&page, engine, carry))
+        })
+        .transpose()
+        .map_err(|error| ExtractionWarning::OcrFailed {
+            page_number: page_number.get(),
+            reason: format!("{error:#}"),
+        });
+    // A failed OCR falls back to the text layer, unless there is none to read.
+    let (markdown, by_ocr, warning) = match read {
+        Ok(Some(markdown)) => (markdown, true, None),
+        Err(failed) if unreadable => return Err(failed),
+        other => (page_markdown(&page, raw_chars, carry), false, other.err()),
+    };
 
-    Ok(StructuredPage {
-        page: page_number.get(),
-        spans: output_spans,
-        markdown,
-    })
+    Ok((
+        StructuredPage {
+            page: page_number.get(),
+            spans: output_spans,
+            markdown,
+            ocr: by_ocr,
+        },
+        warning,
+    ))
 }
 
 /// Marks where a table or text box sits in the reading flow until its own
@@ -334,30 +421,46 @@ const REGION_CLOSE: char = '\u{E001}';
 /// continue, and receives this page's last table.
 fn page_markdown(
     page: &PdfPage<'_>,
-    mut chars: Vec<RawChar>,
+    chars: Vec<RawChar>,
     carry: &mut Option<regions::TableTail>,
 ) -> String {
     // A glyph off the page is not printed: a page cut from a two-page spread
     // still carries the other page's text, placed beside it. Dropped here, not
     // at extraction, so `spans` and the routing flag read what they always did.
-    let (width, height) = match page.rotation().unwrap_or(PdfPageRenderRotation::None) {
-        PdfPageRenderRotation::Degrees90 | PdfPageRenderRotation::Degrees270 => {
-            (page.height().value, page.width().value)
-        }
-        _ => (page.width().value, page.height().value),
-    };
-    chars.retain(|c| {
-        let (cx, cy) = (c.x + c.width / 2.0, c.y - c.height / 2.0);
-        (0.0..=width).contains(&cx) && (0.0..=height).contains(&cy)
-    });
+    // Only on an upright page: a `/Rotate`d page's glyphs are placed by
+    // `rotate_to_visual`, whose frame is not the page box, and are all kept.
+    let page_box = matches!(
+        page.rotation().unwrap_or(PdfPageRenderRotation::None),
+        PdfPageRenderRotation::None
+    )
+    .then(|| (page.width().value, page.height().value));
+    page_markdown_drawn(page, chars, page_box, &graphics::collect(page), carry)
+}
+
+/// [`page_markdown`] over a given drawing: the page's own vector drawing, or
+/// the rules found in a scan's pixels. `page_box` is the page, `(width,
+/// height)`, in the characters' coordinates; a character outside it is
+/// dropped.
+fn page_markdown_drawn(
+    page: &PdfPage<'_>,
+    mut chars: Vec<RawChar>,
+    page_box: Option<(f32, f32)>,
+    drawing: &graphics::PageGraphics,
+    carry: &mut Option<regions::TableTail>,
+) -> String {
+    if let Some((width, height)) = page_box {
+        chars.retain(|c| {
+            let (cx, cy) = (c.x + c.width / 2.0, c.y - c.height / 2.0);
+            (0.0..=width).contains(&cx) && (0.0..=height).contains(&cy)
+        });
+    }
     for c in &mut chars {
         if c.ch == LINE_END_HYPHEN {
             c.ch = '-';
         }
     }
-    let drawing = graphics::collect(page);
     let page_area = page.width().value * page.height().value;
-    let found = regions::detect(&drawing, &chars, page_area);
+    let found = regions::detect(drawing, &chars, page_area);
     let incoming = carry.take();
     if found.is_empty() {
         return spans_to_markdown(&group_chars_into_spans(&chars));

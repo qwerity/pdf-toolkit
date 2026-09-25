@@ -1,0 +1,12 @@
+[package]
+name = "pdf-ocr"
+description = "Local OCR of rendered pages with RapidOCR's ONNX models: text lines and their boxes, offline once the models are fetched."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+image.workspace = true
+rapidocr-core = { version = "0.2.2", default-features = false }
+ureq.workspace = true

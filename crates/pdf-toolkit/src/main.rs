@@ -9,18 +9,18 @@ use clap::{CommandFactory, FromArgMatches};
 
 use pdf_toolkit::cli::{
     BuildingArgs, CadfixArgs, Cli, Command, CutArgs, DossierArgs, DownsampleArgs, InspectArgs,
-    ModelArgs, RenderArgs, Source, StructuredArgs, TextArgs, VectorArgs,
+    ModelArgs, OcrModelsArgs, RenderArgs, Source, StructuredArgs, TextArgs, VectorArgs,
 };
 use pdf_toolkit::error::{PdfError, Result as LibraryResult};
 use pdf_toolkit::{
-    OutputFormat, Pdfium, create_pdfium, extract_pages, extract_structured_text, extract_text,
-    inspect_document,
+    OcrOptions, OutputFormat, Pdfium, create_pdfium, extract_pages, extract_structured_text_with,
+    extract_text, inspect_document,
 };
 
 use crate::cli_output::{
     print_building_output, print_cadfix_output, print_document_info, print_dossier_output,
-    print_downsample_output, print_model_output, print_page_output, print_structured_output,
-    print_text_output, print_vector_output,
+    print_downsample_output, print_json, print_model_output, print_page_output,
+    print_structured_output, print_text_output, print_vector_output,
 };
 
 fn main() -> ExitCode {
@@ -44,7 +44,9 @@ fn launch() -> Result<()> {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    validate_input_file(cli.command.input())?;
+    if let Some(input) = cli.command.input() {
+        validate_input_file(input)?;
+    }
 
     match cli.command {
         Command::Inspect(args) => inspect(&args),
@@ -58,7 +60,18 @@ fn run(cli: Cli) -> Result<()> {
         Command::Building(args) => building(&args),
         Command::Model(args) => model(&args),
         Command::Downsample(args) => downsample(&args),
+        Command::OcrModels(args) => ocr_models(&args),
     }
+}
+
+fn ocr_models(args: &OcrModelsArgs) -> Result<()> {
+    let fetched = pdf_ocr::fetch_models(&args.dir)
+        .with_context(|| format!("failed to fetch OCR models into '{}'", args.dir.display()))?;
+    print_json(serde_json::json!({
+        "models": args.dir,
+        "model_set": pdf_ocr::MODEL_SET,
+        "fetched": fetched,
+    }))
 }
 
 fn inspect(args: &InspectArgs) -> Result<()> {
@@ -142,11 +155,21 @@ fn text(args: &TextArgs) -> Result<()> {
 
 fn structured(args: &StructuredArgs) -> Result<()> {
     let pdfium = pdfium()?;
-    let report = extract_structured_text(
+    let mut ocr = args
+        .ocr
+        .pages()
+        .map(|pages| -> Result<OcrOptions> {
+            let dir = pdf_ocr::models_dir(args.ocr_models.as_deref())
+                .with_context(|| format!("--ocr needs --ocr-models or {}", pdf_ocr::MODELS_ENV))?;
+            OcrOptions::new(&dir, pages)
+        })
+        .transpose()?;
+    let report = extract_structured_text_with(
         &pdfium,
         &args.source.input,
         args.source.pages.selection().clone(),
         args.structured_format.to_output_format(),
+        ocr.as_mut(),
     )
     .with_context(|| {
         format!(

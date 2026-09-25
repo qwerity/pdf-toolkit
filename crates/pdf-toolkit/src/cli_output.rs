@@ -205,6 +205,9 @@ fn structured_output_json(report: &StructuredExtractionReport) -> Value {
             let mut page_obj = Map::new();
             page_obj.insert("page".to_string(), json!(page.page));
             page_obj.insert("markdown".to_string(), json!(page.markdown));
+            if page.ocr {
+                page_obj.insert("ocr".to_string(), json!(true));
+            }
 
             if !page.spans.is_empty() {
                 let spans: Vec<Value> = page
@@ -549,11 +552,13 @@ mod tests {
                         glyphs: Vec::new(),
                     }],
                     markdown: "Hello".to_string(),
+                    ocr: false,
                 },
                 StructuredPage {
                     page: 2,
                     spans: Vec::new(),
                     markdown: "World".to_string(),
+                    ocr: false,
                 },
             ],
             selected_page_count: 2,

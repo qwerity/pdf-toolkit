@@ -363,6 +363,10 @@ GeoJSON `building` emits. The shapes are the `model` section of
 ./dist/pdf-toolkit structured input.pdf
 ./dist/pdf-toolkit structured input.pdf --pages 1-3
 ./dist/pdf-toolkit structured input.pdf --structured-format markdown
+
+# Read scanned pages by OCR (offline; fetch the models once)
+./dist/pdf-toolkit ocr-models ~/.cache/pdf-toolkit/ocr
+./dist/pdf-toolkit structured scan.pdf --ocr scans --ocr-models ~/.cache/pdf-toolkit/ocr
 ```
 
 ## CLI Notes
@@ -638,6 +642,7 @@ depended on without it.
 | `pdf-vector` | ties those three together for the `vector` command |
 | `pdf-render` | `PngSize` and rasterising a page to PNG |
 | `pdf-text` | plain and structured text extraction |
+| `pdf-ocr` | local OCR of rendered pages with RapidOCR's ONNX models, and fetching those models |
 | `pdf-inspect` | per-page metadata and the vision-pass routing signals |
 | `pdf-pages` | cutting and concatenation |
 | `pdf-dossier` | the whole-dossier annotation for the `dossier` command |
@@ -650,7 +655,8 @@ Nothing in `pdf-core` depends on another workspace crate. The rest form two
 chains meeting at the CLI:
 
 ```
-core -> {render, text} -> inspect -> pages ----+
+core -> render -> text -> inspect -> pages ----+
+ocr -> text
 geometry -> geo -> classify -> vector ---------+--> toolkit
 {core, render, inspect, vector} -> dossier ----+
 {dossier, vector, llm-providers} -> vlm -------+
@@ -658,7 +664,8 @@ geometry -> downsample ------------------------+
 ```
 
 `llm-providers` depends on no other workspace crate: it is transport, and
-the only crate that opens a network connection.
+with `pdf-ocr`'s one-time model fetch, the only code that opens a network
+connection.
 
 **Two PDF parsers, deliberately.** `pdf-core` binds PDFium, which renders and
 gives a good text layer but will not tell you what path a drawing is made of.

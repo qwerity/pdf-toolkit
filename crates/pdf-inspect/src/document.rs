@@ -1,11 +1,9 @@
 use crate::page_info::{LlmReason, PageInfo};
 use pdf_core::error::{PdfError, Result};
-use pdf_core::page::{open_document, page_count_u16, page_dimensions_px, page_index};
+use pdf_core::page::{image_stats, open_document, page_count_u16, page_dimensions_px, page_index};
 use pdf_core::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
 use pdf_text::page_has_complex_tables;
-use pdfium_render::prelude::{
-    PdfPage, PdfPageObject, PdfPageObjectCommon, PdfPageObjectsCommon, Pdfium,
-};
+use pdfium_render::prelude::{PdfPage, Pdfium};
 use std::num::NonZeroU16;
 use std::path::Path;
 
@@ -65,14 +63,7 @@ pub fn page_info_for_page(page_number: u16, page: &PdfPage<'_>) -> PageInfo {
 /// pdfium extraction of the same layer.
 pub fn page_info_and_text(page_number: u16, page: &PdfPage<'_>) -> (PageInfo, String) {
     let (width_px, height_px) = page_dimensions_px(page, 1.0);
-    let page_area = page.width().value * page.height().value;
-    let (image_count, image_area) = collect_image_stats(page.objects().iter(), true, page_area);
-
-    let image_coverage = if page_area > 0.0 {
-        (image_area / page_area as f64).min(1.0) as f32
-    } else {
-        0.0
-    };
+    let (image_count, image_coverage) = image_stats(page);
 
     let text = page
         .text()
@@ -115,42 +106,6 @@ fn llm_reasons(text: &str, image_count: u32, image_coverage: f32) -> Vec<LlmReas
     }
 
     reasons
-}
-
-/// Recursively count image objects and accumulate their bounding-box area.
-///
-/// `include_bounds` is true for top-level page objects (where bounds are in
-/// page-space) and false for objects inside Form XObjects (whose bounds are in
-/// the form's local coordinate space, making page-space coverage unreliable).
-fn collect_image_stats<'a>(
-    objects: impl IntoIterator<Item = PdfPageObject<'a>>,
-    include_bounds: bool,
-    page_area: f32,
-) -> (u32, f64) {
-    let mut count: u32 = 0;
-    let mut area: f64 = 0.0;
-
-    for object in objects {
-        if object.as_image_object().is_some() {
-            count += 1;
-            if include_bounds && let Ok(bounds) = object.bounds() {
-                let w = (bounds.right().value - bounds.left().value).abs() as f64;
-                let h = (bounds.top().value - bounds.bottom().value).abs() as f64;
-                // Guard against degenerate/huge values (e.g. malformed XObjects).
-                let max_dim = page_area.sqrt() as f64 * 4.0;
-                if w < max_dim && h < max_dim {
-                    area += w * h;
-                }
-            }
-        } else if let Some(form) = object.as_x_object_form_object() {
-            // Recurse into Form XObjects for the count, but skip bounds
-            // (they are in the form's local coordinate space).
-            let (nested_count, _) = collect_image_stats(form.iter(), false, page_area);
-            count += nested_count;
-        }
-    }
-
-    (count, area)
 }
 
 #[cfg(test)]

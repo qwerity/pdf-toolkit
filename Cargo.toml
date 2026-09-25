@@ -40,6 +40,7 @@ pdf-geo = { path = "crates/pdf-geo" }
 pdf-geometry = { path = "crates/pdf-geometry" }
 pdf-inspect = { path = "crates/pdf-inspect" }
 pdf-model = { path = "crates/pdf-model" }
+pdf-ocr = { path = "crates/pdf-ocr" }
 pdf-pages = { path = "crates/pdf-pages" }
 pdf-render = { path = "crates/pdf-render" }
 pdf-text = { path = "crates/pdf-text" }

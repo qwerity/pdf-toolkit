@@ -41,6 +41,7 @@ pdf-toolkit <command> <input.pdf> [options]
 | `cadfix` | *(experimental, networked)* Model-proposed CAD refinement of one page's vector geometry | with `--output` |
 | `building` | *(experimental, networked)* 3D building massing read from the drawings, as extruded GeoJSON | with `--output` |
 | `downsample` | A smaller copy of the PDF: raster images drawn above a resolution are resampled; text, fonts and vector content are carried through byte-identical | yes (`--output`, one PDF) |
+| `ocr-models` | *(networked, once)* Fetch the OCR models into a directory and verify their checksums | yes (the directory) |
 
 ### Options
 
@@ -52,6 +53,8 @@ pdf-toolkit <command> <input.pdf> [options]
 | `--scale`, `-s` | `render` | Scale factor. Default `2.0`. |
 | `--scale-width-px` | `render` | Exact output width in pixels; preserves aspect ratio |
 | `--structured-format` | `structured` | `full` (default) or `markdown` |
+| `--ocr` | `structured` | `off` (default), `scans` or `all`: which pages to read by OCR; see below |
+| `--ocr-models` | `structured` | Directory of the OCR models; defaults to `PDF_TOOLKIT_OCR_MODELS` |
 | `--georeference`, `-g` | `vector` | `local_x,local_y,longitude,latitude`; repeatable |
 | `--parcel` | `vector`, `dossier`, `building` | A GeoJSON file of WGS 84 parcel polygon(s) — the cadastre's statement of the boundary. Matched by shape to sheets that draw the parcel but print no coordinate table; see `georeference.source: "parcel_polygon"` |
 | `--answers` | `dossier`, `building` | Vision-pass answers file (`dossier`: merged; `building`: labels sharpen sheet selection) |
@@ -296,6 +299,7 @@ rather than emitted as plausible-looking nonsense.
 | `pages[].page` | int | One-based, absolute in the document |
 | `pages[].markdown` | string | Visual reading order: bands, columns, `/Rotate`d pages, tables |
 | `pages[].spans` | array | **Absent** with `--structured-format markdown` |
+| `pages[].ocr` | bool | `true` when the page's markdown was read by OCR; absent otherwise |
 | `selected_page_count` | int | Pages in the selection, not in the document |
 
 Coordinates are PDF points with the origin bottom-left.
@@ -305,6 +309,28 @@ two — but they are serialised from 32-bit floats, so the JSON carries the
 representation noise: `9.96` prints as `9.960000038146973` and `44.1` as
 `44.099998474121094`. Compare with a tolerance, or round on your side; do not
 test these for exact equality.
+
+### OCR
+
+`structured` reads text from the PDF's text layer. With `--ocr scans` it
+reads a **scanned page** by OCR instead: a page whose images cover most of it
+and whose own text is missing, invisible (a scanner's hidden OCR layer) or
+garbled. `--ocr all` reads every page by OCR. The page is rendered at up to
+300 dpi (at most 2000 px on its longest side, what the models read at) and
+read by RapidOCR's PP-OCRv5 English networks through ONNX Runtime, in
+process and offline; the rules printed in the scan are found in its pixels,
+so a scanned table is read from its grid like a digital one (merged cells,
+headers, carried values). Only `markdown` comes from OCR — `spans` stay the
+text layer — and such a page carries `"ocr": true`. If OCR fails on a page,
+its text layer is used and the page's `errors` entry says so; a page with no
+readable text layer is then skipped.
+
+The models are fetched once with `pdf-toolkit ocr-models <dir>` (about 14 MB,
+checksummed) and found by `--ocr-models` or `PDF_TOOLKIT_OCR_MODELS`. They are
+loaded on the first page that needs OCR, so a document without scans costs
+nothing extra; without `--ocr` the output is unchanged. OCR uses up to 8
+threads (`PDF_TOOLKIT_OCR_THREADS` overrides it; set it low when running
+several extractions at once). A page takes about 1 s to OCR on 8 threads.
 
 ### What `markdown` contains
 
@@ -384,7 +410,8 @@ person reads it. What it does with each kind of content:
   table cell is rejoined whole (`cul-de-sac`). `spans` leaves it out, as
   before.
 - **Text outside the page box** (the other half of a page cut from a two-page
-  spread) is not in `markdown`; `spans` still carries it.
+  spread) is not in `markdown` on an upright page;
+  `spans` still carries it. A `/Rotate`d page keeps all its text.
 
 Tables drawn inside Form XObjects, and the drawing of pages carrying
 `/Rotate`, are not read; their tables fall back to text alignment.

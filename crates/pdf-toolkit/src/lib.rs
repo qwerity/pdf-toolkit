@@ -40,6 +40,7 @@ pub use pdf_inspect::{DocumentInfo, LlmReason, PageInfo, document_page_count, in
 pub use pdf_pages::{ExtractionReport, OutputFormat, PageResult, extract_pages};
 pub use pdf_render::PngSize;
 pub use pdf_text::{
-    StructuredExtractionReport, StructuredOutputFormat, StructuredPage, TextExtractionReport,
-    TextFileResult, TextSpan, extract_structured_text, extract_text,
+    Ocr, OcrOptions, OcrPages, StructuredExtractionReport, StructuredOutputFormat, StructuredPage,
+    TextExtractionReport, TextFileResult, TextSpan, extract_structured_text,
+    extract_structured_text_with, extract_text,
 };

@@ -14,8 +14,9 @@
 pub mod structured_text_extractor;
 pub mod text_extractor;
 
+pub use pdf_ocr::Ocr;
 pub use structured_text_extractor::{
-    StructuredExtractionReport, StructuredOutputFormat, StructuredPage, TextSpan,
-    extract_structured_text, page_has_complex_tables,
+    OcrOptions, OcrPages, StructuredExtractionReport, StructuredOutputFormat, StructuredPage,
+    TextSpan, extract_structured_text, extract_structured_text_with, page_has_complex_tables,
 };
 pub use text_extractor::{TextExtractionReport, TextFileResult, extract_text};

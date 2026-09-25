@@ -59,8 +59,9 @@ def run_pdftotext(pdf):
     return subprocess.run(['pdftotext', '-q', '-layout', str(pdf), '-'], capture_output=True, text=True, check=True).stdout
 
 
-def run_toolkit(binary, pdf):
-    out = subprocess.run([binary, 'structured', str(pdf), '--structured-format', 'markdown'],
+def run_toolkit(binary, pdf, ocr_models=None):
+    ocr = ['--ocr', 'scans', '--ocr-models', ocr_models] if ocr_models else []
+    out = subprocess.run([binary, 'structured', str(pdf), '--structured-format', 'markdown', *ocr],
                          capture_output=True, text=True, check=True).stdout
     return '\n\n'.join(p['markdown'] for p in json.loads(out)['pages'])
 
@@ -147,7 +148,10 @@ def score_markdown_table(md, spec):
                             header_rows.add(r_i)
                             break
         else:
-            index = {j: j + 1 for j in range(spec['column_count'])}
+            # Values right after the row label, or, with `values_at_end`, the
+            # table's last columns whatever label columns precede them.
+            first = len(table[0]) - spec['column_count'] if spec.get('values_at_end') else 1
+            index = {j: first + j for j in range(spec['column_count'])}
         body = [row for r_i, row in enumerate(table) if r_i not in header_rows]
         correct = 0
         for r in spec['rows']:
@@ -248,8 +252,10 @@ def score(output, ledger, kind):
                       else [[squash(line)] for line in output.splitlines()])
             result['headers'] = (sum(header_named(firsts, t) for t in named), len(named))
     if ledger.get('passages'):
+        # A scan's ledger may excuse a passage OCR cannot read as printed.
+        passages = [p for p in ledger['passages'] if p not in ledger.get('ocr_misses', [])]
         body = squash(text)
-        result['passages'] = (sum(squash(p) in body for p in ledger['passages']), len(ledger['passages']))
+        result['passages'] = (sum(squash(p) in body for p in passages), len(passages))
     if ledger.get('separate'):
         found = units(text)
         result['separate'] = (sum(squash(p) in found for p in ledger['separate']), len(ledger['separate']))
@@ -272,13 +278,16 @@ def main():
     ap.add_argument('--fetch-docling', action='store_true')
     ap.add_argument('--show', help='print every extractor\'s output for one page id')
     ap.add_argument('--json', help='write the scores to this file')
+    ap.add_argument('--pdftotext', action='store_true', help='also grade `pdftotext -layout`')
+    ap.add_argument('--ocr-models', help='run the toolkit with `--ocr scans` and these OCR models '
+                    '(pages whose ledger says `needs_ocr` read their scan)')
     args = ap.parse_args()
 
     ids = sorted(p.stem for p in (DATA / 'expected').glob('*.json'))
-    extractors = [('pdftotext', 'layout', run_pdftotext)]
+    extractors = [('pdftotext', 'layout', run_pdftotext)] if args.pdftotext else []
     for binary in args.toolkit:
         name = f'tk {toolkit_label(binary)} {Path(binary).parent.name}'
-        extractors.append((name, 'markdown', lambda pdf, b=binary: run_toolkit(b, pdf)))
+        extractors.append((name, 'markdown', lambda pdf, b=binary: run_toolkit(b, pdf, args.ocr_models)))
 
     if args.fetch_docling:
         url, token = os.environ.get('DOCLING_SERVICE_URL'), os.environ.get('DOCLING_AUTH_TOKEN')

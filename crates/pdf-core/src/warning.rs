@@ -9,10 +9,27 @@ use std::fmt;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum ExtractionWarning {
-    PageOutOfBounds { page_number: u16, total_pages: u16 },
-    LoadPage { page_number: u16, reason: String },
-    UnreadableText { page_number: u16 },
-    SavePage { page_number: u16, reason: String },
+    PageOutOfBounds {
+        page_number: u16,
+        total_pages: u16,
+    },
+    LoadPage {
+        page_number: u16,
+        reason: String,
+    },
+    UnreadableText {
+        page_number: u16,
+    },
+    SavePage {
+        page_number: u16,
+        reason: String,
+    },
+    /// OCR was asked for and failed; the page's text layer was used, or the
+    /// page skipped when it had none worth reading.
+    OcrFailed {
+        page_number: u16,
+        reason: String,
+    },
 }
 
 impl ExtractionWarning {
@@ -23,7 +40,8 @@ impl ExtractionWarning {
             Self::PageOutOfBounds { page_number, .. }
             | Self::LoadPage { page_number, .. }
             | Self::UnreadableText { page_number }
-            | Self::SavePage { page_number, .. } => *page_number,
+            | Self::SavePage { page_number, .. }
+            | Self::OcrFailed { page_number, .. } => *page_number,
         }
     }
 }
@@ -52,6 +70,10 @@ impl fmt::Display for ExtractionWarning {
                 page_number,
                 reason,
             } => write!(f, "could not save page {page_number}: {reason}. Skipping."),
+            Self::OcrFailed {
+                page_number,
+                reason,
+            } => write!(f, "OCR failed on page {page_number}: {reason}."),
         }
     }
 }
@@ -75,6 +97,10 @@ mod tests {
             ExtractionWarning::SavePage {
                 page_number: 7,
                 reason: "disk full".into(),
+            },
+            ExtractionWarning::OcrFailed {
+                page_number: 7,
+                reason: "model missing".into(),
             },
         ];
 

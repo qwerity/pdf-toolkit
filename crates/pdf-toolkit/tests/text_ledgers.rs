@@ -11,7 +11,9 @@
 mod common;
 
 use common::{data_dir, pdfium};
-use pdf_toolkit::{PageSelection, StructuredOutputFormat, extract_structured_text};
+use pdf_toolkit::{
+    OcrOptions, OcrPages, PageSelection, StructuredOutputFormat, extract_structured_text_with,
+};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -140,7 +142,14 @@ fn score_table(md: &str, spec: &Value) -> (usize, usize) {
             }
             None => {
                 let n = spec["column_count"].as_u64().expect("column_count") as usize;
-                (0..n).map(|j| Some(j + 1)).collect()
+                // Values right after the row label, or, with `values_at_end`,
+                // the table's last columns whatever label columns precede them.
+                let first = if spec["values_at_end"].as_bool() == Some(true) {
+                    table[0].len().saturating_sub(n)
+                } else {
+                    1
+                };
+                (0..n).map(|j| Some(first + j)).collect()
             }
         };
         let body: Vec<&Vec<String>> = table
@@ -245,6 +254,13 @@ fn grade(md: &str, ledger: &Value) -> Vec<String> {
         report("separate", (ok, separate.len()));
     }
     if let Some(passages) = ledger["passages"].as_array() {
+        // A scan's ledger may excuse a passage OCR cannot read as printed,
+        // naming it, so any other passage lost still fails.
+        let excused: Vec<&Value> = ledger["ocr_misses"]
+            .as_array()
+            .map(|a| a.iter().collect())
+            .unwrap_or_default();
+        let passages: Vec<&Value> = passages.iter().filter(|p| !excused.contains(p)).collect();
         let body = squash(&plain(md));
         let found = passages
             .iter()
@@ -293,16 +309,34 @@ fn structured_markdown_reads_every_ledger_fact() {
     }
 
     let pdfium = pdfium();
+    // A scanned page (`needs_ocr`) is graded read by OCR, which needs the
+    // models; without them it is skipped, not failed.
+    let mut scans = pdf_ocr::models_dir(None)
+        .map(|dir| OcrOptions::new(&dir, OcrPages::Scans).expect("OCR models present"));
     let mut failures = Vec::new();
     for (ledger_path, pdf) in ledgers.iter().zip(&pdfs) {
         let ledger: Value =
             serde_json::from_str(&std::fs::read_to_string(ledger_path).expect("read ledger"))
                 .expect("ledger parses");
-        let report = extract_structured_text(
+        let ocr = if ledger["needs_ocr"].as_bool() == Some(true) {
+            if scans.is_none() {
+                eprintln!(
+                    "skipping {}: it is a scan, and {} is not set",
+                    pdf.display(),
+                    pdf_ocr::MODELS_ENV
+                );
+                continue;
+            }
+            scans.as_mut()
+        } else {
+            None
+        };
+        let report = extract_structured_text_with(
             &pdfium,
             pdf,
             PageSelection::parse("all").expect("selection"),
             StructuredOutputFormat::MarkdownOnly,
+            ocr,
         )
         .expect("structured extraction");
         let md: String = report

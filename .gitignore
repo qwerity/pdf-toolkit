@@ -4,6 +4,7 @@
 /dist
 /out/
 
+__pycache__
 .DS_Store
 *.png
 /artifacts

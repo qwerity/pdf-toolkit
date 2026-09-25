@@ -11,7 +11,10 @@
 use std::num::NonZeroU16;
 use std::path::Path;
 
-use pdfium_render::prelude::{PdfDocument, PdfPage, PdfPages, Pdfium};
+use pdfium_render::prelude::{
+    PdfDocument, PdfPage, PdfPageObject, PdfPageObjectCommon, PdfPageObjectsCommon, PdfPages,
+    Pdfium,
+};
 
 use crate::error::{PdfError, Result};
 
@@ -56,6 +59,57 @@ pub fn page_dimensions_px(page: &PdfPage<'_>, scale: f32) -> (u32, u32) {
 
 fn scale_points_to_pixels(points: f32, scale: f32) -> u32 {
     (points * scale).round() as u32
+}
+
+/// The page's images: how many there are (inside Form XObjects too), and the
+/// share of the page they cover, 0 to 1. Shared by page inspection's routing
+/// and by structured extraction's test for a scanned page, so both judge a
+/// page by one measure.
+pub fn image_stats(page: &PdfPage<'_>) -> (u32, f32) {
+    let page_area = page.width().value * page.height().value;
+    let (count, area) = collect_image_stats(page.objects().iter(), true, page_area);
+    let coverage = if page_area > 0.0 {
+        (area / page_area as f64).min(1.0) as f32
+    } else {
+        0.0
+    };
+    (count, coverage)
+}
+
+/// Recursively count image objects and accumulate their bounding-box area.
+///
+/// `include_bounds` is true for top-level page objects (where bounds are in
+/// page-space) and false for objects inside Form XObjects (whose bounds are in
+/// the form's local coordinate space, making page-space coverage unreliable).
+fn collect_image_stats<'a>(
+    objects: impl IntoIterator<Item = PdfPageObject<'a>>,
+    include_bounds: bool,
+    page_area: f32,
+) -> (u32, f64) {
+    let mut count: u32 = 0;
+    let mut area: f64 = 0.0;
+
+    for object in objects {
+        if object.as_image_object().is_some() {
+            count += 1;
+            if include_bounds && let Ok(bounds) = object.bounds() {
+                let w = (bounds.right().value - bounds.left().value).abs() as f64;
+                let h = (bounds.top().value - bounds.bottom().value).abs() as f64;
+                // Guard against degenerate/huge values (e.g. malformed XObjects).
+                let max_dim = page_area.sqrt() as f64 * 4.0;
+                if w < max_dim && h < max_dim {
+                    area += w * h;
+                }
+            }
+        } else if let Some(form) = object.as_x_object_form_object() {
+            // Recurse into Form XObjects for the count, but skip bounds
+            // (they are in the form's local coordinate space).
+            let (nested_count, _) = collect_image_stats(form.iter(), false, page_area);
+            count += nested_count;
+        }
+    }
+
+    (count, area)
 }
 
 #[cfg(test)]

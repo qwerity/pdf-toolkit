@@ -6,7 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+image.workspace = true
 pdf-armscii.workspace = true
 pdf-core.workspace = true
+pdf-ocr.workspace = true
+pdf-render.workspace = true
 pdfium-render.workspace = true
 serde.workspace = true

@@ -8,6 +8,7 @@ Usage: ./build.sh [macos|mac|linux|windows] [--with-artifacts]
 Builds a runtime bundle in ./dist that contains only:
 - the pdf-toolkit executable
 - the matching PDFium native library
+- the OCR models, in ocr-models/ (fetched once, checksummed)
 
 Pass --with-artifacts to also write release archives and SHA-256 checksum files to ./artifacts.
 
@@ -22,6 +23,8 @@ EOF
 # name comes from the binary crate and the version from [workspace.package],
 # which is where every crate inherits it from.
 readonly BINARY_CRATE="pdf-toolkit"
+# Found beside the executable by the binary.
+readonly OCR_MODELS_DIR="ocr-models"
 
 read_cargo_value() {
     local key="$1"
@@ -230,6 +233,7 @@ prune_runtime_bundle() {
     find "${dir}" -mindepth 1 -maxdepth 1 \
         ! -name "${binary_name}" \
         ! -name "${library_name}" \
+        ! -name "${OCR_MODELS_DIR}" \
         -exec rm -rf {} +
 }
 
@@ -329,8 +333,13 @@ main() {
     echo "4. Copying binary..."
     cp "target/release/${binary_name}" "${dist_dir}/${binary_name}"
 
+    # Fetches only the files missing from dist/ and verifies every checksum,
+    # so a rebuild reuses the models already there.
+    echo "5. Fetching OCR models..."
+    "${dist_dir}/${binary_name}" ocr-models "${dist_dir}/${OCR_MODELS_DIR}" >/dev/null
+
     if [[ "${create_artifacts}" == "1" ]]; then
-        echo "5. Creating release artifacts..."
+        echo "6. Creating release artifacts..."
         clear_dir "${artifacts_dir}"
         ensure_temp_dir
         package_root="${TEMP_DIR}/package"
@@ -339,6 +348,7 @@ main() {
         mkdir -p "${package_dir}"
         cp "${dist_dir}/${binary_name}" "${package_dir}/${binary_name}"
         cp "${dist_library_path}" "${package_dir}/${library_name}"
+        cp -R "${dist_dir}/${OCR_MODELS_DIR}" "${package_dir}/${OCR_MODELS_DIR}"
         # The reference ships beside the binary. Consumers fetch this archive
         # and unpack it into their own tools/ directory, where the JSON contract
         # is the thing they actually need and cannot otherwise see.

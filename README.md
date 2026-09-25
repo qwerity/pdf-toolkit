@@ -21,6 +21,7 @@ wiring this into a service; the examples below are a tour, not a reference.
 
 - `pdf-toolkit`
 - the matching native PDFium library
+- `ocr-models/`, the OCR models (about 14 MB, fetched once and checksummed)
 
 Basic build:
 
@@ -364,7 +365,11 @@ GeoJSON `building` emits. The shapes are the `model` section of
 ./dist/pdf-toolkit structured input.pdf --pages 1-3
 ./dist/pdf-toolkit structured input.pdf --structured-format markdown
 
-# Read scanned pages by OCR (offline; fetch the models once)
+# Read scanned pages by OCR (offline; the bundle ships the models in
+# dist/ocr-models, found beside the binary)
+./dist/pdf-toolkit structured scan.pdf --ocr scans
+
+# Elsewhere, fetch the models once and name them
 ./dist/pdf-toolkit ocr-models ~/.cache/pdf-toolkit/ocr
 ./dist/pdf-toolkit structured scan.pdf --ocr scans --ocr-models ~/.cache/pdf-toolkit/ocr
 ```

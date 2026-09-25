@@ -159,8 +159,13 @@ fn structured(args: &StructuredArgs) -> Result<()> {
         .ocr
         .pages()
         .map(|pages| -> Result<OcrOptions> {
-            let dir = pdf_ocr::models_dir(args.ocr_models.as_deref())
-                .with_context(|| format!("--ocr needs --ocr-models or {}", pdf_ocr::MODELS_ENV))?;
+            let dir = pdf_ocr::models_dir(args.ocr_models.as_deref()).with_context(|| {
+                format!(
+                    "--ocr needs --ocr-models, {}, or {} beside the executable",
+                    pdf_ocr::MODELS_ENV,
+                    pdf_ocr::BUNDLED_DIR
+                )
+            })?;
             OcrOptions::new(&dir, pages)
         })
         .transpose()?;

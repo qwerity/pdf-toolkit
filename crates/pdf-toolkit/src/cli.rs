@@ -169,7 +169,8 @@ pub struct StructuredArgs {
     pub ocr: OcrArg,
 
     /// Directory of the OCR models (fetched by `ocr-models`). Defaults to
-    /// `PDF_TOOLKIT_OCR_MODELS`.
+    /// `PDF_TOOLKIT_OCR_MODELS`, then the `ocr-models` directory a release
+    /// bundle ships beside the executable.
     #[arg(long = "ocr-models")]
     pub ocr_models: Option<PathBuf>,
 }

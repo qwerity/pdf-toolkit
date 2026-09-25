@@ -54,7 +54,7 @@ pdf-toolkit <command> <input.pdf> [options]
 | `--scale-width-px` | `render` | Exact output width in pixels; preserves aspect ratio |
 | `--structured-format` | `structured` | `full` (default) or `markdown` |
 | `--ocr` | `structured` | `off` (default), `scans` or `all`: which pages to read by OCR; see below |
-| `--ocr-models` | `structured` | Directory of the OCR models; defaults to `PDF_TOOLKIT_OCR_MODELS` |
+| `--ocr-models` | `structured` | Directory of the OCR models; defaults to `PDF_TOOLKIT_OCR_MODELS`, then `ocr-models/` beside the executable |
 | `--georeference`, `-g` | `vector` | `local_x,local_y,longitude,latitude`; repeatable |
 | `--parcel` | `vector`, `dossier`, `building` | A GeoJSON file of WGS 84 parcel polygon(s) — the cadastre's statement of the boundary. Matched by shape to sheets that draw the parcel but print no coordinate table; see `georeference.source: "parcel_polygon"` |
 | `--answers` | `dossier`, `building` | Vision-pass answers file (`dossier`: merged; `building`: labels sharpen sheet selection) |
@@ -325,8 +325,10 @@ text layer — and such a page carries `"ocr": true`. If OCR fails on a page,
 its text layer is used and the page's `errors` entry says so; a page with no
 readable text layer is then skipped.
 
-The models are fetched once with `pdf-toolkit ocr-models <dir>` (about 14 MB,
-checksummed) and found by `--ocr-models` or `PDF_TOOLKIT_OCR_MODELS`. They are
+A release bundle ships the models in `ocr-models/` beside the executable,
+where they are found the way PDFium is. Elsewhere they are fetched once with
+`pdf-toolkit ocr-models <dir>` (about 14 MB, checksummed) and named by
+`--ocr-models` or `PDF_TOOLKIT_OCR_MODELS`, which take precedence. They are
 loaded on the first page that needs OCR, so a document without scans costs
 nothing extra; without `--ocr` the output is unchanged. OCR uses up to 8
 threads (`PDF_TOOLKIT_OCR_THREADS` overrides it; set it low when running

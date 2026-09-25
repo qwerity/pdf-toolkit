@@ -2,9 +2,9 @@
 
 The toolkit still runs every existing CLI command directly. The optional
 `serve` mode adds HTTP access to the same commands and successful JSON results.
-Ship `pdf-toolkit` and the matching PDFium library together, as produced by
-`./build.sh`. No external queue, database, or Node.js runtime is needed by the
-service itself. PM2 is optional.
+Ship `pdf-toolkit`, the matching PDFium library and `ocr-models/` together,
+as produced by `./build.sh`. No external queue, database, or Node.js runtime
+is needed by the service itself. PM2 is optional.
 
 ## Start and configure
 

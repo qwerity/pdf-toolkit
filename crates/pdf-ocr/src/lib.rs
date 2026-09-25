@@ -25,6 +25,10 @@ pub const MODEL_SET: &str = "ppocrv5-en-mobile";
 /// Environment variable naming the models directory when no path is given.
 pub const MODELS_ENV: &str = "PDF_TOOLKIT_OCR_MODELS";
 
+/// Directory beside the executable a release bundle ships the models in,
+/// found the way PDFium is found beside it.
+pub const BUNDLED_DIR: &str = "ocr-models";
+
 /// Environment variable setting how many threads OCR uses.
 pub const THREADS_ENV: &str = "PDF_TOOLKIT_OCR_THREADS";
 
@@ -116,13 +120,21 @@ impl Ocr {
 }
 
 /// The models directory: `explicit` when given, else [`MODELS_ENV`] when
-/// set and not empty.
+/// set and not empty, else [`BUNDLED_DIR`] beside the executable.
 pub fn models_dir(explicit: Option<&Path>) -> Option<PathBuf> {
-    explicit.map(Path::to_path_buf).or_else(|| {
-        std::env::var_os(MODELS_ENV)
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    })
+    explicit
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            std::env::var_os(MODELS_ENV)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        })
+        .or_else(bundled_dir)
+}
+
+fn bundled_dir() -> Option<PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.join(BUNDLED_DIR);
+    dir.is_dir().then_some(dir)
 }
 
 /// Checks that `models` holds every file of [`MODEL_SET`], without loading

@@ -1024,6 +1024,7 @@ pub(super) struct RenderedTable {
 /// break goes on under the same header, and a merged cell the break cuts
 /// holds its value on both sides of it (the LA summary's "Unlimited (9)" for
 /// R4 on one page and RAS4 and R5 on the next).
+#[derive(Clone)]
 pub(super) struct TableTail {
     header: Vec<String>,
     /// Each column's value in the last row, with the columns of the merged

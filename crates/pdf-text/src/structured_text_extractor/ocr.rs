@@ -111,6 +111,55 @@ pub(super) fn ocr_markdown(
     ))
 }
 
+/// Words a text layer must read before it can win over OCR at all.
+const MIN_LAYER_WORDS: usize = 20;
+
+/// Share of OCR's words a text layer must hold too, so a layer covering only
+/// a corner of the page does not win on the quality of that corner.
+const MIN_LAYER_WORD_SHARE: f32 = 0.8;
+
+/// Longest run of letters that is still one word: longer is words run
+/// together ("Supportingcommunity"), as OCR reads a tight italic.
+const MAX_WORD_LETTERS: usize = 12;
+
+/// Whether a page's text layer reads better than OCR's reading of it: at
+/// least as large a share of its tokens are words, and nearly as many words.
+/// A scanner's hidden OCR can be good (the Juneau parks plan's, whose italics
+/// the engine runs together; a Tucson brochure laid sideways, which the
+/// engine reads letter by letter) or garbage (the Lafayette arterial plan's,
+/// scattering letters and swapping digits); the words tell them apart.
+pub(super) fn reads_better(text_layer: &str, ocr: &str) -> bool {
+    let (layer_words, layer_tokens) = word_counts(text_layer);
+    let (ocr_words, ocr_tokens) = word_counts(ocr);
+    layer_words >= MIN_LAYER_WORDS
+        && layer_words as f32 >= ocr_words as f32 * MIN_LAYER_WORD_SHARE
+        && layer_words * ocr_tokens >= ocr_words * layer_tokens
+}
+
+/// Words and tokens in a page's markdown, markup aside. A word is 3 to
+/// [`MAX_WORD_LETTERS`] letters; a Latin one also carries a vowel, which
+/// letters from a broken font or a misread line mostly do not. Single
+/// letters, fragments and symbols are tokens that are not words.
+fn word_counts(markdown: &str) -> (usize, usize) {
+    let mut words = 0;
+    let mut tokens = 0;
+    for token in markdown.split(|c: char| c.is_whitespace() || matches!(c, '|' | '*' | '#' | '\\'))
+    {
+        let token = token.trim_matches(|c: char| c.is_ascii_punctuation());
+        if token.is_empty() {
+            continue;
+        }
+        tokens += 1;
+        let letters = token.chars().count();
+        let latin = token.chars().all(|c| c.is_ascii_alphabetic());
+        let word = (3..=MAX_WORD_LETTERS).contains(&letters)
+            && token.chars().all(char::is_alphabetic)
+            && (!latin || token.chars().any(|c| "aeiouyAEIOUY".contains(c)));
+        words += usize::from(word);
+    }
+    (words, tokens)
+}
+
 /// An OCR line as characters: its box in page points, y growing upward, the
 /// type size read from the box height, and its characters spread evenly
 /// across the box (OCR places lines, not glyphs).
@@ -248,6 +297,30 @@ mod tests {
             (50.0, 767.0, 20.0)
         );
         assert!(chars[2].space_before && !chars[1].space_before);
+    }
+
+    #[test]
+    fn a_clean_text_layer_reads_better_than_words_run_together() {
+        let layer = "Continue working with community partners to provide accessible facilities \
+                     and adaptive programming for seniors and residents with disabilities while \
+                     managing demands for facility time fairly";
+        let ocr = "Continueworking with communitypartners to provide accessible facilities \
+                   and adaptiveprogramming for seniorsandresidents withdisabilities while \
+                   managingdemands for facilitytime fairly";
+        assert!(reads_better(layer, ocr));
+        assert!(!reads_better(ocr, layer));
+    }
+
+    #[test]
+    fn a_scattered_text_layer_loses_to_ocr() {
+        let layer = "Arterial Master Plan C;t, of Lafayette south leg SH 287lPublic Road e | l | i \
+                     | m | i | n | a | t | e | d t or the f — he exclusive pedestrian phase \
+                     could be SH 287/SH 42 split phasing";
+        let ocr = "Arterial Master Plan City of Lafayette SH 287/Public Road The sidewalk across \
+                   the south leg was moved to the north leg so that the exclusive pedestrian \
+                   phase could be eliminated SH 287/SH 42 The split phasing for the eastbound \
+                   and westbound movements was eliminated";
+        assert!(!reads_better(layer, ocr));
     }
 
     #[test]

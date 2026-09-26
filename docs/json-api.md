@@ -321,7 +321,11 @@ read by RapidOCR's PP-OCRv5 English networks through ONNX Runtime, in
 process and offline; the rules printed in the scan are found in its pixels,
 so a scanned table is read from its grid like a digital one (merged cells,
 headers, carried values). Only `markdown` comes from OCR — `spans` stay the
-text layer — and such a page carries `"ocr": true`. If OCR fails on a page,
+text layer — and such a page carries `"ocr": true`. A scan that carries a
+scanner's hidden OCR layer is read both ways and keeps whichever reading is
+more words than fragments: a clean hidden layer (text laid sideways on the
+page, italics the engine runs together) is kept and the page is not marked
+`ocr`; a garbled one gives way to OCR. `--ocr all` always uses OCR. If OCR fails on a page,
 its text layer is used and the page's `errors` entry says so; a page with no
 readable text layer is then skipped.
 
@@ -396,7 +400,18 @@ person reads it. What it does with each kind of content:
   sentences thick with zone codes ("for R1, RA, RE and RS properties in
   Height Districts 2, 3 and 4").
 - **Page columns** are read one after another, including columns that share
-  baselines and a heading printed to the left of the text it heads.
+  baselines and a heading printed to the left of the text it heads. A column
+  of labels down the left of the text (DESCRIPTION & CONTEXT, BUILDING
+  TYPES, SITE DESIGN) is read row by row: each label, then the paragraph
+  beside it.
+- **The page's frame** is the one its text is upright in: its `/Rotate`, or
+  the page's own frame where `/Rotate` stands text that runs along the page
+  on end (a landscape brochure bound into a portrait document). A character
+  box a font declares several times its type size is placed by its baseline,
+  so a paragraph's first line is not read into the heading above it.
+- **Notes typed onto the page** (free-text annotations, such as a cover's
+  "Adopted as Regulation, October 12, 2009") are read where they sit. They
+  are not in `spans`, which are the text layer.
 - **Lists** keep their markers as printed: `1.`, `a.`, `(2)`, `iv.` stay in
   the text, since in an ordinance the marker is the provision's address.
   Nested items are indented two spaces per level; bullets are written `- `.
@@ -406,17 +421,25 @@ person reads it. What it does with each kind of content:
   edge (a closing bracket after the full stop included): definitions or notes
   printed one per line stay one per line.
 - **Headings.** A numbered line set larger than the body (`702. Use Table`)
-  is a heading, not a list item, and starts a heading of its own. Legend
-  markers in brackets (`[1]`, `[2]`) are enumerators.
-- **A hyphen that ends a line** is kept: a word broken across lines inside a
-  table cell is rejoined whole (`cul-de-sac`). `spans` leaves it out, as
-  before.
+  is a heading, not a list item, and starts a heading of its own, as does a
+  line opening with a section label (`SEC. 520`, `Article IV`, `§ 36-520`)
+  under another heading line. A label printed alone (`Appendix C`) is a
+  heading line of its own over the title below it. Legend markers in brackets
+  (`[1]`, `[2]`) are enumerators.
+- **A hyphen that ends a line** is kept: a word broken across lines is
+  rejoined with its hyphen, in a table cell (`cul-de-sac`) and in a paragraph
+  (`single-family`, not `singlefamily`). A typesetter's break reads `exam-ple`
+  then, since nothing tells it from a compound; no letter is lost. `spans`
+  leaves the hyphen out, as before.
 - **Text outside the page box** (the other half of a page cut from a two-page
   spread) is not in `markdown` on an upright page;
-  `spans` still carries it. A `/Rotate`d page keeps all its text.
+  `spans` still carries it. A page read turned keeps all its text.
+- **A page judged unreadable** (text from a broken font map) is skipped as
+  before, but codes, times and capitals that still spell out real words (a
+  code's supplement page list, a bus timetable) are readable.
 
-Tables drawn inside Form XObjects, and the drawing of pages carrying
-`/Rotate`, are not read; their tables fall back to text alignment.
+Tables drawn inside Form XObjects, and the drawing of a page read turned,
+are not read; their tables fall back to text alignment.
 
 ---
 

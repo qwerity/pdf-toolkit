@@ -180,6 +180,34 @@ pub fn write_simple_pdf(pdfium: &Pdfium, path: &Path, page_count: usize) {
     write_pdf(pdfium, path, &pages);
 }
 
+/// Writes a one-page fixture with body text and a free-text note typed onto
+/// the page in the box `(left, bottom, right, top)`, as a cover stamped
+/// "Adopted as Regulation" after it was made.
+pub fn write_pdf_with_note(
+    pdfium: &Pdfium,
+    path: &Path,
+    texts: Vec<Text>,
+    note: &str,
+    (left, bottom, right, top): (f32, f32, f32, f32),
+) {
+    write_pdf(pdfium, path, &[texts]);
+    let mut document = pdfium
+        .load_pdf_from_file(path, None)
+        .expect("reopen fixture");
+    {
+        let mut page = document.pages_mut().get(0).expect("first page");
+        let mut annotation = page
+            .annotations_mut()
+            .create_free_text_annotation(note)
+            .expect("add note");
+        annotation
+            .set_bounds(PdfRect::new_from_values(bottom, left, top, right))
+            .expect("place note");
+    }
+    let bytes = document.save_to_bytes().expect("save fixture PDF");
+    std::fs::write(path, bytes).expect("write fixture PDF");
+}
+
 /// One unit of text that defeats the readability heuristic: vowel-less
 /// uppercase words with heavy digit/symbol noise.
 pub const GARBLED_UNIT: &str = "X9#Z 7Q$W 3K%T ";

@@ -4,7 +4,8 @@ use pdf_core::page_selection::PageSelection;
 use pdf_core::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
 use pdf_core::warning::ExtractionWarning;
 use pdfium_render::prelude::{
-    PdfFontWeight, PdfPage, PdfPageRenderRotation, PdfPageText, PdfPages, Pdfium,
+    PdfFontWeight, PdfPage, PdfPageAnnotationCommon, PdfPageAnnotationType, PdfPageRenderRotation,
+    PdfPageText, PdfPages, Pdfium,
 };
 use serde::Serialize;
 use std::num::NonZeroU16;
@@ -30,6 +31,16 @@ const SPAN_SPACE_GAP_FACTOR: f32 = 0.15;
 
 /// Characters with font properties within these tolerances are merged into one span.
 const FONT_SIZE_TOLERANCE: f32 = 0.3;
+
+/// A character box taller than this many times its type size comes from a
+/// font whose ascent or descent is wrong; its position is read from the
+/// baseline instead (see [`plausible_box`]).
+const MAX_BOX_TO_SIZE: f32 = 2.5;
+
+/// Ascent and descent, as fractions of the type size, of the box a character
+/// is given when its font's own box is implausible: a typical text face's.
+const TYPICAL_ASCENT: f32 = 0.9;
+const TYPICAL_DESCENT: f32 = 0.25;
 
 /// Horizontal gap (× font size) beyond which we start a new span on the same line.
 /// A table's column gap can be narrower than two ems: at 1.8 the AIM Norman
@@ -370,16 +381,24 @@ fn extract_page_structured(
         });
     }
 
-    let mut raw_chars = extract_raw_chars(&page, &text);
+    let rotation = reading_rotation(&page, &text);
+    let mut raw_chars = extract_raw_chars(&page, &text, rotation);
     repair_legacy_armenian(&mut raw_chars);
     let output_spans = match format {
         StructuredOutputFormat::Full => legacy_spans(&raw_chars),
         StructuredOutputFormat::MarkdownOnly => Vec::new(),
     };
+    // `spans` stay the text layer; the markdown reads what the page shows.
+    raw_chars.extend(note_chars(&page, rotation));
+    // Only a scan found on its own is weighed against its text layer; a
+    // caller asking for every page by OCR gets OCR.
+    let weigh_text_layer =
+        reader.as_ref().is_some_and(|o| o.pages == OcrPages::Scans) && !unreadable;
+    let mut ocr_carry = carry.clone();
     let read = reader
         .map(|o| {
             o.engine()
-                .and_then(|engine| ocr::ocr_markdown(&page, engine, carry))
+                .and_then(|engine| ocr::ocr_markdown(&page, engine, &mut ocr_carry))
         })
         .transpose()
         .map_err(|error| ExtractionWarning::OcrFailed {
@@ -388,9 +407,31 @@ fn extract_page_structured(
         });
     // A failed OCR falls back to the text layer, unless there is none to read.
     let (markdown, by_ocr, warning) = match read {
-        Ok(Some(markdown)) => (markdown, true, None),
+        Ok(Some(ocr_markdown)) => {
+            // A scanner's own hidden OCR is sometimes the better reading of
+            // the two: of text laid sideways on the page, or set in italics
+            // the engine runs together. Whichever reads more like words wins.
+            let mut text_carry = carry.clone();
+            let text_markdown = weigh_text_layer
+                .then(|| page_markdown(&page, raw_chars, rotation, &mut text_carry))
+                .filter(|text| ocr::reads_better(text, &ocr_markdown));
+            match text_markdown {
+                Some(text) => {
+                    *carry = text_carry;
+                    (text, false, None)
+                }
+                None => {
+                    *carry = ocr_carry;
+                    (ocr_markdown, true, None)
+                }
+            }
+        }
         Err(failed) if unreadable => return Err(failed),
-        other => (page_markdown(&page, raw_chars, carry), false, other.err()),
+        other => (
+            page_markdown(&page, raw_chars, rotation, carry),
+            false,
+            other.err(),
+        ),
     };
 
     Ok((
@@ -422,19 +463,34 @@ const REGION_CLOSE: char = '\u{E001}';
 fn page_markdown(
     page: &PdfPage<'_>,
     chars: Vec<RawChar>,
+    rotation: PdfPageRenderRotation,
     carry: &mut Option<regions::TableTail>,
 ) -> String {
     // A glyph off the page is not printed: a page cut from a two-page spread
     // still carries the other page's text, placed beside it. Dropped here, not
     // at extraction, so `spans` and the routing flag read what they always did.
-    // Only on an upright page: a `/Rotate`d page's glyphs are placed by
-    // `rotate_to_visual`, whose frame is not the page box, and are all kept.
-    let page_box = matches!(
+    // Only on an upright page: a turned page's glyphs are placed by
+    // `rotate_to_visual`, whose frame is not the page box, and are all kept;
+    // its drawing is in the page's frame, so it is not read either.
+    let upright = matches!(rotation, PdfPageRenderRotation::None);
+    // pdfium gives the page's size as displayed; a `/Rotate`d page read in
+    // its own frame is the other way round.
+    let (width, height) = (page.width().value, page.height().value);
+    let turned = matches!(
         page.rotation().unwrap_or(PdfPageRenderRotation::None),
-        PdfPageRenderRotation::None
-    )
-    .then(|| (page.width().value, page.height().value));
-    page_markdown_drawn(page, chars, page_box, &graphics::collect(page), carry)
+        PdfPageRenderRotation::Degrees90 | PdfPageRenderRotation::Degrees270
+    );
+    let page_box = upright.then_some(if turned {
+        (height, width)
+    } else {
+        (width, height)
+    });
+    let drawing = if upright {
+        graphics::collect(page)
+    } else {
+        graphics::PageGraphics::default()
+    };
+    page_markdown_drawn(page, chars, page_box, &drawing, carry)
 }
 
 /// [`page_markdown`] over a given drawing: the page's own vector drawing, or
@@ -560,8 +616,132 @@ fn repair_legacy_armenian(chars: &mut [RawChar]) {
     }
 }
 
-fn extract_raw_chars(page: &PdfPage<'_>, text: &PdfPageText<'_>) -> Vec<RawChar> {
+/// Share of a page's characters that must be drawn at one quarter turn for
+/// the page to be read in that turn's frame.
+const UPRIGHT_FRAME_SHARE: f32 = 0.6;
+
+/// Characters a page needs before their angles can choose its frame.
+const MIN_FRAME_CHARS: usize = 20;
+
+/// The turn that sets a page's text upright. Usually its `/Rotate`: a
+/// drawing sheet stored landscape and turned for display has its text drawn
+/// a quarter turn round, and `/Rotate` sets it straight. But `/Rotate` can
+/// disagree with the text: Tucson's Saguaro Trails PAD p.414 is a landscape
+/// brochure whose text runs along the page while `/Rotate` stands it on end,
+/// so read as displayed it is one letter per line. The frame most of the
+/// page's characters are upright in is the one it is read in.
+fn reading_rotation(page: &PdfPage<'_>, text: &PdfPageText<'_>) -> PdfPageRenderRotation {
     let rotation = page.rotation().unwrap_or(PdfPageRenderRotation::None);
+    let mut turns = [0usize; 4];
+    for c in text.chars().iter() {
+        if !c
+            .unicode_char()
+            .is_some_and(|ch| !ch.is_whitespace() && !ch.is_control())
+        {
+            continue;
+        }
+        let angle = c.angle_degrees().unwrap_or(0.0).rem_euclid(360.0);
+        let turn = ((angle + 45.0) / 90.0) as usize % 4;
+        // Only a character close to a quarter turn votes.
+        let off = (angle - turn as f32 * 90.0).abs();
+        if off.min(360.0 - off) < 30.0 {
+            turns[turn] += 1;
+        }
+    }
+    let total: usize = turns.iter().sum();
+    let Some((turn, &count)) = turns.iter().enumerate().max_by_key(|&(_, &n)| n) else {
+        return rotation;
+    };
+    if total < MIN_FRAME_CHARS || (count as f32) < total as f32 * UPRIGHT_FRAME_SHARE {
+        return rotation;
+    }
+    // pdfium measures a character's angle counterclockwise and `/Rotate`
+    // turns clockwise: text drawn at 270° stands upright under `/Rotate 90`.
+    match turn {
+        1 => PdfPageRenderRotation::Degrees270,
+        2 => PdfPageRenderRotation::Degrees180,
+        3 => PdfPageRenderRotation::Degrees90,
+        _ => PdfPageRenderRotation::None,
+    }
+}
+
+/// Share of a note's box height one line of its text is taken to fill.
+const NOTE_TYPE_HEIGHT: f32 = 0.8;
+
+/// Largest type size a note's text is given when its box is tall.
+const NOTE_MAX_TYPE_SIZE: f32 = 12.0;
+
+/// The text of the page's free-text notes, as characters laid in each note's
+/// box. A note typed onto a page after it was made ("Adopted as Regulation,
+/// October 12, 2009" on the cover of Juneau's historic district standards)
+/// is printed on the page but is no part of its text layer, so it is read
+/// from the annotation: each line of its contents across the box, top down.
+fn note_chars(page: &PdfPage<'_>, rotation: PdfPageRenderRotation) -> Vec<RawChar> {
+    let (page_width, page_height) = (page.width().value, page.height().value);
+    let font_name: Rc<str> = Rc::from("");
+    let mut chars = Vec::new();
+    for note in page.annotations().iter() {
+        if note.annotation_type() != PdfPageAnnotationType::FreeText || note.is_hidden() {
+            continue;
+        }
+        let (Some(contents), Ok(bounds)) = (note.contents(), note.bounds()) else {
+            continue;
+        };
+        let lines: Vec<&str> = contents
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        let (left, right) = (bounds.left().value, bounds.right().value);
+        let (top, bottom) = (bounds.top().value, bounds.bottom().value);
+        if lines.is_empty() || right <= left || top <= bottom {
+            continue;
+        }
+        let line_height = (top - bottom) / lines.len() as f32;
+        let font_size = (line_height * NOTE_TYPE_HEIGHT).min(NOTE_MAX_TYPE_SIZE);
+        for (i, line) in lines.iter().enumerate() {
+            let text: Vec<char> = line.chars().collect();
+            let pitch = ((right - left) / text.len() as f32).min(font_size * 0.6);
+            let line_top = top - i as f32 * line_height;
+            let mut space = false;
+            for (k, &ch) in text.iter().enumerate() {
+                if ch.is_whitespace() {
+                    space = true;
+                    continue;
+                }
+                let (x, y, width, height) = rotate_to_visual(
+                    left + k as f32 * pitch,
+                    line_top,
+                    pitch * 0.9,
+                    font_size,
+                    rotation,
+                    page_width,
+                    page_height,
+                );
+                chars.push(RawChar {
+                    ch,
+                    x,
+                    y,
+                    width,
+                    height,
+                    font_size,
+                    font_name: Rc::clone(&font_name),
+                    bold: false,
+                    italic: false,
+                    space_before: std::mem::take(&mut space),
+                    vertical: false,
+                });
+            }
+        }
+    }
+    chars
+}
+
+fn extract_raw_chars(
+    page: &PdfPage<'_>,
+    text: &PdfPageText<'_>,
+    rotation: PdfPageRenderRotation,
+) -> Vec<RawChar> {
     let page_width = page.width().value;
     let page_height = page.height().value;
     let mut chars = Vec::new();
@@ -625,8 +805,14 @@ fn extract_raw_chars(page: &PdfPage<'_>, text: &PdfPageText<'_>) -> Vec<RawChar>
 
         let left = bounds.left().value;
         let right = bounds.right().value;
-        let top = bounds.top().value;
-        let bottom = bounds.bottom().value;
+        let angle = char_ref.angle_degrees().unwrap_or(0.0);
+        let (top, bottom) = plausible_box(
+            bounds.top().value,
+            bounds.bottom().value,
+            font_size,
+            angle,
+            || char_ref.origin_y().ok().map(|y| y.value),
+        );
         let (x, y, width, height) = rotate_to_visual(
             left,
             top,
@@ -647,7 +833,7 @@ fn extract_raw_chars(page: &PdfPage<'_>, text: &PdfPageText<'_>) -> Vec<RawChar>
             bold,
             italic: font_italic,
             space_before: pending_space,
-            vertical: is_vertical(char_ref.angle_degrees().unwrap_or(0.0), rotation),
+            vertical: is_vertical(angle, rotation),
         });
         // The next character keeps the space that preceded a line-end
         // hyphen, as it did when the hyphen was dropped.
@@ -657,6 +843,32 @@ fn extract_raw_chars(page: &PdfPage<'_>, text: &PdfPageText<'_>) -> Vec<RawChar>
     }
 
     chars
+}
+
+/// The top and bottom of a character's box. A font that declares an ascent or
+/// descent several times its size (Juneau's 2013 Comprehensive Plan sets 10.5
+/// pt body text in a 58 pt box) moves every line of it up or down the page, so
+/// a paragraph's first line lands on its heading and the two are read as one
+/// line. The baseline is exact whatever the font says, so an implausible box
+/// is rebuilt around it; `baseline` is only asked for then. Text drawn at an
+/// angle keeps its box: its baseline is not a page height.
+fn plausible_box(
+    top: f32,
+    bottom: f32,
+    font_size: f32,
+    angle: f32,
+    baseline: impl FnOnce() -> Option<f32>,
+) -> (f32, f32) {
+    if (top - bottom).abs() <= MAX_BOX_TO_SIZE * font_size || angle.abs() > 0.5 {
+        return (top, bottom);
+    }
+    match baseline() {
+        Some(base) => (
+            base + TYPICAL_ASCENT * font_size,
+            base - TYPICAL_DESCENT * font_size,
+        ),
+        None => (top, bottom),
+    }
 }
 
 /// Whether a glyph drawn at `angle` degrees reads up or down the page as
@@ -1005,6 +1217,9 @@ fn split_band_into_columns(lines: Vec<TextLine>, depth: usize) -> Vec<ColumnLine
         // Tables detected by the guard describe exactly this line set.
         return vec![ColumnLines { lines, tables }];
     };
+    if let Some(tops) = side_head_rows(&lines, gutter_x) {
+        return side_head_columns(lines, gutter_x, &tops);
+    }
 
     let spans: Vec<TextSpan> = lines.into_iter().flat_map(|line| line.spans).collect();
     let (left, right): (Vec<TextSpan>, Vec<TextSpan>) = spans
@@ -1232,8 +1447,11 @@ fn column_split_is_plausible(lines: &[TextLine], gutter_x: f32, near_edge: bool)
         .iter()
         .flat_map(|line| &line.spans)
         .partition(|span| span_is_left_of(span, gutter_x));
-    // A heading printed beside its text, in the band's first lines.
-    if is_side_heading(&left, lines) && right.len() >= 2 && is_running_text(&right) {
+    // A heading printed beside its text, in the band's first lines, or a
+    // column of them, each beside the paragraph it heads.
+    if (is_side_heading(&left, lines) && right.len() >= 2 && is_running_text(&right))
+        || side_head_rows(lines, gutter_x).is_some()
+    {
         return true;
     }
     if near_edge {
@@ -1275,6 +1493,108 @@ fn is_side_heading(spans: &[&TextSpan], lines: &[TextLine]) -> bool {
                 s.bold || (!letters.is_empty() && letters.iter().all(|c| c.is_uppercase()));
             styled && s.y >= limit - 0.5
         })
+}
+
+/// Words a side-head label may run to on one line: "CIRCULATION &", not prose.
+const SIDE_HEAD_MAX_WORDS: usize = 4;
+
+/// Line pitches between two paragraphs of the text a side head sits beside,
+/// beyond the usual line spacing; and how close, in pitches, a label's top
+/// must be to a paragraph's first line.
+const SIDE_HEAD_PARAGRAPH_GAP: f32 = 1.5;
+const SIDE_HEAD_ALIGN: f32 = 0.5;
+
+/// The tops of the labels of a side-head layout, top first: a column of short
+/// bold or capitalised labels left of `gutter_x`, each group of them level
+/// with the first line of a paragraph of running text on the right. The AIM
+/// Norman plan's land use pages print DESCRIPTION & CONTEXT, BUILDING TYPES
+/// and SITE DESIGN down the left of the text each heads. Read as two columns,
+/// every label would come before every paragraph; read as lines, each label
+/// is spliced into the paragraph's first lines ("would make & CONTEXT good").
+/// A single label is a side heading ([`is_side_heading`]); two or more are
+/// this.
+fn side_head_rows(lines: &[TextLine], gutter_x: f32) -> Option<Vec<f32>> {
+    let mut labels: Vec<(f32, Vec<&TextSpan>)> = Vec::new();
+    let mut right_ys: Vec<f32> = Vec::new();
+    let mut right: Vec<&TextSpan> = Vec::new();
+    for line in lines {
+        let (l, r): (Vec<&TextSpan>, Vec<&TextSpan>) = line
+            .spans
+            .iter()
+            .partition(|s| span_is_left_of(s, gutter_x));
+        if !l.is_empty() {
+            labels.push((line.y, l));
+        }
+        if !r.is_empty() {
+            right_ys.push(line.y);
+            right.extend(r);
+        }
+    }
+    if labels.len() < 2 || right_ys.len() < 2 {
+        return None;
+    }
+    let is_label = |s: &&TextSpan| {
+        let letters: Vec<char> = s.text.chars().filter(|c| c.is_alphabetic()).collect();
+        let styled = s.bold || (!letters.is_empty() && letters.iter().all(|c| c.is_uppercase()));
+        styled && s.text.split_whitespace().count() <= SIDE_HEAD_MAX_WORDS
+    };
+    if !labels.iter().all(|(_, spans)| spans.iter().all(is_label)) || !is_running_text(&right) {
+        return None;
+    }
+
+    let mut gaps: Vec<f32> = right_ys.windows(2).map(|w| w[0] - w[1]).collect();
+    gaps.sort_by(f32::total_cmp);
+    let pitch = gaps[gaps.len() / 2];
+    if pitch <= 0.0 {
+        return None;
+    }
+    let paragraph_starts: Vec<f32> = right_ys
+        .iter()
+        .enumerate()
+        .filter(|&(i, &y)| i == 0 || right_ys[i - 1] - y > SIDE_HEAD_PARAGRAPH_GAP * pitch)
+        .map(|(_, &y)| y)
+        .collect();
+
+    // A label may wrap over several lines; a wider gap starts the next one.
+    let mut tops: Vec<f32> = Vec::new();
+    let mut previous: Option<f32> = None;
+    for &(y, _) in &labels {
+        if previous.is_none_or(|p| p - y > SIDE_HEAD_PARAGRAPH_GAP * pitch) {
+            tops.push(y);
+        }
+        previous = Some(y);
+    }
+    let aligned = tops.iter().all(|&top| {
+        paragraph_starts
+            .iter()
+            .any(|&start| (start - top).abs() <= SIDE_HEAD_ALIGN * pitch)
+    });
+    (tops.len() >= 2 && aligned).then_some(tops)
+}
+
+/// A side-head layout read row by row: whatever precedes the first label,
+/// then each label followed by the text beside it, down to the next label.
+fn side_head_columns(lines: Vec<TextLine>, gutter_x: f32, tops: &[f32]) -> Vec<ColumnLines> {
+    // Row 0 is above the first label; row k + 1 starts at label k's top.
+    let mut rows: Vec<(Vec<TextSpan>, Vec<TextSpan>)> = vec![Default::default(); tops.len() + 1];
+    for span in lines.into_iter().flat_map(|line| line.spans) {
+        let slack = span.font_size * SIDE_HEAD_ALIGN;
+        let row = tops.iter().filter(|&&top| span.y <= top + slack).count();
+        let (left, right) = &mut rows[row];
+        if span_is_left_of(&span, gutter_x) {
+            left.push(span);
+        } else {
+            right.push(span);
+        }
+    }
+    rows.into_iter()
+        .flat_map(|(left, right)| [left, right])
+        .filter(|spans| !spans.is_empty())
+        .map(|spans| ColumnLines {
+            lines: group_spans_into_lines_owned(spans),
+            tables: None,
+        })
+        .collect()
 }
 
 /// Share of a side's lines that must read as prose for it to be running text
@@ -1382,7 +1702,10 @@ pub fn page_has_complex_tables(page: &PdfPage<'_>) -> bool {
         return false;
     };
 
-    let mut raw_chars = extract_raw_chars(page, &text);
+    // The routing flag reads the page as displayed, as it always has; only the
+    // markdown turns a page to the frame its text is upright in.
+    let rotation = page.rotation().unwrap_or(PdfPageRenderRotation::None);
+    let mut raw_chars = extract_raw_chars(page, &text, rotation);
     raw_chars.retain(|c| c.ch != LINE_END_HYPHEN);
     repair_legacy_armenian(&mut raw_chars);
     if raw_chars.is_empty() {
@@ -1637,6 +1960,60 @@ fn is_list_item_start(text: &str) -> bool {
     list_marker_len(text).is_some() || ordered_marker_len(text).is_some()
 }
 
+/// Words a code opens a division of itself with, lowercase.
+const SECTION_LABELS: [&str; 11] = [
+    "sec",
+    "section",
+    "article",
+    "chapter",
+    "appendix",
+    "part",
+    "division",
+    "subchapter",
+    "subpart",
+    "title",
+    "schedule",
+];
+
+/// Whether a line opens with a section label and its number: "SEC. 520",
+/// "Section 4.1", "Article IV", "Appendix B", "§ 36-520". Such a line starts
+/// a heading even when the line above is a heading of the same size.
+fn starts_section_label(text: &str) -> bool {
+    let mut words = text.split_whitespace();
+    let Some(first) = words.next() else {
+        return false;
+    };
+    let (label, id) = match first.strip_prefix('§') {
+        Some("") => ("§", words.next()),
+        Some(rest) => ("§", Some(rest)),
+        None => (first, words.next()),
+    };
+    let label = label.trim_end_matches('.').to_lowercase();
+    let Some(id) = id.map(|w| w.trim_end_matches(['.', ':', ','])) else {
+        return false;
+    };
+    // An identifier: a number ("520", "4.1", "36-520"), a roman numeral or a
+    // single letter, never a word ("Section Purpose").
+    // A lowercase numeral is short ("iv"); a lowercase word of numeral
+    // letters is a word ("civil").
+    let roman = !id.is_empty()
+        && (id.chars().all(|c| "IVXLC".contains(c))
+            || (id.len() <= 4 && id.chars().all(|c| "ivxlc".contains(c))));
+    let identifier = id.starts_with(|c: char| c.is_ascii_digit())
+        || (id.len() == 1 && id.chars().all(|c| c.is_ascii_alphabetic()))
+        || roman;
+    (label == "§" || SECTION_LABELS.contains(&label.as_str())) && identifier
+}
+
+/// A section label and its number with nothing after them: "Appendix C",
+/// "CHAPTER 11", "Article IV."
+fn is_bare_section_label(text: &str) -> bool {
+    // The label and its number are two words, or one when the section sign
+    // is set tight against it ("§36-520").
+    let words = text.split_whitespace().count();
+    starts_section_label(text) && (words == 2 || (words == 1 && text.trim_start().starts_with('§')))
+}
+
 /// An enumerator as a code or a plan prints one: `1.`, `a.`, `iv.`, `A)`,
 /// `(2)`, `(b)`, followed by a space. Returns the marker's byte length,
 /// without the space. The marker is kept in the output: in an ordinance it is
@@ -1783,10 +2160,17 @@ fn group_into_blocks(lines: &[TextLine], tables: &[DetectedTable], body_size: f3
             }
 
             // A numbered heading starts a heading of its own ("Part 1.
-            // General Provisions" then "101. Title").
-            if matches!(kind, LineKind::Heading(_))
-                && is_list_item_start(line_to_text(&lines[j]).trim())
-            {
+            // General Provisions" then "101. Title"), and so does a section's
+            // label ("Appendix B" then "SEC. 520 CENTER CITY ..."). A label
+            // printed alone on its line is a line of its own: "Appendix C"
+            // over "Bicycle Parking Design Guidelines" is how a code heads it,
+            // and how a reader finds it.
+            if matches!(kind, LineKind::Heading(_)) && {
+                let text = line_to_text(&lines[j]);
+                is_list_item_start(text.trim())
+                    || starts_section_label(&text)
+                    || is_bare_section_label(&line_to_text(&lines[j - 1]))
+            } {
                 break;
             }
 
@@ -2124,13 +2508,16 @@ fn line_to_text(line: &TextLine) -> String {
     text
 }
 
-/// A span prepared for inline rendering:
-/// `(span, needs_leading_space, strip_trailing_hyphen)`.
-type InlineSpan<'a> = (&'a TextSpan, bool, bool);
+/// A span prepared for inline rendering: `(span, needs_leading_space)`.
+type InlineSpan<'a> = (&'a TextSpan, bool);
 
 /// Flattens paragraph lines into render-ready spans: word spaces are decided
-/// from horizontal gaps, line breaks become spaces, and a hyphen at a line
-/// break followed by a lowercase continuation is joined into one word.
+/// from horizontal gaps, line breaks become spaces, and a word broken at a
+/// hyphen on a line break is joined, the hyphen kept. Nothing tells a
+/// typesetter's break from a compound broken at its own hyphen, and in a
+/// code the compound is the rule ("single-family", "off-street", "on-site");
+/// dropping the hyphen writes "singlefamily", keeping it writes "exam-ple"
+/// at worst, losing no letter.
 fn paragraph_spans<'a>(lines: &'a [TextLine], line_indices: &[usize]) -> Vec<InlineSpan<'a>> {
     let mut spans: Vec<InlineSpan<'a>> = Vec::new();
 
@@ -2144,15 +2531,14 @@ fn paragraph_spans<'a>(lines: &'a [TextLine], line_indices: &[usize]) -> Vec<Inl
             };
 
             if span_pos == 0
-                && let Some((previous, _, strip_trailing_hyphen)) = spans.last_mut()
+                && let Some((previous, _)) = spans.last()
                 && ends_with_soft_hyphen(&previous.text)
                 && starts_lowercase(&span.text)
             {
-                *strip_trailing_hyphen = true;
                 leading_space = false;
             }
 
-            spans.push((span, leading_space, false));
+            spans.push((span, leading_space));
         }
     }
 
@@ -2187,7 +2573,7 @@ fn render_spans_with_inline_formatting(md: &mut String, spans: &[InlineSpan<'_>]
     let mut current_state: Option<(bool, bool)> = None;
     let at_line_start = md.is_empty() || md.ends_with('\n');
 
-    for (index, (span, leading_space, strip_trailing_hyphen)) in spans.iter().enumerate() {
+    for (index, (span, leading_space)) in spans.iter().enumerate() {
         let next_state = (span.bold, span.italic);
 
         if Some(next_state) != current_state {
@@ -2206,12 +2592,7 @@ fn render_spans_with_inline_formatting(md: &mut String, spans: &[InlineSpan<'_>]
             md.push(' ');
         }
 
-        let text = if *strip_trailing_hyphen {
-            // Only set for spans ending in an ASCII '-', so the slice is safe.
-            &span.text[..span.text.len() - 1]
-        } else {
-            span.text.as_str()
-        };
+        let text = span.text.as_str();
 
         // An unstyled paragraph starting with '#', '>', "- ", or "1. " would
         // otherwise render as a heading, quote, or list.
@@ -2839,10 +3220,7 @@ mod tests {
         let b = styled_span("B", 60.0, 700.0, 12.0, true);
         let c = styled_span("c", 70.0, 700.0, 12.0, false);
         let mut md = String::new();
-        render_spans_with_inline_formatting(
-            &mut md,
-            &[(&a, false, false), (&b, true, false), (&c, true, false)],
-        );
+        render_spans_with_inline_formatting(&mut md, &[(&a, false), (&b, true), (&c, true)]);
         assert_eq!(md, "**A B** c");
     }
 
@@ -2851,7 +3229,7 @@ mod tests {
         let mut styled = styled_span("x", 50.0, 700.0, 12.0, true);
         styled.italic = true;
         let mut md = String::new();
-        render_spans_with_inline_formatting(&mut md, &[(&styled, false, false)]);
+        render_spans_with_inline_formatting(&mut md, &[(&styled, false)]);
         assert_eq!(md, "***x***");
     }
 
@@ -2860,7 +3238,7 @@ mod tests {
         let mut styled = styled_span("x", 50.0, 700.0, 12.0, false);
         styled.italic = true;
         let mut md = String::new();
-        render_spans_with_inline_formatting(&mut md, &[(&styled, false, false)]);
+        render_spans_with_inline_formatting(&mut md, &[(&styled, false)]);
         assert_eq!(md, "*x*");
     }
 
@@ -2868,7 +3246,7 @@ mod tests {
     fn inline_formatting_escapes_markdown_characters() {
         let literal = styled_span("2 * 3 = [6]_note", 50.0, 700.0, 12.0, false);
         let mut md = String::new();
-        render_spans_with_inline_formatting(&mut md, &[(&literal, false, false)]);
+        render_spans_with_inline_formatting(&mut md, &[(&literal, false)]);
         assert_eq!(md, "2 \\* 3 = \\[6\\]\\_note");
     }
 
@@ -2907,18 +3285,20 @@ mod tests {
     }
 
     #[test]
-    fn paragraph_spans_repair_line_break_hyphenation() {
+    fn paragraph_spans_join_a_word_broken_at_its_hyphen() {
         let lines = vec![
-            text_line(700.0, vec![span("exam-", 50.0, 700.0, 30.0, 12.0)]),
-            text_line(685.0, vec![span("ple continues", 50.0, 685.0, 80.0, 12.0)]),
+            text_line(700.0, vec![span("single-", 50.0, 700.0, 30.0, 12.0)]),
+            text_line(
+                685.0,
+                vec![span("family dwellings", 50.0, 685.0, 80.0, 12.0)],
+            ),
         ];
         let spans = paragraph_spans(&lines, &[0, 1]);
-        assert!(spans[0].2, "trailing hyphen must be marked for stripping");
-        assert!(!spans[1].1, "no space after repaired hyphen");
+        assert!(!spans[1].1, "no space after the hyphen");
 
         let mut md = String::new();
         render_spans_with_inline_formatting(&mut md, &spans);
-        assert_eq!(md, "example continues");
+        assert_eq!(md, "single-family dwellings");
     }
 
     #[test]
@@ -2928,7 +3308,6 @@ mod tests {
             text_line(685.0, vec![span("Paul spoke", 50.0, 685.0, 60.0, 12.0)]),
         ];
         let spans = paragraph_spans(&lines, &[0, 1]);
-        assert!(!spans[0].2, "compound-word hyphen must be kept");
         assert!(spans[1].1, "line break still becomes a space");
 
         let mut md = String::new();
@@ -2998,12 +3377,12 @@ mod tests {
     fn paragraph_starting_with_marker_is_escaped() {
         let plain = span("# not a heading", 50.0, 700.0, 80.0, 12.0);
         let mut md = String::new();
-        render_spans_with_inline_formatting(&mut md, &[(&plain, false, false)]);
+        render_spans_with_inline_formatting(&mut md, &[(&plain, false)]);
         assert_eq!(md, "\\# not a heading");
 
         let numbered = span("1. not a list", 50.0, 700.0, 70.0, 12.0);
         let mut md = String::new();
-        render_spans_with_inline_formatting(&mut md, &[(&numbered, false, false)]);
+        render_spans_with_inline_formatting(&mut md, &[(&numbered, false)]);
         assert_eq!(md, "1\\. not a list");
     }
 
@@ -3011,7 +3390,7 @@ mod tests {
     fn styled_paragraph_start_needs_no_marker_escape() {
         let bold = styled_span("#tag", 50.0, 700.0, 12.0, true);
         let mut md = String::new();
-        render_spans_with_inline_formatting(&mut md, &[(&bold, false, false)]);
+        render_spans_with_inline_formatting(&mut md, &[(&bold, false)]);
         assert_eq!(md, "**#tag**");
     }
 
@@ -3181,6 +3560,179 @@ mod tests {
         assert_eq!(nearest_column(290.0, &columns), 1);
         assert_eq!(nearest_column(1000.0, &columns), 2);
         assert_eq!(nearest_column(10.0, &[]), 0);
+    }
+
+    #[test]
+    fn an_implausible_character_box_is_rebuilt_on_its_baseline() {
+        // Juneau's 2013 plan: 10.5 pt body text in a 58 pt box.
+        let (top, bottom) = plausible_box(759.0, 700.4, 10.5, 0.0, || Some(740.0));
+        assert!((top - (740.0 + TYPICAL_ASCENT * 10.5)).abs() < 1e-3);
+        assert!((bottom - (740.0 - TYPICAL_DESCENT * 10.5)).abs() < 1e-3);
+        // An ordinary box is kept, and its baseline never asked for.
+        assert_eq!(
+            plausible_box(750.0, 736.0, 10.5, 0.0, || unreachable!()),
+            (750.0, 736.0)
+        );
+        // Text drawn at an angle keeps its box: its baseline is no height.
+        assert_eq!(
+            plausible_box(759.0, 700.4, 10.5, 90.0, || Some(740.0)),
+            (759.0, 700.4)
+        );
+    }
+
+    #[test]
+    fn a_section_label_starts_a_heading_and_a_title_word_does_not() {
+        for text in [
+            "SEC. 520 CENTER CITY PLANNED UNIT DEVELOPMENT",
+            "Section 4.1 Purpose",
+            "ARTICLE IV",
+            "Appendix B",
+            "§ 36-520 R-3, Multifamily Dwelling District",
+            "§36-520",
+            "Chapter 11 Land Use Maps",
+            "Part iv.",
+        ] {
+            assert!(starts_section_label(text), "{text}");
+        }
+        for text in [
+            "Appendix C",
+            "CHAPTER 11",
+            "Article IV.",
+            "§36-520",
+            "§ 36-520",
+        ] {
+            assert!(is_bare_section_label(text), "{text}");
+        }
+        for text in [
+            "Appendix C Bicycle Parking",
+            "SEC. 520 CENTER CITY",
+            "Appendix",
+        ] {
+            assert!(!is_bare_section_label(text), "{text}");
+        }
+        for text in [
+            "Section Purpose",
+            "Chapter Eleven",
+            "Land Use Maps",
+            "Title of the plan",
+            "Division civil engineering",
+            "",
+        ] {
+            assert!(!starts_section_label(text), "{text}");
+        }
+    }
+
+    /// The AIM Norman plan's land use page: labels down the left, each level
+    /// with the first line of the paragraph it heads.
+    fn side_head_page() -> Vec<TextLine> {
+        let body = |y: f32, text: &str| span(text, 165.0, y, 370.0, 10.0);
+        let label = |y: f32, text: &str| styled_span(text, 58.0, y, 10.0, true);
+        vec![
+            text_line(
+                664.0,
+                vec![
+                    label(664.0, "DESCRIPTION"),
+                    body(
+                        664.0,
+                        "Contains valuable environmental features that should not be",
+                    ),
+                ],
+            ),
+            text_line(
+                652.0,
+                vec![
+                    label(652.0, "& CONTEXT"),
+                    body(
+                        652.0,
+                        "developed or would make good recreational spaces for the city",
+                    ),
+                ],
+            ),
+            text_line(
+                640.0,
+                vec![body(
+                    640.0,
+                    "and the parks are developed with recreational features",
+                )],
+            ),
+            text_line(
+                548.0,
+                vec![
+                    label(548.0, "BUILDING TYPES"),
+                    body(
+                        548.0,
+                        "small single-story structures designed to support the function",
+                    ),
+                ],
+            ),
+            text_line(
+                536.0,
+                vec![body(
+                    536.0,
+                    "of a recreation or a natural amenity in the area",
+                )],
+            ),
+            text_line(
+                506.0,
+                vec![
+                    label(506.0, "SITE DESIGN"),
+                    body(
+                        506.0,
+                        "based around natural areas where the wetlands should be kept",
+                    ),
+                ],
+            ),
+            text_line(
+                494.0,
+                vec![body(
+                    494.0,
+                    "and native vegetation and habitats are to be preserved",
+                )],
+            ),
+        ]
+    }
+
+    #[test]
+    fn side_heads_are_read_each_before_the_paragraph_it_heads() {
+        let lines = side_head_page();
+        assert_eq!(
+            side_head_rows(&lines, 150.0),
+            Some(vec![664.0, 548.0, 506.0])
+        );
+        let columns = side_head_columns(lines, 150.0, &[664.0, 548.0, 506.0]);
+        let firsts: Vec<String> = columns
+            .iter()
+            .map(|c| c.lines[0].spans[0].text.clone())
+            .collect();
+        assert_eq!(firsts[0], "DESCRIPTION");
+        assert!(firsts[1].starts_with("Contains"));
+        assert_eq!(firsts[2], "BUILDING TYPES");
+        assert!(firsts[3].starts_with("small"));
+        assert_eq!(firsts[4], "SITE DESIGN");
+    }
+
+    #[test]
+    fn a_term_on_every_line_is_no_side_head_layout() {
+        // A definitions column: a bold term on each line, no paragraph gaps.
+        let lines: Vec<TextLine> = (0..6)
+            .map(|i| {
+                let y = 700.0 - i as f32 * 12.0;
+                text_line(
+                    y,
+                    vec![
+                        styled_span("TERM", 58.0, y, 10.0, true),
+                        span(
+                            "means the thing that the code defines in its text",
+                            165.0,
+                            y,
+                            370.0,
+                            10.0,
+                        ),
+                    ],
+                )
+            })
+            .collect();
+        assert_eq!(side_head_rows(&lines, 150.0), None);
     }
 
     #[test]

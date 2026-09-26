@@ -2,7 +2,7 @@ mod common;
 
 use common::{
     Text, minimal_empty_pdf, pdfium, write_garbled_pdf, write_pdf, write_pdf_with_image,
-    write_rotated_pdf, write_simple_pdf,
+    write_pdf_with_note, write_rotated_pdf, write_simple_pdf,
 };
 use pdf_toolkit::error::PdfError;
 use pdf_toolkit::{
@@ -908,6 +908,50 @@ fn structured_reads_rotated_pages_in_visual_order() {
         alpha < beta,
         "rotated page must read top-to-bottom visually: {markdown}"
     );
+}
+
+#[test]
+fn structured_markdown_reads_a_note_typed_onto_the_page() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = fixture_path(dir.path(), "note.pdf");
+    write_pdf_with_note(
+        &pdfium,
+        &input,
+        vec![Text::plain(
+            72.0,
+            720.0,
+            12.0,
+            "Design Standards and Guidelines",
+        )],
+        "Adopted as Regulation, October 12, 2009",
+        (72.0, 640.0, 400.0, 660.0),
+    );
+
+    let report = extract_structured_text(
+        &pdfium,
+        &input,
+        PageSelection::All,
+        StructuredOutputFormat::Full,
+    )
+    .expect("extract structured text");
+
+    let page = &report.pages[0];
+    let (standards, adopted) = (
+        page.markdown
+            .find("Design Standards")
+            .expect("text layer read"),
+        page.markdown
+            .find("Adopted as Regulation, October 12, 2009")
+            .unwrap_or_else(|| panic!("note missing in: {:?}", page.markdown)),
+    );
+    assert!(
+        standards < adopted,
+        "the note reads where it sits: {}",
+        page.markdown
+    );
+    // `spans` are the text layer, which the note is no part of.
+    assert!(page.spans.iter().all(|s| !s.text.contains("Adopted")));
 }
 
 #[test]

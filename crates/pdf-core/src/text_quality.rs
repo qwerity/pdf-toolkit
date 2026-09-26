@@ -27,6 +27,12 @@ fn is_allowed_text_char(ch: char) -> bool {
     !ch.is_control() || matches!(ch, '\n' | '\r' | '\t')
 }
 
+/// Words of letters alone a page needs before their vowels can speak for it.
+const MIN_PLAIN_WORDS: usize = 10;
+
+/// Share of those words with a vowel above which the page is readable.
+const READABLE_PLAIN_VOWEL_RATIO: f32 = 0.9;
+
 /// Returns true when extracted text is statistically likely to be garbage:
 /// enough material to judge, high symbol/digit noise, almost no lowercase,
 /// and almost no vowel-bearing words.
@@ -46,6 +52,17 @@ pub fn is_probably_unreadable_text(text: &str) -> bool {
     // Latin is not judged here at all: an unreadable page costs a vision
     // pass, a page wrongly called unreadable is silently lost.
     if metrics.latin_letter_count * 2 < metrics.letter_count {
+        return false;
+    }
+
+    // Real words are the one thing garbage does not produce. A page of codes,
+    // times and capitals ("CD4:3 8 CD23:5", a bus timetable) is all digits and
+    // punctuation, yet the words it does spell out nearly all carry a vowel;
+    // letters from a broken font map scatter them ("LJQDOL]HG"), and even
+    // random letters leave a vowel out of one word in five.
+    if metrics.plain_word_count >= MIN_PLAIN_WORDS
+        && metrics.plain_vowel_ratio() >= READABLE_PLAIN_VOWEL_RATIO
+    {
         return false;
     }
 
@@ -83,6 +100,18 @@ fn analyze_text_quality(text: &str) -> TextQualityMetrics {
         .filter(|word| word.chars().any(char::is_alphabetic))
         .filter(|word| word.chars().any(is_latin_vowel))
         .count();
+    for word in text.split_whitespace() {
+        let word = word.trim_matches(|c: char| c.is_ascii_punctuation());
+        if word.chars().count() >= 2 && word.chars().all(is_latin_letter) {
+            metrics.plain_word_count += 1;
+            if word
+                .chars()
+                .any(|c| is_latin_vowel(c) || matches!(c, 'y' | 'Y'))
+            {
+                metrics.plain_vowel_word_count += 1;
+            }
+        }
+    }
 
     metrics
 }
@@ -110,6 +139,10 @@ struct TextQualityMetrics {
     punctuation_count: usize,
     alpha_word_count: usize,
     vowel_word_count: usize,
+    /// Words of two or more Latin letters and nothing else, once their
+    /// punctuation is trimmed, and of those the ones with a vowel.
+    plain_word_count: usize,
+    plain_vowel_word_count: usize,
 }
 
 impl TextQualityMetrics {
@@ -132,6 +165,14 @@ impl TextQualityMetrics {
             0.0
         } else {
             self.lowercase_count as f32 / self.letter_count as f32
+        }
+    }
+
+    fn plain_vowel_ratio(&self) -> f32 {
+        if self.plain_word_count == 0 {
+            0.0
+        } else {
+            self.plain_vowel_word_count as f32 / self.plain_word_count as f32
         }
     }
 
@@ -200,6 +241,31 @@ mod tests {
         assert!(!is_probably_unreadable_text(text));
         // The Latin judgement still applies where the text is Latin.
         assert!(is_probably_unreadable_text(&"X9#Z 7Q$W 3K%T ".repeat(10)));
+    }
+
+    /// A code's supplement history and a bus timetable: codes, numbers and
+    /// capitals, every spelled-out word a word.
+    #[test]
+    fn codes_and_times_with_real_words_are_readable() {
+        let history = "LAFAYETTE CODE Page No. Supp. No. CD1:1 3 CD11:1 OC CD1:3, CD1:4 OC \
+                       CD20:1 OC CD1:5, CD1:6 OC CD20:3 OC CD1:7, CD1:8 3 CD21:1 5 CD1:9, \
+                       CD1:10 3 CD23:1 5 CD2:1 8 CD23:3, CD23:4 5 CD4:1 8 CD23:5, CD23:6 5 \
+                       CD4:3, CD4:4 8 CD23:7, CD23:8 8 CD4:5, CD4:6 8 CD23:9 8 CD4:7, CD4:8 \
+                       Checklist of Up-to-Date Pages Supplement Index";
+        assert!(!is_probably_unreadable_text(history));
+        let timetable = "Route 1 Mendenhall Valley Downtown 6:15 6:22 6:30 6:41 6:45 6:52 \
+                         7:00 7:11 7:15 7:22 7:30 7:41 Nugget Mall Riverside Federal Bldg \
+                         Hospital Lemon Creek 7:45 7:52 8:00 8:11 8:15 8:22 8:30 8:41 DTC \
+                         8:45 8:52 9:00 9:11 9:15 9:22 9:30 9:41 Sunday Outbound Inbound";
+        assert!(!is_probably_unreadable_text(timetable));
+    }
+
+    /// A font mapped to the wrong glyphs spells letters, but not words: its
+    /// runs of letters alone lack vowels, so they vouch for nothing.
+    #[test]
+    fn letter_runs_without_vowels_stay_unreadable() {
+        let text = "LJQD 7#9$ QWHR 3%4& VHFW 8!2# ".repeat(8);
+        assert!(is_probably_unreadable_text(&text));
     }
 
     #[test]

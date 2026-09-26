@@ -403,12 +403,22 @@ person reads it. What it does with each kind of content:
   baselines and a heading printed to the left of the text it heads. A column
   of labels down the left of the text (DESCRIPTION & CONTEXT, BUILDING
   TYPES, SITE DESIGN) is read row by row: each label, then the paragraph
-  beside it.
+  beside it. Columns of short paragraphs under bold or capitalised headings
+  (a plan's land use categories, three to a row) are columns too, even where
+  every line of one shares a baseline with the next column's.
 - **The page's frame** is the one its text is upright in: its `/Rotate`, or
   the page's own frame where `/Rotate` stands text that runs along the page
   on end (a landscape brochure bound into a portrait document). A character
   box a font declares several times its type size is placed by its baseline,
-  so a paragraph's first line is not read into the heading above it.
+  so a paragraph's first line is not read into the heading above it. Text
+  turned a quarter round on an upright page, outside any table (a title up the
+  margin, a street name along a map's road), is read as an upright line, in
+  the order it was drawn; pdfium does not always report the turn, so it is
+  also recognised from the characters stepping down a column.
+- **Bold** is the font's weight, or its name ("Georgia-Bold"). Where a PDF
+  declares no weight (a page printed by a browser), pdfium estimates one from
+  the stems and calls a plain Georgia bold; a font whose name names its face
+  is then taken at its name, so only "Georgia-Bold" is bold.
 - **Notes typed onto the page** (free-text annotations, such as a cover's
   "Adopted as Regulation, October 12, 2009") are read where they sit. They
   are not in `spans`, which are the text layer.

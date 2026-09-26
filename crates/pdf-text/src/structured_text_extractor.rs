@@ -491,6 +491,92 @@ fn page_markdown(
     page_markdown_drawn(page, chars, page_box, &drawing, carry)
 }
 
+/// Along its baseline, the farthest one character of a sideways run may sit
+/// from the next, and across it, how far off its column, in line heights.
+const SIDEWAYS_STEP: f32 = 1.5;
+const SIDEWAYS_DRIFT: f32 = 0.3;
+
+/// Characters in a column that make a run of sideways text: fewer are a
+/// stack of labels or a coincidence.
+const SIDEWAYS_MIN_RUN: usize = 3;
+
+/// A turned glyph's type size, as a share of the line height its box spans,
+/// and its advance once laid upright, in type sizes.
+const SIDEWAYS_TYPE_SHARE: f32 = 0.75;
+const SIDEWAYS_ADVANCE: f32 = 0.55;
+
+/// Text drawn a quarter turn round on an upright page, outside any table (a
+/// plan's title running up its margin, a street name along a map's road), as
+/// upright lines. Read where it lies, each of its characters is a line of its
+/// own ("n a l P e v i s n e h e r p m o C" for "Comprehensive Plan" up
+/// Harrah's margin). pdfium does not always report the turn: Harrah's banner
+/// comes with angle 0 and type size 1. Its geometry does: each character
+/// follows the one before it along a column rather than a line, in a box
+/// wider than it is tall. Such characters, taken in the order they were drawn
+/// (the order they read, whichever way they are turned), form a run, laid out
+/// left to right from its top-left corner. A table's turned column headings
+/// are read in their cells instead (`regions`), so only characters outside
+/// tables come here.
+fn upright_sideways(chars: Vec<RawChar>) -> Vec<RawChar> {
+    let mut out = Vec::with_capacity(chars.len());
+    let mut run: Vec<RawChar> = Vec::new();
+    for c in chars {
+        if !run.last().is_some_and(|last| follows_down_column(last, &c)) {
+            settle_run(&mut run, &mut out);
+        }
+        run.push(c);
+    }
+    settle_run(&mut run, &mut out);
+    out
+}
+
+/// Whether `next` is the character after `last` in a column of sideways text.
+fn follows_down_column(last: &RawChar, next: &RawChar) -> bool {
+    // A turned glyph's box spans the line across and its advance along.
+    let across = last.width;
+    let (dx, dy) = (next.x - last.x, next.y - last.y);
+    across > last.height
+        && next.width > next.height
+        && dx.abs() <= across * SIDEWAYS_DRIFT
+        && dy != 0.0
+        && dy.abs() <= across * SIDEWAYS_STEP
+}
+
+/// Moves a run of characters to `out`, laid upright when it is sideways text
+/// (long enough, or every character reported turned), as it was otherwise.
+fn settle_run(run: &mut Vec<RawChar>, out: &mut Vec<RawChar>) {
+    if run.len() < SIDEWAYS_MIN_RUN && !run.iter().all(|c| c.vertical) {
+        out.append(run);
+        return;
+    }
+    let left = run.iter().map(|c| c.x).fold(f32::INFINITY, f32::min);
+    let top = run.iter().map(|c| c.y).fold(f32::NEG_INFINITY, f32::max);
+    let across = run.iter().map(|c| c.width).fold(0.0, f32::max);
+    let mut x = left;
+    for c in run.drain(..) {
+        // A size pdfium could not read from the turned matrix comes back tiny.
+        let size = if c.font_size > 2.0 {
+            c.font_size
+        } else {
+            across * SIDEWAYS_TYPE_SHARE
+        };
+        let advance = size * SIDEWAYS_ADVANCE;
+        if c.space_before {
+            x += advance;
+        }
+        out.push(RawChar {
+            x,
+            y: top,
+            width: advance,
+            height: size,
+            font_size: size,
+            vertical: false,
+            ..c
+        });
+        x += advance;
+    }
+}
+
 /// [`page_markdown`] over a given drawing: the page's own vector drawing, or
 /// the rules found in a scan's pixels. `page_box` is the page, `(width,
 /// height)`, in the characters' coordinates; a character outside it is
@@ -517,7 +603,7 @@ fn page_markdown_drawn(
     let found = regions::detect(drawing, &chars, page_area);
     let incoming = carry.take();
     if found.is_empty() {
-        return spans_to_markdown(&group_chars_into_spans(&chars));
+        return spans_to_markdown(&group_chars_into_spans(&upright_sideways(chars)));
     }
     let tables = || {
         found
@@ -535,19 +621,21 @@ fn page_markdown_drawn(
     let body_size =
         estimate_body_font_size(&group_spans_into_lines(&group_chars_into_spans(&chars)));
     let (free, held) = regions::assign(&found, chars);
-    let mut spans = group_chars_into_spans(&free);
+    let mut spans = group_chars_into_spans(&upright_sideways(free));
     let mut rendered = Vec::with_capacity(found.len());
-    for (i, (region, region_chars)) in found.iter().zip(&held).enumerate() {
+    for (i, (region, region_chars)) in found.iter().zip(held).enumerate() {
         rendered.push(match &region.kind {
             regions::Kind::Table(grid) => {
                 let continued = incoming.as_ref().filter(|_| top == Some(i));
-                let table = regions::render_table(grid, region_chars, &drawing.fills, continued);
+                let table = regions::render_table(grid, &region_chars, &drawing.fills, continued);
                 if bottom == Some(i) {
                     *carry = table.tail;
                 }
                 table.markdown
             }
-            regions::Kind::TextBox => spans_to_markdown(&group_chars_into_spans(region_chars)),
+            regions::Kind::TextBox => {
+                spans_to_markdown(&group_chars_into_spans(&upright_sideways(region_chars)))
+            }
         });
         spans.push(TextSpan {
             text: format!("{REGION_OPEN}{i}{REGION_CLOSE}"),
@@ -807,10 +895,16 @@ fn extract_raw_chars(
                 None => {
                     let name: Rc<str> = raw_font_name.into();
                     let (name_bold, name_italic) = font_name_style(&name);
+                    // A declared weight is a hundred (100 to 900); any other is
+                    // pdfium's estimate from the stems where none is declared (a
+                    // page printed by a browser: plain Georgia, stem 133, comes out
+                    // 665). A name that names its face beats an estimate. Stems of
+                    // 120 and 140 estimate exactly 600 and 700 and pass as declared.
                     let font_bold = name_bold
-                        || char_ref
-                            .font_weight()
-                            .is_some_and(|w| font_weight_numeric(&w) >= 600);
+                        || char_ref.font_weight().is_some_and(|w| {
+                            let w = font_weight_numeric(&w);
+                            w >= 600 && (w.is_multiple_of(100) || !names_its_face(&name))
+                        });
                     let font_italic = name_italic || char_ref.font_is_italic();
                     font_cache.push((Rc::clone(&name), font_bold, font_italic));
                     (name, font_bold, font_italic)
@@ -859,6 +953,23 @@ fn extract_raw_chars(
     }
 
     chars
+}
+
+/// Words a font's name gives its style with rather than its face.
+const FONT_STYLE_WORDS: [&str; 8] = [
+    "bold", "black", "heavy", "italic", "oblique", "regular", "roman", "mt",
+];
+
+/// Whether a font's name names its face ("Georgia", "FrutigerLTStd"), rather
+/// than numbering it as a subset or a resource does ("F1", "T1_0", "TT2"):
+/// four letters or more once its subset prefix and style words are gone.
+fn names_its_face(name: &str) -> bool {
+    let name = name.split_once('+').map_or(name, |(_, rest)| rest);
+    let mut face = name.to_ascii_lowercase();
+    for word in FONT_STYLE_WORDS {
+        face = face.replace(word, "");
+    }
+    face.chars().filter(char::is_ascii_alphabetic).count() >= 4
 }
 
 /// The top and bottom of a character's box. A font that declares an ascent or
@@ -951,10 +1062,8 @@ fn rotate_to_visual(
 /// Helvetica-Bold). Returns `(bold, italic)`.
 fn font_name_style(name: &str) -> (bool, bool) {
     let name = name.to_ascii_lowercase();
-    (
-        name.contains("bold") || name.contains("black") || name.contains("heavy"),
-        name.contains("italic") || name.contains("oblique"),
-    )
+    let has = |words: &[&str]| words.iter().any(|w| name.contains(w));
+    (has(&FONT_STYLE_WORDS[..3]), has(&FONT_STYLE_WORDS[3..5]))
 }
 
 fn font_weight_numeric(weight: &PdfFontWeight) -> u32 {
@@ -1337,7 +1446,14 @@ fn find_column_gutter(lines: &[TextLine]) -> (Option<f32>, Option<Vec<DetectedTa
             let near_edge = offset < extent * 0.2 || offset > extent * 0.8;
             column_split_is_plausible(lines, center, near_edge)
         })
-        .max_by_key(|&(run_len, _)| run_len)
+        // The widest gutter; of gutters as wide, the one nearest the middle,
+        // so four equal columns split two and two and each half splits once
+        // more within the split depth, rather than one and three.
+        .max_by(|a, b| {
+            let off_middle = |x: f32| (x - min_x - extent / 2.0).abs();
+            a.0.cmp(&b.0)
+                .then(off_middle(b.1).total_cmp(&off_middle(a.1)))
+        })
         .map(|(_, center)| center);
 
     (gutter, Some(tables))
@@ -1619,7 +1735,8 @@ const RUNNING_TEXT_SHARE: f32 = 0.75;
 /// and inline styles cut a line of prose into many short spans, while a
 /// table's value column ("P P P", "1, 3") never reads as words.
 fn is_running_text(spans: &[&TextSpan]) -> bool {
-    let mut lines: Vec<(f32, String)> = Vec::new();
+    // (y, text, every span of it set apart as a heading is)
+    let mut lines: Vec<(f32, String, bool)> = Vec::new();
     for span in spans {
         // A bullet glyph marks the text; it is not a word of it.
         let text = span.text.trim();
@@ -1628,17 +1745,31 @@ fn is_running_text(spans: &[&TextSpan]) -> bool {
         }
         match lines
             .iter_mut()
-            .find(|(y, _)| same_line_y(*y, span.y, span.font_size))
+            .find(|(y, ..)| same_line_y(*y, span.y, span.font_size))
         {
-            Some((_, line)) => {
+            Some((_, line, styled)) => {
                 line.push(' ');
                 line.push_str(text);
+                *styled &= is_styled(span);
             }
-            None => lines.push((span.y, text.to_string())),
+            None => lines.push((span.y, text.to_string(), is_styled(span))),
         }
     }
-    let prose = lines.iter().filter(|(_, line)| is_wordy_line(line)).count();
-    !lines.is_empty() && prose as f32 >= lines.len() as f32 * RUNNING_TEXT_SHARE
+    // A heading over a paragraph ("INSTITUTIONAL/PUBLIC | 5%" over the three
+    // columns of a plan's land use categories) is neither prose nor a row of
+    // values: it is left out of the count, as a table's header row is. A side
+    // mostly of capitals (a column of codes: "R-1", "C-2") is not headings over
+    // paragraphs, so then every line counts.
+    let styled = lines.iter().filter(|(.., styled)| *styled).count();
+    let skip_styled = styled * 2 <= lines.len();
+    let (mut counted, mut prose) = (0usize, 0usize);
+    for (_, line, styled) in &lines {
+        if !(skip_styled && *styled) {
+            counted += 1;
+            prose += usize::from(is_wordy_line(line));
+        }
+    }
+    counted > 0 && prose as f32 >= counted as f32 * RUNNING_TEXT_SHARE
 }
 
 /// Three words or more, at least three in five of them lowercase words: a line
@@ -3747,6 +3878,81 @@ mod tests {
             })
             .collect();
         assert_eq!(side_head_rows(&lines, 150.0), None);
+    }
+
+    #[test]
+    fn a_column_of_headed_paragraphs_is_running_text() {
+        // A plan's land use categories: a bold heading over each paragraph.
+        let head = |y: f32, t: &str| styled_span(t, 65.0, y, 10.0, true);
+        let body = |y: f32, t: &str| span(t, 65.0, y, 140.0, 9.0);
+        let column = [
+            head(340.0, "INSTITUTIONAL/PUBLIC | 5%"),
+            body(324.0, "Facilities that are accessible to the"),
+            body(313.0, "public, such as schools, churches,"),
+            body(303.0, "and some medical facilities."),
+            head(250.0, "PARKS & OPEN SPACE | 5%"),
+            body(233.0, "Public park land, open space, and/or"),
+            body(222.0, "recreational areas located outdoors,"),
+            body(212.0, "courts."),
+        ];
+        assert!(is_running_text(&column.iter().collect::<Vec<_>>()));
+        // A table's column of values stays a table, headed or not.
+        let values = [
+            head(340.0, "LOT AREA"),
+            body(324.0, "6,000"),
+            body(313.0, "7,500"),
+            body(303.0, "10,000"),
+        ];
+        assert!(!is_running_text(&values.iter().collect::<Vec<_>>()));
+    }
+
+    fn turned(ch: char, y: f32) -> RawChar {
+        // A glyph turned on its side: its box spans the line across (x) and
+        // its advance along (y); pdfium reports no angle and size 1.
+        RawChar {
+            width: 19.8,
+            height: 6.0,
+            ..raw_char(ch, 16.7, y, 19.8, 1.0)
+        }
+    }
+
+    #[test]
+    fn a_title_running_up_the_margin_reads_upright() {
+        let chars: Vec<RawChar> = "Plan"
+            .chars()
+            .enumerate()
+            .map(|(i, ch)| turned(ch, 500.0 + i as f32 * 7.0))
+            .collect();
+        let upright = upright_sideways(chars);
+        let text: String = upright.iter().map(|c| c.ch).collect();
+        assert_eq!(text, "Plan");
+        assert!(upright.iter().all(|c| c.y == upright[0].y && !c.vertical));
+        assert!(upright.windows(2).all(|w| w[1].x > w[0].x));
+        assert!(
+            upright[0].font_size > 10.0,
+            "size read from the line the box spans"
+        );
+        // Upright text is left as it is.
+        let line = vec![
+            raw_char('a', 10.0, 700.0, 6.0, 12.0),
+            raw_char('b', 16.0, 700.0, 6.0, 12.0),
+        ];
+        assert_eq!(
+            upright_sideways(line.clone())
+                .iter()
+                .map(|c| c.x)
+                .collect::<Vec<_>>(),
+            vec![10.0, 16.0]
+        );
+    }
+
+    #[test]
+    fn a_face_named_in_full_is_trusted_over_an_estimated_weight() {
+        assert!(names_its_face("DAAAAA+Georgia"));
+        assert!(names_its_face("FrutigerLTStd-Light"));
+        assert!(!names_its_face("F1"));
+        assert!(!names_its_face("T1_0"));
+        assert!(!names_its_face("ABCDEF+TT2"));
     }
 
     #[test]

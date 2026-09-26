@@ -104,16 +104,21 @@ fn analyze_text_quality(text: &str) -> TextQualityMetrics {
         let word = word.trim_matches(|c: char| c.is_ascii_punctuation());
         if word.chars().count() >= 2 && word.chars().all(is_latin_letter) {
             metrics.plain_word_count += 1;
-            if word
-                .chars()
-                .any(|c| is_latin_vowel(c) || matches!(c, 'y' | 'Y'))
-            {
-                metrics.plain_vowel_word_count += 1;
-            }
+            metrics.plain_vowel_word_count += usize::from(is_vowelled_word(word));
         }
     }
 
     metrics
+}
+
+/// Whether a word of letters reads as a word rather than letters a broken
+/// font map or a misread line scattered: a word in another script, or a
+/// Latin one that carries a vowel (`y` counted).
+pub fn is_vowelled_word(word: &str) -> bool {
+    !word.chars().all(is_latin_letter)
+        || word
+            .chars()
+            .any(|c| is_latin_vowel(c) || matches!(c, 'y' | 'Y'))
 }
 
 /// Whether a letter belongs to the Latin script: ASCII, the Latin-1

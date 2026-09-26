@@ -394,11 +394,13 @@ fn extract_page_structured(
     // caller asking for every page by OCR gets OCR.
     let weigh_text_layer =
         reader.as_ref().is_some_and(|o| o.pages == OcrPages::Scans) && !unreadable;
-    let mut ocr_carry = carry.clone();
+    // The table carried in from the page before, for the text layer to be
+    // read against if OCR's reading of the page is weighed against it.
+    let before_ocr = weigh_text_layer.then(|| carry.clone());
     let read = reader
         .map(|o| {
             o.engine()
-                .and_then(|engine| ocr::ocr_markdown(&page, engine, &mut ocr_carry))
+                .and_then(|engine| ocr::ocr_markdown(&page, engine, carry))
         })
         .transpose()
         .map_err(|error| ExtractionWarning::OcrFailed {
@@ -407,25 +409,21 @@ fn extract_page_structured(
         });
     // A failed OCR falls back to the text layer, unless there is none to read.
     let (markdown, by_ocr, warning) = match read {
-        Ok(Some(ocr_markdown)) => {
-            // A scanner's own hidden OCR is sometimes the better reading of
-            // the two: of text laid sideways on the page, or set in italics
-            // the engine runs together. Whichever reads more like words wins.
-            let mut text_carry = carry.clone();
-            let text_markdown = weigh_text_layer
-                .then(|| page_markdown(&page, raw_chars, rotation, &mut text_carry))
-                .filter(|text| ocr::reads_better(text, &ocr_markdown));
-            match text_markdown {
-                Some(text) => {
-                    *carry = text_carry;
+        // A scanner's own hidden OCR is sometimes the better reading of the
+        // two: of text laid sideways on the page, or set in italics the
+        // engine runs together. Whichever reads more like words wins.
+        Ok(Some(ocr_markdown)) => match before_ocr {
+            Some(mut layer_carry) => {
+                let text = page_markdown(&page, raw_chars, rotation, &mut layer_carry);
+                if ocr::reads_better(&text, &ocr_markdown) {
+                    *carry = layer_carry;
                     (text, false, None)
-                }
-                None => {
-                    *carry = ocr_carry;
+                } else {
                     (ocr_markdown, true, None)
                 }
             }
-        }
+            None => (ocr_markdown, true, None),
+        },
         Err(failed) if unreadable => return Err(failed),
         other => (
             page_markdown(&page, raw_chars, rotation, carry),
@@ -641,17 +639,18 @@ fn reading_rotation(page: &PdfPage<'_>, text: &PdfPageText<'_>) -> PdfPageRender
             continue;
         }
         let angle = c.angle_degrees().unwrap_or(0.0).rem_euclid(360.0);
-        let turn = ((angle + 45.0) / 90.0) as usize % 4;
+        let quarter = (angle / 90.0).round();
         // Only a character close to a quarter turn votes.
-        let off = (angle - turn as f32 * 90.0).abs();
-        if off.min(360.0 - off) < 30.0 {
-            turns[turn] += 1;
+        if (angle - quarter * 90.0).abs() < 30.0 {
+            turns[quarter as usize % 4] += 1;
         }
     }
     let total: usize = turns.iter().sum();
-    let Some((turn, &count)) = turns.iter().enumerate().max_by_key(|&(_, &n)| n) else {
-        return rotation;
-    };
+    let (turn, &count) = turns
+        .iter()
+        .enumerate()
+        .max_by_key(|&(_, &n)| n)
+        .expect("invariant: four turns");
     if total < MIN_FRAME_CHARS || (count as f32) < total as f32 * UPRIGHT_FRAME_SHARE {
         return rotation;
     }
@@ -678,7 +677,6 @@ const NOTE_MAX_TYPE_SIZE: f32 = 12.0;
 /// from the annotation: each line of its contents across the box, top down.
 fn note_chars(page: &PdfPage<'_>, rotation: PdfPageRenderRotation) -> Vec<RawChar> {
     let (page_width, page_height) = (page.width().value, page.height().value);
-    let font_name: Rc<str> = Rc::from("");
     let mut chars = Vec::new();
     for note in page.annotations().iter() {
         if note.annotation_type() != PdfPageAnnotationType::FreeText || note.is_hidden() {
@@ -700,39 +698,57 @@ fn note_chars(page: &PdfPage<'_>, rotation: PdfPageRenderRotation) -> Vec<RawCha
         let line_height = (top - bottom) / lines.len() as f32;
         let font_size = (line_height * NOTE_TYPE_HEIGHT).min(NOTE_MAX_TYPE_SIZE);
         for (i, line) in lines.iter().enumerate() {
-            let text: Vec<char> = line.chars().collect();
-            let pitch = ((right - left) / text.len() as f32).min(font_size * 0.6);
+            let pitch = ((right - left) / line.chars().count() as f32).min(font_size * 0.6);
             let line_top = top - i as f32 * line_height;
-            let mut space = false;
-            for (k, &ch) in text.iter().enumerate() {
-                if ch.is_whitespace() {
-                    space = true;
-                    continue;
-                }
-                let (x, y, width, height) = rotate_to_visual(
-                    left + k as f32 * pitch,
-                    line_top,
-                    pitch * 0.9,
-                    font_size,
+            for mut c in spread_chars(line, left, line_top, pitch, font_size, font_size) {
+                (c.x, c.y, c.width, c.height) = rotate_to_visual(
+                    c.x,
+                    c.y,
+                    c.width,
+                    c.height,
                     rotation,
                     page_width,
                     page_height,
                 );
-                chars.push(RawChar {
-                    ch,
-                    x,
-                    y,
-                    width,
-                    height,
-                    font_size,
-                    font_name: Rc::clone(&font_name),
-                    bold: false,
-                    italic: false,
-                    space_before: std::mem::take(&mut space),
-                    vertical: false,
-                });
+                chars.push(c);
             }
         }
+    }
+    chars
+}
+
+/// A line of text laid across a box as characters, `pitch` apart from
+/// `left`, their tops at `top`: for text that comes with a box and no glyph
+/// positions (an OCR line, a note typed onto the page).
+fn spread_chars(
+    text: &str,
+    left: f32,
+    top: f32,
+    pitch: f32,
+    height: f32,
+    font_size: f32,
+) -> Vec<RawChar> {
+    let font_name: Rc<str> = Rc::from("");
+    let mut space = false;
+    let mut chars = Vec::new();
+    for (i, ch) in text.chars().enumerate() {
+        if ch.is_whitespace() {
+            space = true;
+            continue;
+        }
+        chars.push(RawChar {
+            ch,
+            x: left + i as f32 * pitch,
+            y: top,
+            width: pitch * 0.9,
+            height,
+            font_size,
+            font_name: Rc::clone(&font_name),
+            bold: false,
+            italic: false,
+            space_before: std::mem::take(&mut space),
+            vertical: false,
+        });
     }
     chars
 }
@@ -1487,12 +1503,23 @@ fn is_side_heading(spans: &[&TextSpan], lines: &[TextLine]) -> bool {
     };
     !spans.is_empty()
         && spans.len() <= SIDE_HEADING_MAX_LINES * 2
-        && spans.iter().all(|s| {
-            let letters: Vec<char> = s.text.chars().filter(|c| c.is_alphabetic()).collect();
-            let styled =
-                s.bold || (!letters.is_empty() && letters.iter().all(|c| c.is_uppercase()));
-            styled && s.y >= limit - 0.5
-        })
+        && spans.iter().all(|s| is_styled(s) && s.y >= limit - 0.5)
+}
+
+/// Set apart as a label is: bold, or every letter a capital.
+fn is_styled(span: &TextSpan) -> bool {
+    let mut letters = span.text.chars().filter(|c| c.is_alphabetic()).peekable();
+    span.bold || (letters.peek().is_some() && letters.all(char::is_uppercase))
+}
+
+/// The first of each run of `ys` (top first) that starts after a gap wider
+/// than `gap`: the first lines of paragraphs, or the tops of wrapped labels.
+fn run_starts(ys: &[f32], gap: f32) -> Vec<f32> {
+    ys.iter()
+        .enumerate()
+        .filter(|&(i, &y)| i == 0 || ys[i - 1] - y > gap)
+        .map(|(_, &y)| y)
+        .collect()
 }
 
 /// Words a side-head label may run to on one line: "CIRCULATION &", not prose.
@@ -1514,31 +1541,29 @@ const SIDE_HEAD_ALIGN: f32 = 0.5;
 /// A single label is a side heading ([`is_side_heading`]); two or more are
 /// this.
 fn side_head_rows(lines: &[TextLine], gutter_x: f32) -> Option<Vec<f32>> {
-    let mut labels: Vec<(f32, Vec<&TextSpan>)> = Vec::new();
+    let mut label_ys: Vec<f32> = Vec::new();
     let mut right_ys: Vec<f32> = Vec::new();
     let mut right: Vec<&TextSpan> = Vec::new();
     for line in lines {
-        let (l, r): (Vec<&TextSpan>, Vec<&TextSpan>) = line
+        let (left, r): (Vec<&TextSpan>, Vec<&TextSpan>) = line
             .spans
             .iter()
             .partition(|s| span_is_left_of(s, gutter_x));
-        if !l.is_empty() {
-            labels.push((line.y, l));
+        let is_label = |s: &&TextSpan| {
+            is_styled(s) && s.text.split_whitespace().count() <= SIDE_HEAD_MAX_WORDS
+        };
+        if !left.iter().all(is_label) {
+            return None;
+        }
+        if !left.is_empty() {
+            label_ys.push(line.y);
         }
         if !r.is_empty() {
             right_ys.push(line.y);
             right.extend(r);
         }
     }
-    if labels.len() < 2 || right_ys.len() < 2 {
-        return None;
-    }
-    let is_label = |s: &&TextSpan| {
-        let letters: Vec<char> = s.text.chars().filter(|c| c.is_alphabetic()).collect();
-        let styled = s.bold || (!letters.is_empty() && letters.iter().all(|c| c.is_uppercase()));
-        styled && s.text.split_whitespace().count() <= SIDE_HEAD_MAX_WORDS
-    };
-    if !labels.iter().all(|(_, spans)| spans.iter().all(is_label)) || !is_running_text(&right) {
+    if label_ys.len() < 2 || right_ys.len() < 2 || !is_running_text(&right) {
         return None;
     }
 
@@ -1548,22 +1573,10 @@ fn side_head_rows(lines: &[TextLine], gutter_x: f32) -> Option<Vec<f32>> {
     if pitch <= 0.0 {
         return None;
     }
-    let paragraph_starts: Vec<f32> = right_ys
-        .iter()
-        .enumerate()
-        .filter(|&(i, &y)| i == 0 || right_ys[i - 1] - y > SIDE_HEAD_PARAGRAPH_GAP * pitch)
-        .map(|(_, &y)| y)
-        .collect();
-
+    let gap = SIDE_HEAD_PARAGRAPH_GAP * pitch;
+    let paragraph_starts = run_starts(&right_ys, gap);
     // A label may wrap over several lines; a wider gap starts the next one.
-    let mut tops: Vec<f32> = Vec::new();
-    let mut previous: Option<f32> = None;
-    for &(y, _) in &labels {
-        if previous.is_none_or(|p| p - y > SIDE_HEAD_PARAGRAPH_GAP * pitch) {
-            tops.push(y);
-        }
-        previous = Some(y);
-    }
+    let tops = run_starts(&label_ys, gap);
     let aligned = tops.iter().all(|&top| {
         paragraph_starts
             .iter()
@@ -1979,19 +1992,27 @@ const SECTION_LABELS: [&str; 11] = [
 /// "Section 4.1", "Article IV", "Appendix B", "§ 36-520". Such a line starts
 /// a heading even when the line above is a heading of the same size.
 fn starts_section_label(text: &str) -> bool {
+    section_label(text).is_some()
+}
+
+/// A section label and its number with nothing after them: "Appendix C",
+/// "CHAPTER 11", "Article IV."
+fn is_bare_section_label(text: &str) -> bool {
+    section_label(text) == Some(0)
+}
+
+/// When a line opens with a section label and its number, how many words
+/// follow them.
+fn section_label(text: &str) -> Option<usize> {
     let mut words = text.split_whitespace();
-    let Some(first) = words.next() else {
-        return false;
-    };
+    let first = words.next()?;
     let (label, id) = match first.strip_prefix('§') {
         Some("") => ("§", words.next()),
         Some(rest) => ("§", Some(rest)),
         None => (first, words.next()),
     };
     let label = label.trim_end_matches('.').to_lowercase();
-    let Some(id) = id.map(|w| w.trim_end_matches(['.', ':', ','])) else {
-        return false;
-    };
+    let id = id?.trim_end_matches(['.', ':', ',']);
     // An identifier: a number ("520", "4.1", "36-520"), a roman numeral or a
     // single letter, never a word ("Section Purpose").
     // A lowercase numeral is short ("iv"); a lowercase word of numeral
@@ -2002,16 +2023,8 @@ fn starts_section_label(text: &str) -> bool {
     let identifier = id.starts_with(|c: char| c.is_ascii_digit())
         || (id.len() == 1 && id.chars().all(|c| c.is_ascii_alphabetic()))
         || roman;
-    (label == "§" || SECTION_LABELS.contains(&label.as_str())) && identifier
-}
-
-/// A section label and its number with nothing after them: "Appendix C",
-/// "CHAPTER 11", "Article IV."
-fn is_bare_section_label(text: &str) -> bool {
-    // The label and its number are two words, or one when the section sign
-    // is set tight against it ("§36-520").
-    let words = text.split_whitespace().count();
-    starts_section_label(text) && (words == 2 || (words == 1 && text.trim_start().starts_with('§')))
+    ((label == "§" || SECTION_LABELS.contains(&label.as_str())) && identifier)
+        .then(|| words.count())
 }
 
 /// An enumerator as a code or a plan prints one: `1.`, `a.`, `iv.`, `A)`,
@@ -2165,13 +2178,14 @@ fn group_into_blocks(lines: &[TextLine], tables: &[DetectedTable], body_size: f3
             // printed alone on its line is a line of its own: "Appendix C"
             // over "Bicycle Parking Design Guidelines" is how a code heads it,
             // and how a reader finds it.
-            if matches!(kind, LineKind::Heading(_)) && {
+            if matches!(kind, LineKind::Heading(_)) {
                 let text = line_to_text(&lines[j]);
-                is_list_item_start(text.trim())
+                if is_list_item_start(text.trim())
                     || starts_section_label(&text)
                     || is_bare_section_label(&line_to_text(&lines[j - 1]))
-            } {
-                break;
+                {
+                    break;
+                }
             }
 
             if !is_vertically_close(&lines[j - 1], &lines[j]) {

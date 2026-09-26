@@ -11,13 +11,14 @@
 
 use image::GrayImage;
 use pdf_core::page::image_stats;
+use pdf_core::text_quality::is_vowelled_word;
 use pdf_ocr::{Ocr, OcrLine};
 use pdf_render::{PngSize, render_page};
 use pdfium_render::prelude::{PdfPage, PdfPageText, PdfPageTextRenderMode};
 
 use super::graphics::{self, Rule};
 use super::regions::TableTail;
-use super::{RawChar, page_markdown_drawn};
+use super::{RawChar, page_markdown_drawn, spread_chars};
 
 /// Share of the page its images must cover for the page to be a scan.
 const SCAN_IMAGE_COVERAGE: f32 = 0.6;
@@ -150,11 +151,9 @@ fn word_counts(markdown: &str) -> (usize, usize) {
             continue;
         }
         tokens += 1;
-        let letters = token.chars().count();
-        let latin = token.chars().all(|c| c.is_ascii_alphabetic());
-        let word = (3..=MAX_WORD_LETTERS).contains(&letters)
+        let word = (3..=MAX_WORD_LETTERS).contains(&token.chars().count())
             && token.chars().all(char::is_alphabetic)
-            && (!latin || token.chars().any(|c| "aeiouyAEIOUY".contains(c)));
+            && is_vowelled_word(token);
         words += usize::from(word);
     }
     (words, tokens)
@@ -166,31 +165,16 @@ fn word_counts(markdown: &str) -> (usize, usize) {
 fn line_chars(line: &OcrLine, scale: f32, page_height: f32) -> Vec<RawChar> {
     let [left, top, right, bottom] = line.bounds.map(|v| v / scale);
     let height = (bottom - top).max(0.0);
-    let text: Vec<char> = line.text.trim().chars().collect();
-    let pitch = (right - left).max(0.0) / text.len().max(1) as f32;
-    let font_name = std::rc::Rc::from("");
-    let mut space = false;
-    let mut chars = Vec::with_capacity(text.len());
-    for (i, &ch) in text.iter().enumerate() {
-        if ch.is_whitespace() {
-            space = true;
-            continue;
-        }
-        chars.push(RawChar {
-            ch,
-            x: left + i as f32 * pitch,
-            y: page_height - top,
-            width: pitch * 0.9,
-            height,
-            font_size: height * OCR_TYPE_HEIGHT,
-            font_name: std::rc::Rc::clone(&font_name),
-            bold: false,
-            italic: false,
-            space_before: std::mem::take(&mut space),
-            vertical: false,
-        });
-    }
-    chars
+    let text = line.text.trim();
+    let pitch = (right - left).max(0.0) / text.chars().count().max(1) as f32;
+    spread_chars(
+        text,
+        left,
+        page_height - top,
+        pitch,
+        height,
+        height * OCR_TYPE_HEIGHT,
+    )
 }
 
 /// The rules printed in a page picture: runs of ink long enough to be lines,

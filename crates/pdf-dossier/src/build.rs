@@ -35,7 +35,7 @@ use crate::entities::{self, Found, Template};
 use crate::facts::{self, Fact, FactKind};
 use crate::report::*;
 use crate::trust::{Trust, group_trust, looks_like_extract, page_trust};
-use crate::{access, checks, legacy, numbers, qr, request, text_signals};
+use crate::{access, checks, indicators, legacy, numbers, qr, request, text_signals};
 
 /// Whether a label marks a page whose geometry export is worth referencing:
 /// the classifier's own drawing classes, plus the labels this schema adds on
@@ -1176,6 +1176,13 @@ fn emit_report(
         }
     }
 
+    let embedded: Vec<(usize, &str)> = analysis
+        .inputs
+        .iter()
+        .filter(|input| input.embedded())
+        .map(|input| (input.number, input.text.as_str()))
+        .collect();
+
     Ok(DossierReport {
         schema_version: SCHEMA_VERSION,
         document,
@@ -1185,6 +1192,7 @@ fn emit_report(
         generated_by: generated_by(answers.is_some()),
         stats,
         request,
+        indicators: indicators::read(&embedded),
         facts: page_facts,
         checks: page_checks,
         pages: pages_out,

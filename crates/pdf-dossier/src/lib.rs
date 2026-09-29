@@ -21,6 +21,7 @@ mod build;
 pub mod checks;
 pub mod entities;
 pub mod facts;
+pub mod indicators;
 pub mod legacy;
 pub mod numbers;
 pub mod qr;

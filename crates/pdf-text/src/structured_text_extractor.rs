@@ -1,5 +1,5 @@
 use pdf_core::error::{PdfError, Result};
-use pdf_core::page::{open_document, page_count_u16, page_index};
+use pdf_core::page::{open_document, page_count_u16, page_index, visible_text};
 use pdf_core::page_selection::PageSelection;
 use pdf_core::text_quality::is_probably_unreadable_text;
 use pdf_core::warning::ExtractionWarning;
@@ -372,7 +372,7 @@ fn extract_page_structured(
 
     // Judge the same sanitized page text as the plain-text extractor, so the
     // shared heuristic's thresholds apply to one input distribution.
-    let unreadable = is_probably_unreadable_text(&pdf_core::page::page_text(&page, &text));
+    let unreadable = is_probably_unreadable_text(&visible_text(&page, &text));
     let reader =
         ocr.filter(|o| o.pages == OcrPages::All || ocr::is_scanned(&page, &text, unreadable));
     if unreadable && reader.is_none() {

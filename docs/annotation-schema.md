@@ -21,6 +21,7 @@ exactly.
 | `document` / `source` / `page_count` | Same meaning as the `vector` command |
 | `stats` | Per-dossier counts (routes, QR pages, handwriting pages, placed pages) |
 | `request` | What the application form asks for: `{"page", "via", "action", "object"?, "use"?, "use_page"?, "works"?, "storeys"?, "address"?, "planned"?}` — see the `request` subsection of the `dossier` contract in `json-api.md` for the vocabularies. Deterministic, read off the Ձև N 1-1 form's fixed slots; absent when no embedded-text application form states a request |
+| `indicators` | The ՏՏՑ table as printed: `{"page", "plot"?, "footprint"?, "green"?}`, each figure `{"m2", "pct"?}`, `footprint` a list of rows — see the `indicators` subsection of the `dossier` contract in `json-api.md`. Deterministic; absent when no embedded-text page prints the table |
 | `facts` | Every figure the dossier states about its parcel, one entry per page that states it, with the page's `trust` — see the `facts` and `checks` subsection of the `dossier` contract in `json-api.md`. Absent when nothing was read |
 | `checks` | Each repeated figure compared across the pages that state it, the official page as the reference. Absent when there was nothing to compare |
 | `pages` | Array, one entry per page, in page order |

@@ -3,7 +3,7 @@ use pdf_core::naming::{
     OutputReservation, file_size_kb, output_stem, reserve_named_output_file_with_extension,
     reserve_output_file_with_extension, resolve_output_dir,
 };
-use pdf_core::page::{open_document, page_count_u16, page_index};
+use pdf_core::page::{open_document, page_count_u16, page_index, visible_text};
 use pdf_core::page_selection::PageSelection;
 use pdf_core::text_quality::is_probably_unreadable_text;
 use pdf_core::warning::ExtractionWarning;
@@ -193,8 +193,7 @@ fn read_page_text(
 }
 
 fn page_text(page: &PdfPage<'_>) -> std::result::Result<String, PdfiumError> {
-    page.text()
-        .map(|text| pdf_core::page::page_text(page, &text))
+    page.text().map(|text| visible_text(page, &text))
 }
 
 fn write_page_block(

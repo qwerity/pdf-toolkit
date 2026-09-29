@@ -117,6 +117,11 @@ pub struct DossierReport {
     /// application form states a request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request: Option<crate::request::Request>,
+    /// The technical-economic indicators table (ՏՏՑ) as printed — plot,
+    /// footprint and green area with their printed percentages
+    /// (`indicators.rs`). Absent when no embedded-text page prints one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indicators: Option<crate::indicators::Indicators>,
     /// Every figure the dossier states about its parcel, with the page and
     /// the trust it came with (`facts.rs`). Absent when nothing was read.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -479,6 +484,7 @@ mod tests {
             generated_by: String::new(),
             stats: Stats::default(),
             request: None,
+            indicators: None,
             facts: Vec::new(),
             checks: Vec::new(),
             pages,

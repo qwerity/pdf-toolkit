@@ -46,7 +46,7 @@ pub fn visible_rect(page: &PdfPage<'_>) -> PdfRect {
 /// Use this, never `PdfPageText::all()` (clippy forbids it): that bounds the
 /// text by `page_size()`, which silently truncates a page whose box is not
 /// at the origin (see [`visible_rect`]).
-pub fn page_text(page: &PdfPage<'_>, text: &PdfPageText<'_>) -> String {
+pub fn visible_text(page: &PdfPage<'_>, text: &PdfPageText<'_>) -> String {
     sanitize_extracted_text(&text.inside_rect(visible_rect(page)))
 }
 

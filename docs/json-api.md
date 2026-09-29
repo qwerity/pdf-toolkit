@@ -858,6 +858,7 @@ changes its rates. Model quality on the annotation task is compared in
 | `generated_by` | Names the passes; says whether answers were merged or are pending |
 | `stats` | Per-dossier counts: route totals, `vlm_flagged`, `qr_pages`, `handwriting_pages`, `placed_pages` |
 | `request` | What the application form asks for — see below. Absent when no embedded-text application form states a request. |
+| `indicators` | The technical-economic indicators table (ՏՏՑ) as printed: plot, footprint and green area with their printed percentages — see below. Absent when no embedded-text page prints one. |
 | `facts` / `checks` | Every figure the dossier states about its parcel, and each repeated figure compared across the pages that state it — see *`facts` and `checks`* below. Absent when nothing was read / nothing could be compared. |
 | `pages` | Array, one entry per page — field tables in `annotation-schema.md` |
 | `groups` / `entities` / `graph` | Document sections, the identifier registry, and the derived edges |
@@ -961,6 +962,41 @@ real run on a synthetic form (`jq .request`):
 
 A scanned application form is routed to the vision pass like any scan and
 yields no `request` in this version; the block is deterministic by design.
+
+### `indicators`
+
+The drawing set's technical-economic indicators table (ՏՏՑ, «…ՑՈՒՑԱՆԻՇՆԵՐ»):
+the three figures every coverage and greening ratio is built from, read from
+the first embedded-text page whose heading names the table (0.18.4). Copied
+from a real run (`jq .indicators`):
+
+```json
+{
+  "page": 24,
+  "plot": { "m2": 400.0 },
+  "footprint": [
+    { "m2": 120.0, "pct": 30.0 },
+    { "m2": 6.0, "pct": 1.5 }
+  ],
+  "green": { "m2": 100.0, "pct": 25.0 }
+}
+```
+
+| Field | Notes |
+|---|---|
+| `page` | The page the table was read from |
+| `plot` | The plot area, m² (a hectare figure converted) |
+| `footprint` | The built footprint as the rows the table prints it in: one row, or the house's and the fence's (add them for the whole). Never «ԸՆԴՀԱՆՈՒՐ կառուցապատման մակերես» (every storey summed) nor a built area qualified «/ԱՆՋՐԱՆՑԻԿ … ՆԵՐԱՌՅԱԼ/» (paving included) |
+| `green` | The green (landscaped) area, m² |
+| `…pct` | The percentage the table prints beside a figure, as printed — NOT checked against the figures here; comparing it with area/plot is the caller's test of the reading |
+
+Each of `plot`, `footprint`, `green` is absent when the table does not
+print it, prints it with two different values, or two sheets print the table
+differently — the reader gives a field up rather than choosing. Letter-spaced
+CAD capitals («ՀՈՂ Ա Մ ԱՍԻ») and the two units a legacy CAD font mis-encodes
+(«Թ» for «քմ/», «fճ» for «հա») are read. A scanned table yields nothing;
+the block is deterministic by design. The total floor area and the storey
+count are not read here — their meaning varies between albums.
 
 ### `facts` and `checks`
 

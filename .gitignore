@@ -14,7 +14,7 @@ __pycache__
 # `data/` is the test data set and is committed: the corpus PDFs and their
 # photographs, the reviewed annotations with the per-page GeoJSON they
 # reference, the answers, the parcels, the recorded building reports, the
-# model golden and the accepted parameters, and the scorecard ledgers. Only
+# accepted model parameters, and the scorecard ledgers. Only
 # unrelated files and run logs stay out.
 /data/annotations/geojson/
 /data/annotations/building/logs/

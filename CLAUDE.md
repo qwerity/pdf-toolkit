@@ -138,12 +138,6 @@ other kind of file: golden snapshots of the output, regenerated when the output
 legitimately changes, and only after the scorecard shows no kind dropped
 against the ledgers.
 
-**The reference reconstruction is pinned by a golden test.**
-`crates/pdf-model/tests/golden.rs` diffs the port's output on
-`data/plan/4-sketch.pdf` against `data/annotations/model/4.json`, the Python
-prototype's `model.json` (both private corpus data). Every polygon must match
-to within 2 % of its area; a rule change that moves a wall shows up there.
-
 ## Conventions
 
 - `cargo fmt --all` and `cargo clippy --all-targets --workspace -- -D warnings`
@@ -172,10 +166,10 @@ with the working directory at the *package* root, where the runtime's own
 relative `./dist/` lookup cannot see it.
 
 **`data/` is the test data set, committed with the code.** `data/plan/` holds
-the fourteen real building-permit dossiers (plus the ArchiCAD sketch subset),
+the fourteen real building-permit dossiers,
 `data/annotations/` the reviewed annotations the `dossier` tests replay, with
-the vision-pass answers, the cadastre parcels, the recorded `building` reports,
-the model golden and the accepted `model` parameters beside them, and
+the vision-pass answers, the cadastre parcels, the recorded `building` reports
+and the accepted `model` parameters beside them, and
 `data/expected/` the scorecard ledgers. **It is personal data** — owners,
 addresses, identity documents — in a private repository: never publish it,
 never copy it into another repository, never quote a person or a parcel from

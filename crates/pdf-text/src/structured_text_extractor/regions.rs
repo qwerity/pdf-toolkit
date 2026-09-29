@@ -417,9 +417,16 @@ fn grid_regions(component: &[Rule]) -> Vec<Region> {
         .collect()
 }
 
+/// The share of a ruled grid one merged cell must cover for the grid to be a
+/// sheet's frame around a drawing rather than a table. A table merges half
+/// its cells at most (a 2×2 with one missing inner rule); a drawing area is
+/// most of its sheet.
+const SHEET_FRAME_SHARE: f32 = 0.6;
+
 /// The cells between grid lines `xs` (left to right) and `ys` (top to
 /// bottom), merged wherever an edge has no rule; a text box when the grid has
-/// fewer than two rows or no row divided into columns.
+/// fewer than two rows or no row divided into columns, and nothing when it is
+/// a sheet's frame around a drawing.
 fn build_grid(xs: &[f32], ys: &[f32], hs: &[&Rule], vs: &[&Rule]) -> Option<Region> {
     let rect = Rect {
         left: xs[0],
@@ -459,6 +466,16 @@ fn build_grid(xs: &[f32], ys: &[f32], hs: &[&Rule], vs: &[&Rule]) -> Option<Regi
             }
         }
     }
+
+    let area = |members: &[(usize, usize)]| -> f32 {
+        members
+            .iter()
+            .map(|&(r, c)| (xs[c + 1] - xs[c]) * (ys[r] - ys[r + 1]))
+            .sum()
+    };
+    let drawing_area = groups
+        .iter()
+        .any(|(_, members)| area(members) > rect.area() * SHEET_FRAME_SHARE);
     let cells: Vec<Cell> = groups
         .iter()
         .flat_map(|(_, members)| rectangles(members))
@@ -479,6 +496,13 @@ fn build_grid(xs: &[f32], ys: &[f32], hs: &[&Rule], vs: &[&Rule]) -> Option<Regi
     // A frame with no inner columns is a text box, however many rows its
     // header bar or dividers give it.
     let is_table = rows >= 2 && cols >= 2 && cells.iter().any(|c| c.col_span < cols);
+    // A sheet's frame, not a table: one merged cell — the drawing area —
+    // covers most of it. Read as a table, the title block's lines split the
+    // drawing area into rows no table has, and the block's address and note
+    // were written into every one of them. Its text is read as text.
+    if is_table && drawing_area {
+        return None;
+    }
     Some(Region {
         rect,
         kind: if is_table {
@@ -1572,6 +1596,30 @@ mod tests {
         let title = grid.cells.iter().find(|c| c.row == 0).expect("title cell");
         assert_eq!(title.col_span, 2);
         assert_eq!(grid.cells.iter().filter(|c| c.row == 1).count(), 2);
+    }
+
+    #[test]
+    fn a_sheet_frame_around_a_drawing_is_not_a_table() {
+        // A 400×300 frame whose drawing area (0-320 × 60-300, 64% of it) is
+        // one cell, with a title block's rows and columns along the bottom:
+        // the lines of a CAD sheet, not a table.
+        let mut rules = vec![
+            h(300.0, 0.0, 400.0),
+            h(0.0, 0.0, 400.0),
+            h(60.0, 0.0, 400.0),
+            h(30.0, 320.0, 400.0),
+        ];
+        rules.extend([
+            v(0.0, 0.0, 300.0),
+            v(400.0, 0.0, 300.0),
+            v(320.0, 0.0, 300.0),
+            v(360.0, 0.0, 60.0),
+        ]);
+        let regions = ruled_regions(&rules, &[]);
+        assert!(
+            !regions.iter().any(|r| matches!(r.kind, Kind::Table(_))),
+            "a sheet frame was read as a table"
+        );
     }
 
     #[test]

@@ -119,6 +119,25 @@ the toolkit is wrong, fix the ledger to what the page says and let the score
 show the gap (two such entries are in the baseline today: a mis-read digit
 in dossier 10's entity, an unread hectare figure on dossier 14 p16).
 
+**The ledgers are ground truth, and a failing test is never a reason to edit
+one.** A value in `data/expected/<n>.json` may change for exactly two reasons:
+
+1. **The page shows the value is wrong.** The commit says which page and what
+   it prints, and the value is checked against the page image, not against the
+   toolkit's output.
+2. **New fields or new logic:** a new kind, a new section, a new check. The new
+   entries are checked against the page before they go in, like any other entry.
+
+Never change, remove or loosen a value so that a test passes, and never refresh
+a ledger from a run (`seed-expected.py` is for a document that has no ledger).
+When the output and a ledger disagree, the code is what gets fixed, or the gap
+stays visible in the score. A `reviewed` flag turns `true` only after every
+entry of its section was checked against the pages; it never turns `false` to
+make room for unchecked output. The annotations in `data/annotations/` are the
+other kind of file: golden snapshots of the output, regenerated when the output
+legitimately changes, and only after the scorecard shows no kind dropped
+against the ledgers.
+
 **The reference reconstruction is pinned by a golden test.**
 `crates/pdf-model/tests/golden.rs` diffs the port's output on
 `data/plan/4-sketch.pdf` against `data/annotations/model/4.json`, the Python

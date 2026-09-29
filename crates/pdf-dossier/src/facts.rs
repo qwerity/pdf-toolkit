@@ -90,6 +90,8 @@ pub struct Fact {
 const CONTEXT_WORDS: &[(&str, FactKind, &str)] = &[
     ("ցանկապատ", FactKind::PlannedArea, "fence"),
     ("պարիսպ", FactKind::PlannedArea, "fence"),
+    // պարիսպ drops its ի when inflected: «Պարսպի մակերես», «պարսպով».
+    ("պարսպ", FactKind::PlannedArea, "fence"),
     ("հողամաս", FactKind::ParcelArea, ""),
     ("հողի", FactKind::ParcelArea, ""),
     ("կառուցապատման", FactKind::FootprintArea, ""),
@@ -112,12 +114,28 @@ const EXCLUDING_WORDS: &[&str] = &[
     "սանհանգույց",
 ];
 
-static CODE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(^|[^\d-])(\d{2}-\d{3}-\d{4}-\d{4})(-(\d{3}))?($|[^\d-])").expect("valid regex")
-});
+/// A code and its optional `-NNN` building suffix. Where a code starts and ends
+/// is checked by `standalone`, not by the pattern: `regex` has no look-around,
+/// and a boundary written into the pattern consumed the space between two codes,
+/// so a map listing its parcels with single spaces between them lost every
+/// second code, the subject's among them.
+static CODE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\d{2}-\d{3}-\d{4}-\d{4}(?:-\d{3})?").expect("valid regex"));
+/// The length of a code without its building suffix, `NN-NNN-NNNN-NNNN`.
+const CODE_LEN: usize = 16;
 /// The quarter-and-parcel half of a code, as a fee table prints it.
 static PARTIAL_CODE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(^|[^\d-])(\d{4}-\d{4})($|[^\d-])").expect("valid regex"));
+    LazyLock::new(|| Regex::new(r"\d{4}-\d{4}").expect("valid regex"));
+
+/// The matches of `re` that stand alone, no digit or hyphen touching them on
+/// either side, so a code is not read out of a longer run of digits.
+fn standalone<'t>(re: &Regex, text: &'t str) -> impl Iterator<Item = regex::Match<'t>> {
+    let joins = |c: char| c.is_ascii_digit() || c == '-';
+    re.find_iter(text).filter(move |m| {
+        !text[..m.start()].chars().next_back().is_some_and(joins)
+            && !text[m.end()..].chars().next().is_some_and(joins)
+    })
+}
 static CERT_AREA_HA: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"Մակերեսի չափը\s*\(հա\)\s*[՝:]?\s*(\d+(?:[.,]\d+)?)").expect("valid regex")
 });
@@ -367,13 +385,12 @@ fn code_facts(page: &PageInput<'_>, out: &mut Vec<Fact>) {
         .iter()
         .any(|l| l == "cad_drawing" || l == "scanned_drawing" || l == "map");
     let mut found: Vec<(String, usize)> = Vec::new();
-    for c in CODE.captures_iter(page.text) {
-        let code = c[2].to_string();
+    for m in standalone(&CODE, page.text) {
+        let code = m.as_str()[..CODE_LEN].to_string();
         if found.iter().any(|(seen, _)| *seen == code) {
             continue;
         }
-        let at = c.get(2).expect("code").start();
-        found.push((code, at));
+        found.push((code, m.start()));
     }
     let is_map = drawing && found.len() >= 2;
     let lower = page.text.to_lowercase();
@@ -395,9 +412,9 @@ fn code_facts(page: &PageInput<'_>, out: &mut Vec<Fact>) {
         out.push(f);
     }
     if page.text.contains("Տրամադրված տեղեկատվությունը") {
-        for c in PARTIAL_CODE.captures_iter(page.text) {
-            let mut f = fact(FactKind::CadastralCode, page, &c[2]);
-            f.text = Some(c[2].to_string());
+        for m in standalone(&PARTIAL_CODE, page.text) {
+            let mut f = fact(FactKind::CadastralCode, page, m.as_str());
+            f.text = Some(m.as_str().to_string());
             f.subject = Some("partial".into());
             out.push(f);
         }
@@ -765,5 +782,47 @@ mod tests {
         assert!(facts.iter().any(|f| f.kind == FactKind::CadastralCode
             && f.subject.as_deref() == Some("partial")
             && f.text.as_deref() == Some("0731-0612")));
+    }
+
+    #[test]
+    fn a_map_listing_codes_with_single_spaces_yields_every_code() {
+        let l = labels(&["cad_drawing", "cadastral_plan"]);
+        let text = "01-011-0388-0017 01-011-0388-0018 01-011-0388-0017 01-011-1643-0003 \
+                    01-011-0388-0015 01-011-0388-0007";
+        let facts = page_facts(&input(2, &l, text, Trust::Official), None, None);
+        let mut codes: Vec<&str> = facts
+            .iter()
+            .filter(|f| f.kind == FactKind::CadastralCode)
+            .filter_map(|f| f.text.as_deref())
+            .collect();
+        codes.sort_unstable();
+        assert_eq!(
+            codes,
+            [
+                "01-011-0388-0007",
+                "01-011-0388-0015",
+                "01-011-0388-0017",
+                "01-011-0388-0018",
+                "01-011-1643-0003"
+            ]
+        );
+        assert!(facts.iter().all(|f| f.subject.as_deref() == Some("map")));
+    }
+
+    #[test]
+    fn a_code_inside_a_longer_run_of_digits_is_not_read() {
+        let l = labels(&["text_document"]);
+        let text = "N 101-011-0388-0007 and 01-011-0388-00071 and 0388-0007-7";
+        let facts = page_facts(&input(3, &l, text, Trust::Applicant), None, None);
+        assert!(facts.iter().all(|f| f.kind != FactKind::CadastralCode));
+        let fee = "Տրամադրված տեղեկատվությունը 0731-0612 0731-0613 01-011-0731-0614";
+        let facts = page_facts(&input(4, &l, fee, Trust::Official), None, None);
+        let mut partial: Vec<&str> = facts
+            .iter()
+            .filter(|f| f.subject.as_deref() == Some("partial"))
+            .filter_map(|f| f.text.as_deref())
+            .collect();
+        partial.sort_unstable();
+        assert_eq!(partial, ["0731-0612", "0731-0613"]);
     }
 }

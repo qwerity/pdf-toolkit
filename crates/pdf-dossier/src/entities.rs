@@ -31,8 +31,8 @@ fn found(entity_type: &str, value: &str) -> Found {
 
 /// The registry id an entity gets — the one rule, shared with the vision
 /// pass so the same name read twice lands on one graph node. People and
-/// organisations are slugged (first two words, transliterated); identifier
-/// types keep the value verbatim.
+/// organisations are slugged (their two name words, transliterated);
+/// identifier types keep the value verbatim.
 pub fn entity_id(entity_type: &str, value: &str) -> String {
     match entity_type {
         "person" | "org" => {
@@ -40,15 +40,34 @@ pub fn entity_id(entity_type: &str, value: &str) -> String {
             // prints given-surname, a passport surname-given — so the two
             // words are sorted: the same person always lands on one node
             // whichever document named them.
-            let mut words: Vec<String> = value
-                .split_whitespace()
-                .take(2)
-                .map(transliterate)
-                .collect();
+            let mut words: Vec<String> = name_words(value).into_iter().map(transliterate).collect();
             words.sort();
             format!("{entity_type}:{}", words.join("-"))
         }
         _ => format!("{entity_type}:{value}"),
+    }
+}
+
+/// A name's surname and given name: its first two words, the father's name
+/// skipped wherever it stands. Armenian papers print the patronymic, a
+/// genitive in «-ի», last («Մկրտչյան Արամ Սամվելի») or between the two
+/// («Արման Տիգրանի Զոհրաբյան»), and taking the first two words of the second
+/// made the person `arman-tigrani`. A given name in «-ուհի» is not a
+/// patronymic; when the first three words do not single one out, the first
+/// two are the name, as they always were.
+fn name_words(value: &str) -> Vec<&str> {
+    let words: Vec<&str> = value.split_whitespace().take(3).collect();
+    if words.len() < 3 {
+        return words;
+    }
+    let patronymic = |w: &str| {
+        let w = w.to_lowercase();
+        w.ends_with('ի') && !w.ends_with("ուհի")
+    };
+    if patronymic(words[1]) && !patronymic(words[2]) {
+        vec![words[0], words[2]]
+    } else {
+        words[..2].to_vec()
     }
 }
 
@@ -324,6 +343,15 @@ mod tests {
         assert_eq!(
             entity_id("person", "Մկրտչյան Արամ Սամվելի"),
             "person:aram-mkrtchyan"
+        );
+        // The father's name between the given name and the surname.
+        assert_eq!(
+            entity_id("person", "Արման Տիգրանի Զոհրաբյան"),
+            "person:arman-zohrabyan"
+        );
+        assert_eq!(
+            entity_id("person", "Արմենուհի Աբովյան Սարգսի"),
+            entity_id("person", "Աբովյան Արմենուհի")
         );
         assert_eq!(
             entity_id("cadastral_code", "10-001-0123-0789"),

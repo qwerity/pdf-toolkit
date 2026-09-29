@@ -1004,7 +1004,10 @@ the person a passport or ID card names; both are person-valued, so `text`
 carries the same canonical `person:` id the owner and applicant facts use, and
 a vision answer supplies them (the deterministic pass cannot read handwriting). `number` is the figure in canonical
 units (square metres, metres, a count); `text` the canonical form of a code,
-a person entity id or an address key; `printed` is verbatim. `subject` says
+a person entity id or an address key; `printed` is verbatim. A person id is
+the name's surname and given name, transliterated and sorted, the father's
+name skipped wherever the page prints it («Արման Տիգրանի Զոհրաբյան» and «Զոհրաբյան
+Արման Տիգրանի» are both `person:arman-zohrabyan`). `subject` says
 what the fact is about where the kind needs it — a building's code for
 `building_area`, `fence` \| `building` for `planned_area`, `map` \| `mention`
 \| `partial` for a cadastral code a map labels a parcel with, a note names
@@ -1016,7 +1019,8 @@ Reading is deterministic: the certificate's fixed labels («Մակերեսի չ�
 (հա)», section 5's buildings table), the form's «Նախատեսում եմ» line, the
 reference letter's «Դիմող», and a small vocabulary of context words on the
 same line before a printed area on every other page (հողամաս → parcel,
-կառուցապատման → footprint, ցանկապատ / պարիսպ → fence); a figure whose
+կառուցապատման → footprint, ցանկապատ / պարիսպ and its inflected stem պարսպ-
+→ fence); a figure whose
 context is not recognised is not a fact. Legacy 8-bit Armenian fonts (the
 fee table, some extracts, many title blocks) are decoded for this reading
 alone. A vision answer may add facts for a scanned page (`facts[]` in the

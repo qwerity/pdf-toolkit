@@ -443,7 +443,9 @@ person reads it. What it does with each kind of content:
   leaves the hyphen out, as before.
 - **Text outside the page box** (the other half of a page cut from a two-page
   spread) is not in `markdown` on an upright page;
-  `spans` still carries it. A page read turned keeps all its text.
+  `spans` still carries it. A page read turned keeps all its text. The page box
+  is the crop box, else the media box, wherever its origin lies — a box centred
+  on `(0, 0)` keeps all of its text (0.18.4).
 - **A page judged unreadable** (text from a broken font map) is skipped as
   before, but codes, times and capitals that still spell out real words (a
   code's supplement page list, a bus timetable) are readable.

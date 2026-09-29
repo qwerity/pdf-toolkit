@@ -5,7 +5,7 @@ use pdf_core::naming::{
 };
 use pdf_core::page::{open_document, page_count_u16, page_index};
 use pdf_core::page_selection::PageSelection;
-use pdf_core::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
+use pdf_core::text_quality::is_probably_unreadable_text;
 use pdf_core::warning::ExtractionWarning;
 use pdfium_render::prelude::{PdfPage, PdfPages, Pdfium, PdfiumError};
 use std::io::Write;
@@ -194,7 +194,7 @@ fn read_page_text(
 
 fn page_text(page: &PdfPage<'_>) -> std::result::Result<String, PdfiumError> {
     page.text()
-        .map(|page_text| sanitize_extracted_text(&page_text.all()))
+        .map(|text| pdf_core::page::page_text(page, &text))
 }
 
 fn write_page_block(

@@ -174,11 +174,21 @@ static ADDRESS_LINE: LazyLock<Regex> = LazyLock::new(|| {
 /// became readable when the legacy Armenian fonts did.
 const ADDRESS_ENDS_AT: &[&str] = &["ԲՆԱԿԵԼԻ ՏՈՒՆ", "ՀԱՍՑԵՈՒՄ", "ՊԱՏՎԻՐԱՏՈՒ", "ՏՆՕՐԵՆ"];
 
+/// The album's place-and-date stamp, `ԵՐԵՎԱՆ 2026`, which a title block can
+/// set on the same line as the address. Its year is not a house number: kept,
+/// it made two copies of one address disagree on their numbers. `և` is one
+/// letter in lower case and two, `ԵՎ`, in capitals, which case folding does
+/// not bridge — hence both spellings.
+static PLACE_DATE_STAMP: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\s+(?:ք\.\s*)?եր(?:և|եվ)ան\s*,?\s+(?:19|20)\d{2}\b").expect("valid regex")
+});
+
 /// The address as printed, cut where the next field on the line begins.
 fn address_up_to_the_next_field(line: &str) -> &str {
     let end = ADDRESS_ENDS_AT
         .iter()
         .filter_map(|label| line.find(label))
+        .chain(PLACE_DATE_STAMP.find(line).map(|m| m.start()))
         .min()
         .unwrap_or(line.len());
     line[..end].trim_end_matches([' ', ',', '.', '՝', '`'])
@@ -623,6 +633,25 @@ mod tests {
 
     fn labels(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn an_album_place_date_stamp_is_not_part_of_the_address() {
+        let printed =
+            address_up_to_the_next_field("ՆԵՐՔԻՆ ՉԱՐԲԱԽԻ 4-ՐԴ ՓՈՂՈՑ 63/2 ՀՈՂԱՄԱՍ ԵՐԵՎԱՆ 2026");
+        assert_eq!(printed, "ՆԵՐՔԻՆ ՉԱՐԲԱԽԻ 4-ՐԴ ՓՈՂՈՑ 63/2 ՀՈՂԱՄԱՍ");
+        assert_eq!(
+            same_address(
+                &address_key(printed),
+                &address_key("Ներքին Չարբախի 4-րդ փողոց 63/2 հողամաս")
+            ),
+            Some(true)
+        );
+        // A leading city is the address's own, not a stamp: nothing follows it.
+        assert_eq!(
+            address_up_to_the_next_field("ք. Երևան, Մալաթիա 48"),
+            "ք. Երևան, Մալաթիա 48"
+        );
     }
 
     #[test]

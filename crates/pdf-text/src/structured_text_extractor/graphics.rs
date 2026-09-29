@@ -11,6 +11,7 @@
 
 use pdfium_render::prelude::{
     PdfPage, PdfPageObjectCommon, PdfPageObjectsCommon, PdfPageRenderRotation, PdfPathFillMode,
+    PdfRect,
 };
 
 /// Thicker than this, a filled rectangle is a box, not a rule. Browser-printed
@@ -26,6 +27,17 @@ pub(super) struct Rect {
     pub bottom: f32,
     pub right: f32,
     pub top: f32,
+}
+
+impl From<PdfRect> for Rect {
+    fn from(rect: PdfRect) -> Self {
+        Rect {
+            left: rect.left().value,
+            bottom: rect.bottom().value,
+            right: rect.right().value,
+            top: rect.top().value,
+        }
+    }
 }
 
 impl Rect {
@@ -109,12 +121,7 @@ pub(super) fn collect(page: &PdfPage<'_>) -> PageGraphics {
         let Ok(bounds) = object.bounds() else {
             continue;
         };
-        let rect = Rect {
-            left: bounds.left().value,
-            bottom: bounds.bottom().value,
-            right: bounds.right().value,
-            top: bounds.top().value,
-        };
+        let rect = Rect::from(bounds.to_rect());
         let filled = path
             .fill_mode()
             .is_ok_and(|mode| mode != PdfPathFillMode::None);

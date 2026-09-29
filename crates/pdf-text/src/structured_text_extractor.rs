@@ -1,7 +1,7 @@
 use pdf_core::error::{PdfError, Result};
 use pdf_core::page::{open_document, page_count_u16, page_index};
 use pdf_core::page_selection::PageSelection;
-use pdf_core::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
+use pdf_core::text_quality::is_probably_unreadable_text;
 use pdf_core::warning::ExtractionWarning;
 use pdfium_render::prelude::{
     PdfFontWeight, PdfPage, PdfPageAnnotationCommon, PdfPageAnnotationType, PdfPageRenderRotation,
@@ -372,7 +372,7 @@ fn extract_page_structured(
 
     // Judge the same sanitized page text as the plain-text extractor, so the
     // shared heuristic's thresholds apply to one input distribution.
-    let unreadable = is_probably_unreadable_text(&sanitize_extracted_text(&text.all()));
+    let unreadable = is_probably_unreadable_text(&pdf_core::page::page_text(&page, &text));
     let reader =
         ocr.filter(|o| o.pages == OcrPages::All || ocr::is_scanned(&page, &text, unreadable));
     if unreadable && reader.is_none() {
@@ -471,18 +471,9 @@ fn page_markdown(
     // `rotate_to_visual`, whose frame is not the page box, and are all kept;
     // its drawing is in the page's frame, so it is not read either.
     let upright = matches!(rotation, PdfPageRenderRotation::None);
-    // pdfium gives the page's size as displayed; a `/Rotate`d page read in
-    // its own frame is the other way round.
-    let (width, height) = (page.width().value, page.height().value);
-    let turned = matches!(
-        page.rotation().unwrap_or(PdfPageRenderRotation::None),
-        PdfPageRenderRotation::Degrees90 | PdfPageRenderRotation::Degrees270
-    );
-    let page_box = upright.then_some(if turned {
-        (height, width)
-    } else {
-        (width, height)
-    });
+    // The visible page is in the page's own frame, the characters' too, so a
+    // `/Rotate`d page read in that frame needs no width/height swap.
+    let page_box = upright.then(|| graphics::Rect::from(pdf_core::page::visible_rect(page)));
     let drawing = if upright {
         graphics::collect(page)
     } else {
@@ -578,20 +569,20 @@ fn settle_run(run: &mut Vec<RawChar>, out: &mut Vec<RawChar>) {
 }
 
 /// [`page_markdown`] over a given drawing: the page's own vector drawing, or
-/// the rules found in a scan's pixels. `page_box` is the page, `(width,
-/// height)`, in the characters' coordinates; a character outside it is
-/// dropped.
+/// the rules found in a scan's pixels. `page_box` is the visible page in the
+/// characters' coordinates; a character outside it is dropped.
 fn page_markdown_drawn(
     page: &PdfPage<'_>,
     mut chars: Vec<RawChar>,
-    page_box: Option<(f32, f32)>,
+    page_box: Option<graphics::Rect>,
     drawing: &graphics::PageGraphics,
     carry: &mut Option<regions::TableTail>,
 ) -> String {
-    if let Some((width, height)) = page_box {
+    if let Some(visible) = page_box {
         chars.retain(|c| {
             let (cx, cy) = (c.x + c.width / 2.0, c.y - c.height / 2.0);
-            (0.0..=width).contains(&cx) && (0.0..=height).contains(&cy)
+            (visible.left..=visible.right).contains(&cx)
+                && (visible.bottom..=visible.top).contains(&cy)
         });
     }
     for c in &mut chars {

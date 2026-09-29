@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    Text, minimal_empty_pdf, pdfium, write_garbled_pdf, write_pdf, write_pdf_with_image,
-    write_pdf_with_note, write_rotated_pdf, write_simple_pdf,
+    Text, minimal_empty_pdf, pdfium, write_centred_box_pdf, write_garbled_pdf, write_pdf,
+    write_pdf_with_image, write_pdf_with_note, write_rotated_pdf, write_simple_pdf,
 };
 use pdf_toolkit::error::PdfError;
 use pdf_toolkit::{
@@ -650,6 +650,69 @@ fn structured_full_format_includes_spans() {
         assert!(span.width > 0.0 && span.height > 0.0);
         assert!(!span.font_name.is_empty());
     }
+}
+
+/// A page box that does not start at the origin keeps all its text: the
+/// off-page filter reads the page's own box, not `0..width` × `0..height`,
+/// which dropped three quarters of such a page (a CAD sheet's whole ՏՏՑ
+/// table among it).
+#[test]
+fn structured_keeps_text_on_a_centred_page_box() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = fixture_path(dir.path(), "centred.pdf");
+    write_centred_box_pdf(
+        &pdfium,
+        &input,
+        vec![
+            Text::plain(-250.0, 350.0, 12.0, "upper left quadrant"),
+            Text::plain(50.0, 350.0, 12.0, "upper right quadrant"),
+            Text::plain(-250.0, -300.0, 12.0, "lower left quadrant"),
+            Text::plain(50.0, -300.0, 12.0, "lower right quadrant"),
+        ],
+    );
+
+    let report = extract_structured_text(
+        &pdfium,
+        &input,
+        PageSelection::All,
+        StructuredOutputFormat::MarkdownOnly,
+    )
+    .expect("extract structured text");
+
+    let markdown = &report.pages[0].markdown;
+    for quadrant in ["upper left", "upper right", "lower left", "lower right"] {
+        assert!(
+            markdown.contains(quadrant),
+            "{quadrant} dropped from: {markdown}"
+        );
+    }
+}
+
+/// The plain text layer — what `text`, `inspect` and `dossier` read — keeps
+/// a centred page's text too: pdfium-render's `all()` bounds it by a page
+/// size anchored at the origin, which dropped the same three quarters.
+#[test]
+fn plain_text_keeps_text_on_a_centred_page_box() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = fixture_path(dir.path(), "centred.pdf");
+    write_centred_box_pdf(
+        &pdfium,
+        &input,
+        vec![
+            Text::plain(-250.0, 350.0, 12.0, "upper left quadrant"),
+            Text::plain(50.0, -300.0, 12.0, "lower right quadrant"),
+        ],
+    );
+
+    let out_dir = dir.path().join("out");
+    let report = extract_text(&pdfium, &input, PageSelection::All, false, Some(&out_dir))
+        .expect("extract text");
+    let content = fs::read_to_string(&report.files[0].output_path).expect("read output");
+
+    assert!(content.contains("upper left"), "dropped from: {content}");
+    assert!(content.contains("lower right"), "dropped from: {content}");
 }
 
 #[test]

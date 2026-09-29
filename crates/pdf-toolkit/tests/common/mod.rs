@@ -258,6 +258,25 @@ pub fn write_rotated_pdf(pdfium: &Pdfium, path: &Path, texts: &[Text]) {
     document.save_to_file(path).expect("save fixture PDF");
 }
 
+/// Writes a one-page fixture whose MediaBox is centred on the origin, the
+/// way some CAD exports write it (`[-297.5 -421 297.5 421]` for A4). `Text`
+/// anchors are in that page space, so a negative `x`/`y` is on the page.
+pub fn write_centred_box_pdf(pdfium: &Pdfium, path: &Path, texts: Vec<Text>) {
+    write_pdf(pdfium, path, &[texts]);
+    let mut document = pdfium
+        .load_pdf_from_file(path, None)
+        .expect("reopen fixture");
+    document
+        .pages_mut()
+        .get(0)
+        .expect("first page")
+        .boundaries_mut()
+        .set_media(PdfRect::new_from_values(-421.0, -297.5, 421.0, 297.5))
+        .expect("centre the media box");
+    let bytes = document.save_to_bytes().expect("save fixture PDF");
+    std::fs::write(path, bytes).expect("write fixture PDF");
+}
+
 /// Writes a one-page fixture PDF containing a single square image of
 /// `size_pt` points per side (A4 page, so 200pt ≈ 8% coverage and
 /// 400pt ≈ 32%).

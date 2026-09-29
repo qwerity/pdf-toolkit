@@ -28,6 +28,9 @@ pub enum Trust {
 /// Labels that only the Cadastre Committee's own documents carry.
 const OFFICIAL_LABELS: &[&str] = &["cadastral_certificate", "cadastral_reference"];
 const IDENTITY_LABELS: &[&str] = &["id_card", "passport", "social_card"];
+/// Labels of the applicant's own pages that list or name documents: a
+/// marker phrase on one of these names the Committee, it does not come from it.
+const APPLICANT_LABELS: &[&str] = &["table_of_contents", "application_form"];
 
 /// Phrases printed on the Committee's map extracts and fee tables (matched
 /// on the legacy-decoded, lower-cased text).
@@ -51,8 +54,15 @@ pub fn page_trust(labels: &[String], text: &str, readable: bool, extract: bool) 
     if has(OFFICIAL_LABELS) || extract {
         return Trust::Official;
     }
+    // A marker votes official only on a page with none of the applicant's own
+    // marks. A contents page, an application form or an explanatory note
+    // NAMES the Committee's documents («Կադաստրի կոմիտեի վկայական …») without
+    // being one, and one such page made a whole drawing album official — the
+    // reference every check compares to. «հատակագիծ» is the architect's word,
+    // the same absence `looks_like_extract` relies on.
     let lower = text.to_lowercase();
-    if OFFICIAL_MARKERS.iter().any(|m| lower.contains(m)) {
+    let applicants = has(APPLICANT_LABELS) || lower.contains("հատակագիծ");
+    if !applicants && OFFICIAL_MARKERS.iter().any(|m| lower.contains(m)) {
         return Trust::Official;
     }
     if !readable && labels.iter().all(|l| l == "unknown") {
@@ -106,6 +116,27 @@ mod tests {
 
     fn labels(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_page_naming_the_committee_is_not_official() {
+        let contents = "2 Կադաստրի կոմիտեի վկայական\n3 Գլխավոր հատակագիծ";
+        // Labelled by a vision pass, and as the offline pass sees it.
+        for page in [
+            labels(&["table_of_contents", "text_document", "table"]),
+            labels(&["text_document"]),
+        ] {
+            assert_eq!(page_trust(&page, contents, true, false), Trust::Applicant);
+        }
+        assert_eq!(
+            page_trust(
+                &labels(&["application_form", "text_document"]),
+                "Կից՝ Կադաստրի կոմիտեի տեղեկանք",
+                true,
+                false
+            ),
+            Trust::Applicant
+        );
     }
 
     #[test]

@@ -102,11 +102,16 @@ pub(super) fn ocr_markdown(
         let luma = image::imageops::grayscale(&image);
         drawing.rules = raster_rules(&luma, scale, points);
     }
-    let size = (image.width() as f32 / scale, points);
+    let visible = graphics::Rect {
+        left: 0.0,
+        bottom: 0.0,
+        right: image.width() as f32 / scale,
+        top: points,
+    };
     Ok(page_markdown_drawn(
         page,
         chars,
-        Some(size),
+        Some(visible),
         &drawing,
         carry,
     ))

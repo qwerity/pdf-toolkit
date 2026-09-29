@@ -1,0 +1,3 @@
+disallowed-methods = [
+    { path = "pdfium_render::pdf::document::page::text::PdfPageText::all", reason = "bounded by page_size(), which is anchored at the origin in the displayed orientation and truncates centred or /Rotate'd pages; use pdf_core::page::page_text" },
+]

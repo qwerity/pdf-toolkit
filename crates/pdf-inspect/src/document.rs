@@ -1,7 +1,9 @@
 use crate::page_info::{LlmReason, PageInfo};
 use pdf_core::error::{PdfError, Result};
-use pdf_core::page::{image_stats, open_document, page_count_u16, page_dimensions_px, page_index};
-use pdf_core::text_quality::{is_probably_unreadable_text, sanitize_extracted_text};
+use pdf_core::page::{
+    image_stats, open_document, page_count_u16, page_dimensions_px, page_index, page_text,
+};
+use pdf_core::text_quality::is_probably_unreadable_text;
 use pdf_text::page_has_complex_tables;
 use pdfium_render::prelude::{PdfPage, Pdfium};
 use std::num::NonZeroU16;
@@ -67,7 +69,7 @@ pub fn page_info_and_text(page_number: u16, page: &PdfPage<'_>) -> (PageInfo, St
 
     let text = page
         .text()
-        .map(|text| sanitize_extracted_text(&text.all()))
+        .map(|text| page_text(page, &text))
         .unwrap_or_default();
 
     let mut llm_reasons = llm_reasons(&text, image_count, image_coverage);

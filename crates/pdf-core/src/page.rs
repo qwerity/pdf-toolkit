@@ -12,11 +12,43 @@ use std::num::NonZeroU16;
 use std::path::Path;
 
 use pdfium_render::prelude::{
-    PdfDocument, PdfPage, PdfPageObject, PdfPageObjectCommon, PdfPageObjectsCommon, PdfPages,
-    Pdfium,
+    PdfDocument, PdfPage, PdfPageObject, PdfPageObjectCommon, PdfPageObjectsCommon, PdfPageText,
+    PdfPages, PdfRect, Pdfium,
 };
 
 use crate::error::{PdfError, Result};
+use crate::text_quality::sanitize_extracted_text;
+
+/// The part of the page a viewer shows, in the page's own (unrotated) user
+/// space: the crop box, else the media box, else `0..width` × `0..height`.
+///
+/// A page box need not start at the origin — CAD exports centre it,
+/// `[-595 -421 595 421]` — and every position pdfium reports is in that same
+/// user space. `PdfPage::page_size()` is always anchored at the origin, so a
+/// test against it drops everything left of or below `(0, 0)`: three
+/// quarters of such a page.
+pub fn visible_rect(page: &PdfPage<'_>) -> PdfRect {
+    let boundaries = page.boundaries();
+    match boundaries.crop().or_else(|_| boundaries.media()) {
+        Ok(found) => {
+            let (l, r) = (found.bounds.left().value, found.bounds.right().value);
+            let (b, t) = (found.bounds.bottom().value, found.bounds.top().value);
+            PdfRect::new_from_values(b.min(t), l.min(r), b.max(t), l.max(r))
+        }
+        Err(_) => page.page_size(),
+    }
+}
+
+/// The page's text layer: everything inside [`visible_rect`], in document
+/// order, sanitized — the one definition every extractor and the routing
+/// signals read, so they judge the same text.
+///
+/// Use this, never `PdfPageText::all()` (clippy forbids it): that bounds the
+/// text by `page_size()`, which silently truncates a page whose box is not
+/// at the origin (see [`visible_rect`]).
+pub fn page_text(page: &PdfPage<'_>, text: &PdfPageText<'_>) -> String {
+    sanitize_extracted_text(&text.inside_rect(visible_rect(page)))
+}
 
 /// Number of pages addressable by the workspace's `u16`-based page model.
 /// Documents beyond `u16::MAX` pages (or negative pdfium error counts)

@@ -14,7 +14,7 @@ use pdf_core::page::image_stats;
 use pdf_core::text_quality::is_vowelled_word;
 use pdf_ocr::{Ocr, OcrLine};
 use pdf_render::{PngSize, render_page};
-use pdfium_render::prelude::{PdfPage, PdfPageText, PdfPageTextRenderMode};
+use pdfium_render::prelude::{PdfPage, PdfPageObjectsCommon, PdfPageText, PdfPageTextRenderMode};
 
 use super::graphics::{self, Rule};
 use super::regions::TableTail;
@@ -25,6 +25,10 @@ const SCAN_IMAGE_COVERAGE: f32 = 0.6;
 
 /// Visible characters below which a page has no text layer of its own.
 const SCAN_MIN_VISIBLE_CHARS: usize = 20;
+
+/// Share of the page a picture drawn under everything else must cover for
+/// the text over it to be a scanner's OCR overlay rather than the page's own.
+const SCAN_OVERLAY_COVERAGE: f32 = 0.9;
 
 /// Render resolution for OCR, in dots per inch, up to the longest side the
 /// engine reads at ([`Ocr::max_side`]); it shrinks anything larger itself.
@@ -50,12 +54,18 @@ const SKEW_SLOPE: f32 = 0.02;
 
 /// Whether the page is a scan: images covering most of it (one picture, or
 /// the strips a scanner tiles it into), and no text of its own to read
-/// (none, only invisible text laid over the picture, or garbled text).
+/// (none, only invisible text laid over the picture, or garbled text) — or a
+/// picture of the whole page drawn first with the text over it, as a
+/// scanner lays a visible OCR overlay on its scan. For the overlay the text
+/// layer is not discarded: the page reader weighs it against its own OCR and
+/// keeps the reading with more real words (see [`reads_better`]), so a
+/// digital page on a full-page background keeps its text.
 pub(super) fn is_scanned(page: &PdfPage<'_>, text: &PdfPageText<'_>, unreadable: bool) -> bool {
-    if image_stats(page).1 < SCAN_IMAGE_COVERAGE {
+    let coverage = image_stats(page).1;
+    if coverage < SCAN_IMAGE_COVERAGE {
         return false;
     }
-    if unreadable {
+    if unreadable || (coverage >= SCAN_OVERLAY_COVERAGE && drawn_over_a_picture(page)) {
         return true;
     }
     let visible = text
@@ -71,6 +81,21 @@ pub(super) fn is_scanned(page: &PdfPage<'_>, text: &PdfPageText<'_>, unreadable:
         .take(SCAN_MIN_VISIBLE_CHARS)
         .count();
     visible < SCAN_MIN_VISIBLE_CHARS
+}
+
+/// Whether the first thing the page draws is a picture, so that everything
+/// else — its text included — lies on top of it. A scanner that wraps its
+/// scan and overlay in one form draws the form first, the picture first
+/// within it.
+fn drawn_over_a_picture(page: &PdfPage<'_>) -> bool {
+    let Some(first) = page.objects().iter().next() else {
+        return false;
+    };
+    first.as_image_object().is_some()
+        || first
+            .as_x_object_form_object()
+            .and_then(|form| form.iter().next())
+            .is_some_and(|inner| inner.as_image_object().is_some())
 }
 
 /// The page read by OCR, as markdown. `carry` works as for a digital page: a

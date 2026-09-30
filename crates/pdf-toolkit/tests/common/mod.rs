@@ -320,3 +320,36 @@ pub fn minimal_empty_pdf() -> Vec<u8> {
     )
     .into_bytes()
 }
+
+/// Builds a PDF from object bodies numbered 1..n in order (object 1 is the
+/// Catalog), with a correct cross-reference table. For fixtures pdfium's
+/// editing API cannot express: a damaged page tree, a Form XObject.
+pub fn raw_pdf(objects: &[String]) -> Vec<u8> {
+    let mut pdf = String::from("%PDF-1.7\n");
+    let mut offsets = Vec::with_capacity(objects.len());
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+    }
+    let xref_offset = pdf.len();
+    pdf.push_str(&format!(
+        "xref\n0 {}\n0000000000 65535 f \n",
+        objects.len() + 1
+    ));
+    for offset in offsets {
+        pdf.push_str(&format!("{offset:010} 00000 n \n"));
+    }
+    pdf.push_str(&format!(
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n",
+        objects.len() + 1
+    ));
+    pdf.into_bytes()
+}
+
+/// A stream object body: `dict` entries plus the data, with its /Length.
+pub fn raw_stream(dict: &str, data: &str) -> String {
+    format!(
+        "<< {dict} /Length {} >>\nstream\n{data}\nendstream",
+        data.len()
+    )
+}

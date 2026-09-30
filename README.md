@@ -455,9 +455,11 @@ Page inspection with `inspect`:
 `llm_recommended` is `true` when a vision-capable LLM or OCR pass is likely to recover content that text-layer extraction cannot; `llm_reasons` lists why. Reasons:
 
 - `no_text_layer`: the page has images but (almost) no extractable text — likely a scanned page
-- `image_heavy`: at least 20% of the page area is covered by embedded images, whose contents (diagram labels, figure text) are invisible to the text layer
+- `image_heavy`: at least 10% of the page area is covered by embedded images, whose contents (diagram labels, figure text) are invisible to the text layer
 - `unreadable_text`: the text layer exists but is statistically garbled (e.g. a broken CID font mapping); rendered pixels are the only reliable source
 - `complex_table`: the page contains a table with wrapped or merged cells across three or more columns; all cell text is extracted, but its cell-to-column association is approximate and a vision pass can verify or reconstruct the exact structure (two-column wrapped tables such as footnote lists reconstruct reliably and are not flagged)
+- `vector_drawing`: the page's content is vector line work — a map, diagram, chart or plan (10 or more paths that curve or run diagonally, or 1000 or more paths of any kind), or text drawn as outlines (almost no text, no images, 50 or more paths) — of which the text layer carries at most the labels
+- `page_unloadable`: pdfium could not load the page (a damaged page object or page tree), so nothing on it was read; `inspect` lists it instead of failing and reports the error under `errors`
 
 Use this field to route pages in a hybrid pipeline: pdf-toolkit for deterministic, verbatim text and table extraction everywhere, and a vision-LLM pass only for the flagged pages (optionally rendered via `render`).
 

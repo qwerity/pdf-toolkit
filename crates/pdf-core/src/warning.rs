@@ -30,6 +30,12 @@ pub enum ExtractionWarning {
         page_number: u16,
         reason: String,
     },
+    /// `inspect` could not load the page. Unlike [`Self::LoadPage`] the page
+    /// is not skipped: it is still listed, flagged `page_unloadable`.
+    PageUnloadable {
+        page_number: u16,
+        reason: String,
+    },
 }
 
 impl ExtractionWarning {
@@ -41,7 +47,8 @@ impl ExtractionWarning {
             | Self::LoadPage { page_number, .. }
             | Self::UnreadableText { page_number }
             | Self::SavePage { page_number, .. }
-            | Self::OcrFailed { page_number, .. } => *page_number,
+            | Self::OcrFailed { page_number, .. }
+            | Self::PageUnloadable { page_number, .. } => *page_number,
         }
     }
 }
@@ -74,6 +81,15 @@ impl fmt::Display for ExtractionWarning {
                 page_number,
                 reason,
             } => write!(f, "OCR failed on page {page_number}: {reason}."),
+            // pdfium's reason is a multi-line debug dump; one line reads.
+            Self::PageUnloadable {
+                page_number,
+                reason,
+            } => write!(
+                f,
+                "could not load page {page_number}: {}; reported as page_unloadable.",
+                reason.split_whitespace().collect::<Vec<_>>().join(" ")
+            ),
         }
     }
 }
@@ -102,6 +118,10 @@ mod tests {
                 page_number: 7,
                 reason: "model missing".into(),
             },
+            ExtractionWarning::PageUnloadable {
+                page_number: 7,
+                reason: "broken".into(),
+            },
         ];
 
         for warning in cases {
@@ -128,6 +148,14 @@ mod tests {
         assert_eq!(
             ExtractionWarning::UnreadableText { page_number: 2 }.to_string(),
             "extracted text for page 2 appears corrupted and was skipped."
+        );
+        assert_eq!(
+            ExtractionWarning::PageUnloadable {
+                page_number: 3,
+                reason: "PdfiumLibraryInternalError(\n    Unknown,\n)".into()
+            }
+            .to_string(),
+            "could not load page 3: PdfiumLibraryInternalError( Unknown, ); reported as page_unloadable."
         );
     }
 }

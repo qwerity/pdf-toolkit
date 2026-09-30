@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    Text, minimal_empty_pdf, pdfium, write_centred_box_pdf, write_garbled_pdf, write_pdf,
-    write_pdf_with_image, write_pdf_with_note, write_rotated_pdf, write_simple_pdf,
+    Text, minimal_empty_pdf, pdfium, raw_pdf, raw_stream, write_centred_box_pdf, write_garbled_pdf,
+    write_pdf, write_pdf_with_image, write_pdf_with_note, write_rotated_pdf, write_simple_pdf,
 };
 use pdf_toolkit::error::PdfError;
 use pdf_toolkit::{
@@ -113,6 +113,203 @@ fn inspect_document_recommends_llm_for_garbled_pages() {
 
     let info = inspect_document(&pdfium, &input).expect("inspect document");
     assert_eq!(info.pages[0].llm_reasons, vec![LlmReason::UnreadableText]);
+}
+
+const HELVETICA: &str = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+
+/// A US Letter page object, parent 2, drawing `contents` with `resources`,
+/// plus any `extra` dictionary entries.
+fn raw_page(contents: usize, resources: &str, extra: &str) -> String {
+    format!(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources {resources} \
+         /Contents {contents} 0 R {extra}>>"
+    )
+}
+
+/// A one-pixel grey image XObject.
+fn raw_pixel() -> String {
+    raw_stream(
+        "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray \
+         /BitsPerComponent 8 /Filter /ASCIIHexDecode",
+        "80>",
+    )
+}
+
+/// A one-page PDF: Catalog (1), page tree (2), `page` (3), then `rest` from
+/// object 4 on.
+fn single_page_pdf(page: String, rest: Vec<String>) -> Vec<u8> {
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        page,
+    ];
+    objects.extend(rest);
+    raw_pdf(&objects)
+}
+
+#[test]
+fn inspect_document_flags_a_page_it_cannot_load_instead_of_failing() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = fixture_path(dir.path(), "damaged_page_tree.pdf");
+    let text = raw_stream("", "BT /F1 12 Tf 72 700 Td (A readable page) Tj ET");
+    let resources = "<< /Font << /F1 6 0 R >> >>";
+    // The page tree lists the Catalog itself as its second page, as a
+    // damaged InDesign export in the wild does.
+    fs::write(
+        &input,
+        raw_pdf(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".into(),
+            "<< /Type /Pages /Kids [3 0 R 1 0 R 4 0 R] /Count 3 >>".into(),
+            raw_page(5, resources, ""),
+            raw_page(5, resources, ""),
+            text,
+            HELVETICA.into(),
+        ]),
+    )
+    .expect("write fixture");
+
+    let info = inspect_document(&pdfium, &input).expect("a damaged page must not fail the run");
+    assert_eq!(info.page_count, 3);
+    assert_eq!(info.pages.len(), 3);
+    assert!(info.pages[0].llm_reasons.is_empty());
+    assert_eq!(info.pages[1].llm_reasons, vec![LlmReason::PageUnloadable]);
+    assert!(info.pages[1].llm_recommended());
+    assert!(info.pages[2].llm_reasons.is_empty());
+    assert!(matches!(
+        info.warnings.as_slice(),
+        [ExtractionWarning::PageUnloadable { page_number: 2, .. }]
+    ));
+}
+
+#[test]
+fn inspect_document_measures_a_scan_wrapped_in_a_form() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = fixture_path(dir.path(), "scan_in_form.pdf");
+    // A scanner's layout: one form holding the page picture and, drawn over
+    // it, the OCR text.
+    let form = raw_stream(
+        "/Type /XObject /Subtype /Form /BBox [0 0 612 792] \
+         /Resources << /XObject << /Im1 6 0 R >> /Font << /F1 7 0 R >> >>",
+        "q 612 0 0 792 0 0 cm /Im1 Do Q BT /F1 12 Tf 72 700 Td (Scanned words over the page) Tj ET",
+    );
+    fs::write(
+        &input,
+        single_page_pdf(
+            raw_page(5, "<< /XObject << /Fm1 4 0 R >> >>", ""),
+            vec![
+                form,
+                raw_stream("", "/Fm1 Do"),
+                raw_pixel(),
+                HELVETICA.into(),
+            ],
+        ),
+    )
+    .expect("write fixture");
+
+    let info = inspect_document(&pdfium, &input).expect("inspect document");
+    let page = &info.pages[0];
+    assert_eq!(page.image_count, 1);
+    assert!(
+        page.image_coverage > 0.9,
+        "coverage {}",
+        page.image_coverage
+    );
+    assert!(page.llm_reasons.contains(&LlmReason::ImageHeavy));
+}
+
+#[test]
+fn inspect_document_sees_content_drawn_only_by_an_annotation() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let input = fixture_path(dir.path(), "annotation_only.pdf");
+    // The page's own content is empty; a markup box's appearance carries a
+    // chart pasted in as a picture, as an editor leaves it.
+    let appearance = raw_stream(
+        "/Type /XObject /Subtype /Form /BBox [0 0 512 692] \
+         /Resources << /XObject << /Im1 7 0 R >> >>",
+        "q 512 0 0 692 0 0 cm /Im1 Do Q",
+    );
+    fs::write(
+        &input,
+        single_page_pdf(
+            raw_page(4, "<< >>", "/Annots [5 0 R] "),
+            vec![
+                raw_stream("", ""),
+                "<< /Type /Annot /Subtype /Square /Rect [50 50 562 742] /AP << /N 6 0 R >> >>"
+                    .into(),
+                appearance,
+                raw_pixel(),
+            ],
+        ),
+    )
+    .expect("write fixture");
+
+    let info = inspect_document(&pdfium, &input).expect("inspect document");
+    let page = &info.pages[0];
+    assert_eq!(page.image_count, 1);
+    // 512 × 692 of 612 × 792.
+    assert!(
+        (page.image_coverage - 0.73).abs() < 0.02,
+        "coverage {}",
+        page.image_coverage
+    );
+    assert_eq!(
+        page.llm_reasons,
+        vec![LlmReason::NoTextLayer, LlmReason::ImageHeavy]
+    );
+}
+
+#[test]
+fn inspect_document_flags_curved_line_work_but_not_ruled_lines() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let text = "BT /F1 12 Tf 72 740 Td (Figure 3: the district boundary and its roads) Tj ET";
+    let write = |name: &str, drawing: String| {
+        let path = fixture_path(dir.path(), name);
+        fs::write(
+            &path,
+            single_page_pdf(
+                raw_page(4, "<< /Font << /F1 5 0 R >> >>", ""),
+                vec![
+                    raw_stream("", &format!("{text}\n{drawing}")),
+                    HELVETICA.into(),
+                ],
+            ),
+        )
+        .expect("write fixture");
+        path
+    };
+    // Ten curved roads: a map's line work.
+    let curves: String = (0..10)
+        .map(|i| {
+            format!(
+                "{} 100 m {} 300 {} 300 {} 100 c S\n",
+                50 + i * 40,
+                60 + i * 40,
+                80 + i * 40,
+                90 + i * 40
+            )
+        })
+        .collect();
+    // A table's rules: many paths, all horizontal or vertical.
+    let rules: String = (0..60)
+        .map(|i| {
+            format!(
+                "72 {} m 540 {} l S\n72 {} m 72 {} l S\n",
+                100 + i * 10,
+                100 + i * 10,
+                100,
+                700
+            )
+        })
+        .collect();
+
+    let map = inspect_document(&pdfium, &write("map.pdf", curves)).expect("inspect map");
+    assert_eq!(map.pages[0].llm_reasons, vec![LlmReason::VectorDrawing]);
+    let table = inspect_document(&pdfium, &write("rules.pdf", rules)).expect("inspect rules");
+    assert!(table.pages[0].llm_reasons.is_empty());
 }
 
 #[test]

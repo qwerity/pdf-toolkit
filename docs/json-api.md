@@ -137,14 +137,27 @@ omits the key when it is empty.
 | `pages` | object | Keyed by one-based page number, as a **string** |
 | `pages.*.width_px` / `height_px` | int | Page size in pixels at scale `1.0` |
 | `pages.*.contains_images` | bool | True when `image_count > 0` |
-| `pages.*.image_count` | int | Image objects, including inside Form XObjects |
-| `pages.*.image_coverage` | float | Fraction of page area, `0.0`–`1.0`, top-level images only |
+| `pages.*.image_count` | int | Image objects, including inside Form XObjects and annotation appearances |
+| `pages.*.image_coverage` | float | Fraction of page area, `0.0`–`1.0` |
 | `pages.*.llm_recommended` | bool | True when a vision/OCR pass would recover something |
 | `pages.*.llm_reasons` | array | **Absent** when `llm_recommended` is false |
+| `errors` | object | Keyed by page number (string): why a page could not be loaded. **Absent** when every page loaded |
 
-`image_coverage` excludes images inside Form XObjects because their bounds are
-in the form's coordinate space, not the page's, so counting them would inflate
-coverage arbitrarily.
+An image inside a Form XObject has bounds in the form's own coordinate space,
+so `image_coverage` counts it as its share of everything the form draws (in
+form space) times the area the form occupies on the page. A scanner that wraps
+each page's scan and its OCR text in one form yields the whole page.
+
+Annotations count as well: a viewer paints each annotation's appearance over
+the page, and a page can carry its whole content that way (a chart pasted as a
+markup box on an otherwise empty page). Their images add to `image_count` and,
+measured against the annotation's rectangle, to `image_coverage`; their paths
+add to the line work `vector_drawing` weighs.
+
+A page pdfium cannot load (a damaged page object or page tree) no longer fails
+`inspect`: it is listed with `llm_reasons: [page_unloadable]`, zero images, the
+size the page tree states (`0` when it states none), and its error in `errors`
+and on stderr. Every other page is inspected as usual.
 
 ### `llm_reasons[].reason`
 
@@ -153,9 +166,11 @@ Branch on this, not on `detail`.
 | Value | Meaning |
 |---|---|
 | `no_text_layer` | The page has images but almost no extractable text — likely a scan |
-| `image_heavy` | At least 20% of the page is covered by images, whose contents the text layer cannot see |
+| `image_heavy` | At least 10% of the page is covered by images, whose contents the text layer cannot see |
 | `unreadable_text` | A text layer exists but is statistically garbled (e.g. a broken CID font map) |
 | `complex_table` | A table with wrapped or merged cells across three or more columns; cell-to-column association is approximate |
+| `vector_drawing` | The content is vector line work — a map, diagram, chart or plan (10+ paths that curve or run diagonally, or 1000+ paths of any kind), or text drawn as outlines (almost no text, no images, 50+ paths); the text layer carries at most its labels |
+| `page_unloadable` | pdfium could not load the page (damaged page object or page tree), so nothing on it was read; a renderer that tolerates the damage may still show it |
 
 This field is a routing signal: run deterministic extraction everywhere, and
 spend a vision model only on the flagged pages.

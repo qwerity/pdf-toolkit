@@ -8,6 +8,7 @@ use serde_json::{Map, Value, json};
 use std::io::{BufWriter, Write};
 
 pub fn print_document_info(document_info: &DocumentInfo) -> Result<()> {
+    print_warnings(&document_info.warnings);
     print_json(document_info_json(document_info))
 }
 
@@ -248,6 +249,7 @@ fn document_info_json(document_info: &DocumentInfo) -> Value {
 
     output.insert("page_count".to_string(), json!(document_info.page_count));
     add_page_info(&mut output, "pages", &document_info.pages);
+    add_errors(&mut output, &document_info.warnings);
 
     Value::Object(output)
 }
@@ -585,8 +587,10 @@ mod tests {
         let info = DocumentInfo {
             page_count: 2,
             pages: vec![page_info(1), page_info(2)],
+            warnings: Vec::new(),
         };
         let value = document_info_json(&info);
+        assert!(value.get("errors").is_none());
         assert_eq!(value["page_count"], 2);
         assert_eq!(value["pages"]["1"]["image_count"], 2);
         assert_eq!(value["pages"]["2"]["contains_images"], true);

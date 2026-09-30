@@ -12,8 +12,9 @@ use std::num::NonZeroU16;
 use std::path::Path;
 
 use pdfium_render::prelude::{
-    PdfDocument, PdfPage, PdfPageObject, PdfPageObjectCommon, PdfPageObjectsCommon, PdfPageText,
-    PdfPages, PdfRect, Pdfium,
+    PdfDocument, PdfPage, PdfPageAnnotationCommon, PdfPageObject, PdfPageObjectCommon,
+    PdfPageObjectsCommon, PdfPagePathObject, PdfPageText, PdfPages, PdfPathSegmentType,
+    PdfPathSegments, PdfRect, Pdfium,
 };
 
 use crate::error::{PdfError, Result};
@@ -97,9 +98,41 @@ fn scale_points_to_pixels(points: f32, scale: f32) -> u32 {
 /// share of the page they cover, 0 to 1. Shared by page inspection's routing
 /// and by structured extraction's test for a scanned page, so both judge a
 /// page by one measure.
+///
+/// An image inside a Form XObject has bounds in the form's own space, so its
+/// coverage is its share of the form's drawn extent (both in form space) times
+/// the area the form occupies on the page. A scanner that wraps each page's
+/// scan — and its hidden OCR text — in one form yields the whole page.
+///
+/// Annotations count too: a viewer paints each one's appearance over the page,
+/// and a page can carry its whole content that way (a chart pasted as a
+/// markup box on an otherwise empty page). An annotation's images are
+/// measured like a form's, against the annotation's rectangle on the page.
 pub fn image_stats(page: &PdfPage<'_>) -> (u32, f32) {
     let page_area = page.width().value * page.height().value;
-    let (count, area) = collect_image_stats(page.objects().iter(), true, page_area);
+    let mut count: u32 = 0;
+    let mut area: f64 = 0.0;
+    for object in page.objects().iter() {
+        if object.as_image_object().is_some() {
+            count += 1;
+            area += bounded_area(&object, page_area);
+        } else if let Some(form) = object.as_x_object_form_object() {
+            let (nested, share) = nested_images(form);
+            count += nested;
+            if nested > 0 {
+                area += bounded_area(&object, page_area) * share;
+            }
+        }
+    }
+    for annotation in page.annotations().iter() {
+        let (nested, share) = nested_images(annotation.objects());
+        count += nested;
+        if nested > 0
+            && let Ok(rect) = annotation.bounds()
+        {
+            area += rect_area(&rect, page_area) * share;
+        }
+    }
     let coverage = if page_area > 0.0 {
         (area / page_area as f64).min(1.0) as f32
     } else {
@@ -108,40 +141,151 @@ pub fn image_stats(page: &PdfPage<'_>) -> (u32, f32) {
     (count, coverage)
 }
 
-/// Recursively count image objects and accumulate their bounding-box area.
-///
-/// `include_bounds` is true for top-level page objects (where bounds are in
-/// page-space) and false for objects inside Form XObjects (whose bounds are in
-/// the form's local coordinate space, making page-space coverage unreliable).
-fn collect_image_stats<'a>(
-    objects: impl IntoIterator<Item = PdfPageObject<'a>>,
-    include_bounds: bool,
-    page_area: f32,
-) -> (u32, f64) {
-    let mut count: u32 = 0;
-    let mut area: f64 = 0.0;
+/// A page's vector line work: every path object (inside Form XObjects and
+/// annotation appearances too), and how many of them curve or run diagonally.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DrawingStats {
+    /// Path objects: a drawing's line work, a table's rules, outlined text.
+    pub paths: usize,
+    /// Paths with a Bézier segment or a line that is neither horizontal nor
+    /// vertical — counted up to the `enough_curved` the caller asked for. A
+    /// table's rules and a page's frames are rectilinear; the roads of a map,
+    /// a diagram's arrows and a chart's arcs are not.
+    pub curved_paths: usize,
+}
 
+/// A line segment moving more than this (points) along both axes is diagonal.
+const DIAGONAL_MIN_STEP: f32 = 0.5;
+
+/// Measures the page's vector line work, for page inspection's routing: a
+/// page whose content is drawn rather than written is invisible to the text
+/// layer. Classifying a path means walking its segments, so once
+/// `enough_curved` curved paths are found the rest are only counted.
+pub fn drawing_stats(page: &PdfPage<'_>, enough_curved: usize) -> DrawingStats {
+    let mut stats = DrawingStats::default();
+    collect_drawing_stats(page.objects().iter(), enough_curved, &mut stats);
+    for annotation in page.annotations().iter() {
+        collect_drawing_stats(annotation.objects().iter(), enough_curved, &mut stats);
+    }
+    stats
+}
+
+fn collect_drawing_stats<'a>(
+    objects: impl IntoIterator<Item = PdfPageObject<'a>>,
+    enough_curved: usize,
+    stats: &mut DrawingStats,
+) {
     for object in objects {
-        if object.as_image_object().is_some() {
-            count += 1;
-            if include_bounds && let Ok(bounds) = object.bounds() {
-                let w = (bounds.right().value - bounds.left().value).abs() as f64;
-                let h = (bounds.top().value - bounds.bottom().value).abs() as f64;
-                // Guard against degenerate/huge values (e.g. malformed XObjects).
-                let max_dim = page_area.sqrt() as f64 * 4.0;
-                if w < max_dim && h < max_dim {
-                    area += w * h;
-                }
+        if let Some(path) = object.as_path_object() {
+            stats.paths += 1;
+            if stats.curved_paths < enough_curved && path_curves(path) {
+                stats.curved_paths += 1;
             }
         } else if let Some(form) = object.as_x_object_form_object() {
-            // Recurse into Form XObjects for the count, but skip bounds
-            // (they are in the form's local coordinate space).
-            let (nested_count, _) = collect_image_stats(form.iter(), false, page_area);
-            count += nested_count;
+            collect_drawing_stats(form.iter(), enough_curved, stats);
         }
     }
+}
 
-    (count, area)
+fn path_curves(path: &PdfPagePathObject<'_>) -> bool {
+    let mut last: Option<(f32, f32)> = None;
+    for segment in path.segments().iter() {
+        let segment_type = segment.segment_type();
+        if segment_type == PdfPathSegmentType::BezierTo {
+            return true;
+        }
+        let (x, y) = segment.point();
+        let point = (x.value, y.value);
+        if segment_type == PdfPathSegmentType::LineTo
+            && let Some((last_x, last_y)) = last
+            && (point.0 - last_x).abs() > DIAGONAL_MIN_STEP
+            && (point.1 - last_y).abs() > DIAGONAL_MIN_STEP
+        {
+            return true;
+        }
+        last = Some(point);
+    }
+    false
+}
+
+/// Images drawn inside a Form XObject or an annotation appearance: how many
+/// (nested forms included), and the share, 0 to 1, of the container's drawn
+/// extent they cover — measured in the container's own space, where the
+/// images' bounds and everything else it draws directly agree. The share is
+/// only measured when there are images, so a form of text or line work costs
+/// one walk.
+fn nested_images<'a, T>(objects: &'a T) -> (u32, f64)
+where
+    T: PdfPageObjectsCommon<'a>,
+{
+    let count = count_images(objects.iter());
+    if count == 0 {
+        return (0, 0.0);
+    }
+    let mut image_area = 0.0_f64;
+    let mut extent: Option<(f32, f32, f32, f32)> = None;
+    for object in objects.iter() {
+        let Ok(bounds) = object.bounds() else {
+            continue;
+        };
+        let (left, bottom, right, top) = (
+            bounds.left().value.min(bounds.right().value),
+            bounds.bottom().value.min(bounds.top().value),
+            bounds.left().value.max(bounds.right().value),
+            bounds.bottom().value.max(bounds.top().value),
+        );
+        if object.as_image_object().is_some() {
+            image_area += f64::from(right - left) * f64::from(top - bottom);
+        }
+        extent = Some(match extent {
+            None => (left, bottom, right, top),
+            Some((l, b, r, t)) => (l.min(left), b.min(bottom), r.max(right), t.max(top)),
+        });
+    }
+    let share = extent.map_or(0.0, |(l, b, r, t)| {
+        let extent_area = f64::from(r - l) * f64::from(t - b);
+        if extent_area > 0.0 {
+            (image_area / extent_area).min(1.0)
+        } else {
+            0.0
+        }
+    });
+    (count, share)
+}
+
+fn count_images<'a>(objects: impl IntoIterator<Item = PdfPageObject<'a>>) -> u32 {
+    objects
+        .into_iter()
+        .map(|object| {
+            if object.as_image_object().is_some() {
+                1
+            } else {
+                object
+                    .as_x_object_form_object()
+                    .map_or(0, |form| count_images(form.iter()))
+            }
+        })
+        .sum()
+}
+
+/// The object's page-space bounding-box area, or 0 for a degenerate or
+/// implausibly huge box (e.g. a malformed XObject).
+fn bounded_area(object: &PdfPageObject<'_>, page_area: f32) -> f64 {
+    object
+        .bounds()
+        .map_or(0.0, |bounds| rect_area(&bounds.to_rect(), page_area))
+}
+
+/// A page-space rectangle's area, or 0 when it is implausibly huge.
+fn rect_area(rect: &PdfRect, page_area: f32) -> f64 {
+    let w = (rect.right().value - rect.left().value).abs() as f64;
+    let h = (rect.top().value - rect.bottom().value).abs() as f64;
+    let max_dim = page_area.sqrt() as f64 * 4.0;
+    if w < max_dim && h < max_dim {
+        w * h
+    } else {
+        0.0
+    }
 }
 
 #[cfg(test)]

@@ -40,6 +40,14 @@ pub enum LlmReason {
     /// columns; extracted cell-to-column association is approximate and a
     /// vision pass can verify or reconstruct the exact structure.
     ComplexTable,
+    /// The page's content is vector line work — a map, plan or diagram, or
+    /// text drawn as outlines — that the text layer reads at most the labels
+    /// of.
+    VectorDrawing,
+    /// pdfium could not load the page at all (a damaged page object or page
+    /// tree), so nothing on it was read; a renderer that tolerates the damage
+    /// may still see it.
+    PageUnloadable,
 }
 
 impl LlmReason {
@@ -50,6 +58,8 @@ impl LlmReason {
             Self::ImageHeavy => "image_heavy",
             Self::UnreadableText => "unreadable_text",
             Self::ComplexTable => "complex_table",
+            Self::VectorDrawing => "vector_drawing",
+            Self::PageUnloadable => "page_unloadable",
         }
     }
 
@@ -66,6 +76,14 @@ impl LlmReason {
             Self::ComplexTable => {
                 "table with wrapped or merged cells; extracted cell-to-column \
                  association is approximate"
+            }
+            Self::VectorDrawing => {
+                "content is vector line work (map, plan, diagram or outlined text); \
+                 the text layer carries at most its labels"
+            }
+            Self::PageUnloadable => {
+                "the page could not be loaded (damaged page object or page tree); \
+                 nothing on it was read"
             }
         }
     }
@@ -99,6 +117,8 @@ mod tests {
             (LlmReason::ImageHeavy, "image_heavy"),
             (LlmReason::UnreadableText, "unreadable_text"),
             (LlmReason::ComplexTable, "complex_table"),
+            (LlmReason::VectorDrawing, "vector_drawing"),
+            (LlmReason::PageUnloadable, "page_unloadable"),
         ];
 
         for (reason, slug) in cases {

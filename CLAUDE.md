@@ -194,14 +194,16 @@ SKIP_TESTS=1 ./build.sh --with-artifacts    # checks, clippy and build, no cargo
 `build.sh` runs `cargo fmt --check`, `clippy -D warnings`, `cargo test` and
 `cargo build --locked --release` before it packages, so a release cannot be cut
 from a tree that does not pass the gate. The archive carries the binary, the
-matching PDFium library, `README.md` and `docs/json-api.md` — consumers unpack
+matching PDFium library, the `ocr-models/` directory, `README.md`,
+`docs/json-api.md` and `docs/annotation-schema.md` — consumers unpack
 it into their own `tools/` directory, where the contract is the thing they need
 and cannot otherwise see.
 
 **Tag with a bare version — `0.8.0`, not `v0.8.0`.** CI passes the tag through
 to the archive name, and callers construct
-`pdf-toolkit-<version>-<platform>.tar.gz` from a bare version. A `v` prefix
-produces an asset name they cannot construct.
+`pdf-toolkit-<version>-<platform>-<arch>.tar.gz` (e.g. `…-linux-x64`,
+`…-macos-arm64`) from a bare version. A `v` prefix produces an asset name
+they cannot construct.
 
 Pushing a tag runs `.github/workflows/release.yml`, which builds Linux and macOS
 and creates the release. Windows is built on demand against a tag whose release

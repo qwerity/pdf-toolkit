@@ -13,7 +13,7 @@ Builds a runtime bundle in ./dist that contains only:
 Pass --with-artifacts to also write release archives and SHA-256 checksum files to ./artifacts.
 
 Environment variables:
-- RELEASE_TAG   Optional label used in archive names. Defaults to v<Cargo.toml version>.
+- RELEASE_TAG   Optional label used in archive names. Defaults to the bare <Cargo.toml version>.
 - SKIP_BUILD    Set to 1 to skip the Cargo validation/build pipeline.
 - SKIP_TESTS    Set to 1 to run the checks and build without `cargo test`.
 EOF
@@ -287,7 +287,7 @@ main() {
     crate_name="$(read_cargo_value "name" "crates/${BINARY_CRATE}/Cargo.toml")"
     crate_version="$(read_cargo_value "version" "Cargo.toml")"
     # No "v" prefix. Callers construct the asset name as
-    # <name>-<version>-<platform>.tar.gz from a bare version, so a tag of
+    # <name>-<version>-<platform>-<arch>.tar.gz from a bare version, so a tag of
     # "v0.8.0" produces an archive name they cannot construct.
     # Tags in this repository are bare versions; the default matches.
     release_tag="${RELEASE_TAG:-${crate_version}}"

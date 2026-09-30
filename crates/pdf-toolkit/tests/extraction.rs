@@ -312,6 +312,86 @@ fn inspect_document_flags_curved_line_work_but_not_ruled_lines() {
     assert!(table.pages[0].llm_reasons.is_empty());
 }
 
+/// One text label, right-aligned so its right edge sits at `right` (Helvetica
+/// digits are 0.556 em wide).
+fn right_aligned(text: &str, right: f32, baseline: f32, size: f32) -> String {
+    let width = text.len() as f32 * 0.556 * size;
+    format!(
+        "BT /F1 {size} Tf {} {baseline} Td ({text}) Tj ET\n",
+        right - width
+    )
+}
+
+#[test]
+fn inspect_document_flags_charts_drawn_as_shapes_but_not_shaded_tables() {
+    let pdfium = pdfium();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let reasons = |name: &str, drawing: String| {
+        let path = fixture_path(dir.path(), name);
+        let title =
+            "BT /F1 12 Tf 72 740 Td (Figure 21: Existing industrial buildings by use, 2021) Tj ET";
+        fs::write(
+            &path,
+            single_page_pdf(
+                raw_page(4, "<< /Font << /F1 5 0 R >> >>", ""),
+                vec![
+                    raw_stream("", &format!("{title}\n{drawing}")),
+                    HELVETICA.into(),
+                ],
+            ),
+        )
+        .expect("write fixture");
+        inspect_document(&pdfium, &path).expect("inspect").pages[0]
+            .llm_reasons
+            .clone()
+    };
+    // A y axis 0..40 whose labels share a right edge at x=90, 50 pt apart.
+    let y_axis: String = (0..5)
+        .map(|i| right_aligned(&(i * 10).to_string(), 90.0, 97.0 + i as f32 * 50.0, 9.0))
+        .collect();
+
+    // Four categories of two bars each, standing on the axis's zero with gaps between.
+    let bars: String = [(18, 19), (6, 4), (3, 1), (12, 8)]
+        .iter()
+        .enumerate()
+        .map(|(i, (a, b))| {
+            let x = 110 + i * 70;
+            format!(
+                "0.55 0.75 0.2 rg {x} 100 20 {} re f\n0.9 0.4 0.1 rg {} 100 20 {} re f\n",
+                a * 5,
+                x + 20,
+                b * 5
+            )
+        })
+        .collect();
+    assert_eq!(
+        reasons("bars.pdf", format!("{y_axis}{bars}")),
+        vec![LlmReason::VectorChart]
+    );
+
+    // Three wedges of a pie meeting at (300, 400).
+    let pie = "0.8 0.2 0.2 rg 300 400 m 380 400 l 380 444 344 480 300 480 c h f\n\
+               0.2 0.6 0.3 rg 300 400 m 300 480 l 256 480 220 444 220 400 c h f\n\
+               0.2 0.3 0.8 rg 300 400 m 220 400 l 220 356 256 320 300 320 c h f\n";
+    assert_eq!(reasons("pie.pdf", pie.into()), vec![LlmReason::VectorChart]);
+
+    // A plotted series over the same axis.
+    let line =
+        format!("{y_axis}0 0 1 RG 1 w 110 120 m 180 250 l 250 210 l 320 290 l 390 180 l S\n");
+    assert_eq!(reasons("line.pdf", line), vec![LlmReason::VectorChart]);
+
+    // A table: shaded header cells of different heights side by side, touching,
+    // and rows numbered 1..10 right-aligned in the first column.
+    let header = "0.1 0.2 0.5 rg 72 600 150 60 re f 222 600 120 30 re f 342 600 120 30 re f 462 600 78 45 re f\n";
+    let numbers: String = (1..=10)
+        .map(|i| right_aligned(&i.to_string(), 90.0, 580.0 - i as f32 * 20.0, 10.0))
+        .collect();
+    assert!(reasons("table.pdf", format!("{header}{numbers}")).is_empty());
+
+    // The same bars with no axis beside them decide nothing.
+    assert!(reasons("bars-no-axis.pdf", bars).is_empty());
+}
+
 #[test]
 fn inspect_document_flags_complex_tables() {
     let pdfium = pdfium();

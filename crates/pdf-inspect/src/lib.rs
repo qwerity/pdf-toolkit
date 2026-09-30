@@ -15,6 +15,7 @@
 //! whose cells wrap across three or more columns, and answering it means
 //! running the structured reconstruction.
 
+mod chart;
 pub mod document;
 pub mod page_info;
 

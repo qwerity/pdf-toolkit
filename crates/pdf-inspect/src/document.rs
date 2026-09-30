@@ -1,3 +1,4 @@
+use crate::chart::has_vector_chart;
 use crate::page_info::{LlmReason, PageInfo};
 use pdf_core::error::Result;
 use pdf_core::page::{
@@ -120,9 +121,10 @@ pub fn page_info_and_text(page_number: u16, page: &PdfPage<'_>) -> (PageInfo, St
     let (image_count, image_coverage) = image_stats(page);
     let drawing = drawing_stats(page, VECTOR_DRAWING_MIN_CURVED_PATHS);
 
-    let text = page
-        .text()
-        .map(|text| visible_text(page, &text))
+    let page_text = page.text().ok();
+    let text = page_text
+        .as_ref()
+        .map(|text| visible_text(page, text))
         .unwrap_or_default();
 
     let mut llm_reasons = llm_reasons(&text, image_count, image_coverage, drawing);
@@ -130,6 +132,15 @@ pub fn page_info_and_text(page_number: u16, page: &PdfPage<'_>) -> (PageInfo, St
     // or empty text layer is already flagged by the reasons above.
     if !llm_reasons.contains(&LlmReason::UnreadableText) && page_has_complex_tables(page) {
         llm_reasons.push(LlmReason::ComplexTable);
+    }
+    // A chart only changes where a page goes when nothing else has sent it to
+    // a vision pass already: text pages, and table pages bound for the
+    // text-assisted route. Other flagged pages skip the path walk.
+    if drawing.paths > 0
+        && llm_reasons.iter().all(|r| *r == LlmReason::ComplexTable)
+        && has_vector_chart(page, page_text.as_ref())
+    {
+        llm_reasons.push(LlmReason::VectorChart);
     }
 
     let info = PageInfo {
@@ -297,5 +308,6 @@ mod tests {
         assert_eq!(LlmReason::ComplexTable.slug(), "complex_table");
         assert_eq!(LlmReason::VectorDrawing.slug(), "vector_drawing");
         assert_eq!(LlmReason::PageUnloadable.slug(), "page_unloadable");
+        assert_eq!(LlmReason::VectorChart.slug(), "vector_chart");
     }
 }

@@ -171,6 +171,7 @@ Branch on this, not on `detail`.
 | `complex_table` | A table with wrapped or merged cells across three or more columns; cell-to-column association is approximate |
 | `vector_drawing` | The content is vector line work — a map, diagram, chart or plan (10+ paths that curve or run diagonally, or 1000+ paths of any kind), or text drawn as outlines (almost no text, no images, 50+ paths); the text layer carries at most its labels |
 | `page_unloadable` | pdfium could not load the page (damaged page object or page tree), so nothing on it was read; a renderer that tolerates the damage may still show it |
+| `vector_chart` | A bar, pie or line chart drawn as vector shapes: the text layer holds its tick and category labels but not the values its bars, wedges or lines show. Checked only on pages no other reason sends to a vision pass, or that only `complex_table` does |
 
 This field is a routing signal: run deterministic extraction everywhere, and
 spend a vision model only on the flagged pages.

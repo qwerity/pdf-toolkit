@@ -460,6 +460,7 @@ Page inspection with `inspect`:
 - `complex_table`: the page contains a table with wrapped or merged cells across three or more columns; all cell text is extracted, but its cell-to-column association is approximate and a vision pass can verify or reconstruct the exact structure (two-column wrapped tables such as footnote lists reconstruct reliably and are not flagged)
 - `vector_drawing`: the page's content is vector line work — a map, diagram, chart or plan (10 or more paths that curve or run diagonally, or 1000 or more paths of any kind), or text drawn as outlines (almost no text, no images, 50 or more paths) — of which the text layer carries at most the labels
 - `page_unloadable`: pdfium could not load the page (a damaged page object or page tree), so nothing on it was read; `inspect` lists it instead of failing and reports the error under `errors`
+- `vector_chart`: a bar, pie or line chart drawn as vector shapes — three or more bars on one baseline with gaps between them and a numeric axis beside them, pie wedges meeting at one centre, or a plotted line over a numeric axis. The text layer holds the chart's labels but not the values it shows. Only pages no other reason flags, or that only `complex_table` flags, are checked
 
 Use this field to route pages in a hybrid pipeline: pdf-toolkit for deterministic, verbatim text and table extraction everywhere, and a vision-LLM pass only for the flagged pages (optionally rendered via `render`).
 

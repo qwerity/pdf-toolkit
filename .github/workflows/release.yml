@@ -111,8 +111,11 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.release_tag }}
 
+      # Installs the toolchain pinned in rust-toolchain.toml, not whatever
+      # stable is on the day the tag is pushed.
       - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+        shell: bash
+        run: rustup toolchain install
 
       - name: Cache Cargo Build Artifacts
         uses: Swatinem/rust-cache@v2

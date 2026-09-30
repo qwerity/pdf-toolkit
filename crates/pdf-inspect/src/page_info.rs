@@ -48,6 +48,10 @@ pub enum LlmReason {
     /// tree), so nothing on it was read; a renderer that tolerates the damage
     /// may still see it.
     PageUnloadable,
+    /// A bar, pie or line chart drawn as vector shapes: the text layer holds
+    /// its tick and category labels but not the values its bars, wedges or
+    /// lines show.
+    VectorChart,
 }
 
 impl LlmReason {
@@ -60,6 +64,7 @@ impl LlmReason {
             Self::ComplexTable => "complex_table",
             Self::VectorDrawing => "vector_drawing",
             Self::PageUnloadable => "page_unloadable",
+            Self::VectorChart => "vector_chart",
         }
     }
 
@@ -84,6 +89,10 @@ impl LlmReason {
             Self::PageUnloadable => {
                 "the page could not be loaded (damaged page object or page tree); \
                  nothing on it was read"
+            }
+            Self::VectorChart => {
+                "chart drawn as vector shapes; the text layer carries its labels \
+                 but not the values it plots"
             }
         }
     }

@@ -1954,7 +1954,7 @@ fn detect_table_at(
         return None;
     }
 
-    let rows = cluster_lines_into_rows(lines, start, end, &final_anchors, tolerance);
+    let rows = cluster_lines_into_rows(lines, start, end, &final_anchors, tolerance, guard_lists);
 
     Some(DetectedTable {
         columns: final_anchors,
@@ -2007,12 +2007,18 @@ fn aligned_to_any(sorted_anchors: &[f32], x: f32, tolerance: f32) -> bool {
 /// Groups the table's lines into logical rows: a line with content in the
 /// first column starts a new row, every other line continues the row above
 /// (wrapped cell text).
+///
+/// `join_wrapped_labels`: a line whose first-column text continues the
+/// sentence above (see [`continues_first_cell`]) stays in that row. Off for
+/// the routing flag, which counts wrapped rows as the reading path left them
+/// before this rule.
 fn cluster_lines_into_rows(
     lines: &[TextLine],
     start: usize,
     end: usize,
     columns: &[f32],
     tolerance: f32,
+    join_wrapped_labels: bool,
 ) -> Vec<Vec<usize>> {
     let first_anchor = columns[0];
     let mut rows: Vec<Vec<usize>> = Vec::new();
@@ -2024,7 +2030,9 @@ fn cluster_lines_into_rows(
         // indented second column.
         let starts_row = line.spans.iter().any(|span| {
             nearest_column(span.x, columns) == 0 && is_aligned(first_anchor, span.x, tolerance)
-        });
+        }) && !(join_wrapped_labels
+            && offset > 0
+            && continues_first_cell(&lines[index - 1], line, columns));
 
         match rows.last_mut() {
             Some(row) if !starts_row => row.push(index),
@@ -2033,6 +2041,59 @@ fn cluster_lines_into_rows(
     }
 
     rows
+}
+
+/// The first column's text on a line, its spans joined, and whether it is
+/// set bold.
+fn first_cell(line: &TextLine, columns: &[f32]) -> (String, bool) {
+    let spans: Vec<&TextSpan> = line
+        .spans
+        .iter()
+        .filter(|span| nearest_column(span.x, columns) == 0)
+        .collect();
+    let text = spans
+        .iter()
+        .map(|span| span.text.trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    (
+        text,
+        !spans.is_empty() && spans.iter().all(|span| span.bold),
+    )
+}
+
+/// Whether a line's first-column text carries on the sentence the line above
+/// left open — a cell wrapped across lines while every other column wraps
+/// too, so no line is free of text in the other columns to mark it as a
+/// continuation. It does when it opens with a lowercase word that is not a
+/// list marker ("a.", "ii)"), is set in the weight of the text above (a bold
+/// header is not continued by the body under it), the text above does not
+/// end a sentence, and no other cell on the line starts afresh with a
+/// capital or a digit — a new row with a lowercase label ("building
+/// coverage | 60%") starts its values anew, a wrapped row carries on.
+fn continues_first_cell(previous: &TextLine, line: &TextLine, columns: &[f32]) -> bool {
+    let (above, above_bold) = first_cell(previous, columns);
+    let (here, here_bold) = first_cell(line, columns);
+    let opens_lowercase = here
+        .split_whitespace()
+        .next()
+        .is_some_and(|word| word.chars().next().is_some_and(char::is_lowercase));
+    let other_cells_start_afresh = line.spans.iter().any(|span| {
+        nearest_column(span.x, columns) != 0
+            && span
+                .text
+                .trim_start()
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_uppercase() || c.is_ascii_digit())
+    });
+    !above.is_empty()
+        && above_bold == here_bold
+        && !above.ends_with(['.', ':', ';', '!', '?'])
+        && opens_lowercase
+        && list_marker_len(&here).is_none()
+        && ordered_marker_len(&here).is_none()
+        && !other_cells_start_afresh
 }
 
 fn count_aligned(anchors: &[f32], candidate: &[f32], tolerance: f32) -> usize {
@@ -3140,6 +3201,122 @@ mod tests {
                 vec![span("with extra uses", 150.0, 640.0, 80.0, 12.0)],
             ),
         ]
+    }
+
+    /// Three columns that wrap on every line together: without a free line
+    /// the first column's lowercase continuation is what keeps the row.
+    fn wrapped_criteria_lines() -> Vec<TextLine> {
+        let row = |y: f32, cells: [&str; 3]| {
+            text_line(
+                y,
+                vec![
+                    span(cells[0], 60.0, y, 100.0, 10.0),
+                    span(cells[1], 220.0, y, 100.0, 10.0),
+                    span(cells[2], 380.0, y, 100.0, 10.0),
+                ],
+            )
+        };
+        let header = text_line(
+            700.0,
+            vec![
+                styled_span("Commercial uses", 60.0, 700.0, 10.0, true),
+                styled_span("Office uses", 220.0, 700.0, 10.0, true),
+                styled_span("Industrial uses", 380.0, 700.0, 10.0, true),
+            ],
+        );
+        vec![
+            header,
+            row(
+                688.0,
+                ["storefronts facing", "entrances visible", "service bays"],
+            ),
+            row(676.0, ["street frontages", "parking areas", "rear lanes"]),
+            row(
+                656.0,
+                ["Loading areas", "Screened from view", "Screened from view"],
+            ),
+            row(
+                644.0,
+                ["behind buildings", "landscaped buffers", "masonry walls"],
+            ),
+        ]
+    }
+
+    #[test]
+    fn wrapped_rows_stay_together_on_the_reading_path() {
+        let lines = wrapped_criteria_lines();
+        let tables = detect_tables(&lines);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].rows, vec![vec![0], vec![1, 2], vec![3, 4]]);
+
+        // The routing flag keeps the line-per-row reading it was pinned with.
+        let legacy = detect_tables_with(&lines, false);
+        assert_eq!(legacy[0].rows.len(), 5);
+    }
+
+    #[test]
+    fn a_lowercase_label_that_starts_values_afresh_is_a_new_row() {
+        let columns = [60.0, 220.0, 380.0];
+        let above = text_line(
+            700.0,
+            vec![
+                span("Lot area", 60.0, 700.0, 60.0, 10.0),
+                span("6,000 sq ft", 220.0, 700.0, 60.0, 10.0),
+            ],
+        );
+        let coverage = text_line(
+            688.0,
+            vec![
+                span("building coverage", 60.0, 688.0, 90.0, 10.0),
+                span("60%", 220.0, 688.0, 20.0, 10.0),
+            ],
+        );
+        assert!(!continues_first_cell(&above, &coverage, &columns));
+
+        let wrapped = text_line(
+            688.0,
+            vec![
+                span("per unit", 60.0, 688.0, 50.0, 10.0),
+                span("minimum", 220.0, 688.0, 50.0, 10.0),
+            ],
+        );
+        assert!(continues_first_cell(&above, &wrapped, &columns));
+    }
+
+    #[test]
+    fn a_bold_header_is_not_continued_by_the_body_under_it() {
+        let columns = [60.0, 220.0];
+        let header = text_line(
+            700.0,
+            vec![styled_span(
+                "Commercial Development",
+                60.0,
+                700.0,
+                10.0,
+                true,
+            )],
+        );
+        let body = text_line(
+            688.0,
+            vec![span("toward walkways to", 60.0, 688.0, 90.0, 10.0)],
+        );
+        assert!(!continues_first_cell(&header, &body, &columns));
+
+        // A sentence that ended, or a list item, starts a row of its own.
+        let ended = text_line(
+            700.0,
+            vec![span("Setbacks apply.", 60.0, 700.0, 80.0, 10.0)],
+        );
+        assert!(!continues_first_cell(&ended, &body, &columns));
+        let item = text_line(
+            688.0,
+            vec![span("a. outdoor storage", 60.0, 688.0, 90.0, 10.0)],
+        );
+        let open = text_line(
+            700.0,
+            vec![span("Storage limited to", 60.0, 700.0, 90.0, 10.0)],
+        );
+        assert!(!continues_first_cell(&open, &item, &columns));
     }
 
     #[test]

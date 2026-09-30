@@ -30,7 +30,7 @@ use pdf_core::text_quality::is_probably_unreadable_text;
 use pdf_inspect::LlmReason;
 use pdf_vector::{DocumentVector, PageVector, VectorOptions};
 
-use crate::answers::{Answers, PageAnswer};
+use crate::answers::{Answers, FactAnswer, PageAnswer};
 use crate::entities::{self, Found, Template};
 use crate::facts::{self, Fact, FactKind};
 use crate::report::*;
@@ -305,9 +305,62 @@ fn document_facts(
     out
 }
 
+/// The words a page prints before the permit applicant's name: a Committee
+/// reference's requester, a drawing set's client, the developer, a form's
+/// applicant line. (`trust::APPLICANT_LABELS` is a different list: page labels.)
+const APPLICANT_LINE_LABELS: [&str; 4] = ["դիմող", "պատվիրատու", "կառուցապատող", "հայտատու"];
+
+/// The page's text, lower-cased, when it is an Armenian text layer that can
+/// vouch for a name; none for a scan or a layer of stray glyphs.
+fn vouching_text(page: &facts::PageInput<'_>) -> Option<String> {
+    text_signals::languages(page.text)
+        .iter()
+        .any(|lang| lang == "hy")
+        .then(|| page.text.to_lowercase())
+}
+
+/// Whether a vision-read owner or applicant is a name the page prints.
+///
+/// The model is asked for the label before each name, and an applicant
+/// whose label is not an applicant label (a title block's designer) is not
+/// one. On a page with a text layer (`vouching_text`) the name's surname or
+/// given name must also be in that text: on plan10 p15 the model reported an
+/// "applicant" whose name the page does not print anywhere, and a name nobody
+/// printed must not become a witness. Answers recorded before labels were
+/// asked carry none and meet only the second test; a scan has no text to meet
+/// it and keeps what the model read.
+fn printed_on_page(text: Option<&str>, fact: &FactAnswer, kind: FactKind) -> bool {
+    if !matches!(kind, FactKind::Owner | FactKind::Applicant) {
+        return true;
+    }
+    let other_label = fact.label.as_deref().is_some_and(|label| {
+        let label = label.to_lowercase();
+        !APPLICANT_LINE_LABELS
+            .iter()
+            .any(|stem| label.contains(stem))
+    });
+    if kind == FactKind::Applicant && other_label {
+        return false;
+    }
+    let Some(text) = text else {
+        return true;
+    };
+    entities::name_words(&fact.value).into_iter().any(|word| {
+        let word = word.to_lowercase();
+        let word = word.trim_matches(|c: char| !c.is_alphabetic());
+        word.chars().count() >= 3 && text.contains(word)
+    })
+}
+
 /// A vision answer's figures as facts: the model transcribed, the toolkit
 /// converts and keys them the same way it keys its own readings.
 fn answered_page_facts(page: &facts::PageInput<'_>, answer: &PageAnswer) -> Vec<Fact> {
+    let names_a_person = |f: &FactAnswer| matches!(f.kind.as_str(), "owner" | "applicant");
+    let text = if answer.facts.iter().any(names_a_person) {
+        vouching_text(page)
+    } else {
+        None
+    };
     answer
         .facts
         .iter()
@@ -326,6 +379,9 @@ fn answered_page_facts(page: &facts::PageInput<'_>, answer: &PageAnswer) -> Vec<
                 "identity_holder" => FactKind::IdentityHolder,
                 _ => return None,
             };
+            if !printed_on_page(text.as_deref(), f, kind) {
+                return None;
+            }
             let mut fact = Fact {
                 kind,
                 number: None,
@@ -1276,5 +1332,90 @@ fn generated_by(merged: bool) -> String {
         format!("{base} + vision-pass answers")
     } else {
         format!("{base}; vision-pass answers pending")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fact(kind: &str, value: &str, label: Option<&str>) -> FactAnswer {
+        FactAnswer {
+            kind: kind.to_string(),
+            value: value.to_string(),
+            unit: None,
+            subject: None,
+            label: label.map(str::to_string),
+        }
+    }
+
+    /// What `answered_page_facts` hands `printed_on_page` for a page of this text.
+    fn text(text: &str) -> Option<String> {
+        vouching_text(&facts::PageInput {
+            page: 15,
+            labels: &[],
+            text,
+            trust: Trust::Applicant,
+            via: Via::EmbeddedText,
+        })
+    }
+
+    const TITLE_BLOCK: &str = "Տնօրեն Կ.Մինասյան ՆԳՃ Ս.Մելքոնյան Նախագծեց Ս.Մելքոնյան \
+        ԿԱԴԱՍՏՐԱՅԻՆ ԾԱԾԿԱԳՐԻ ՀՈՂԱՄԱՍՈՒՄ ԲՆԱԿԵԼԻ ՏԱՆ ԿԱՌՈՒՑՄԱՆ ԱՇԽԱՏԱՆՔԱՅԻՆ ՆԱԽԱԳԻԾ";
+
+    #[test]
+    fn a_vision_applicant_the_page_does_not_print_is_dropped() {
+        let invented = fact("applicant", "ՍՈՆԱ ՄԵԼԻՔՅԱՆ", None);
+        let page = text(TITLE_BLOCK);
+        assert!(!printed_on_page(
+            page.as_deref(),
+            &invented,
+            FactKind::Applicant
+        ));
+    }
+
+    #[test]
+    fn a_designer_labelled_as_such_is_not_the_applicant() {
+        let designer = fact("applicant", "Ս. Մելքոնյան", Some("Նախագծեց"));
+        let page = text(TITLE_BLOCK);
+        assert!(!printed_on_page(
+            page.as_deref(),
+            &designer,
+            FactKind::Applicant
+        ));
+    }
+
+    #[test]
+    fn a_printed_applicant_after_a_client_label_is_kept() {
+        let page = text("ՊԱՏՎԻՐԱՏՈՒ՝ Վահե Դանիելյան ԲՆԱԿԵԼԻ ՏԱՆ ԿԱՌՈՒՑՄԱՆ ԱՇԽԱՏԱՆՔԱՅԻՆ ՆԱԽԱԳԻԾ");
+        let client = fact("applicant", "Վահե Դանիելյան", Some("ՊԱՏՎԻՐԱՏՈՒ՝"));
+        assert!(printed_on_page(
+            page.as_deref(),
+            &client,
+            FactKind::Applicant
+        ));
+        let recorded = fact("applicant", "ՎԱՀԵ ԴԱՆԻԵԼՅԱՆ ՍԱՐԳՍԻ", None);
+        assert!(
+            printed_on_page(page.as_deref(), &recorded, FactKind::Applicant),
+            "case-blind, and the patronymic need not be printed"
+        );
+    }
+
+    #[test]
+    fn a_scan_keeps_what_the_model_read() {
+        assert_eq!(text(""), None);
+        let owner = fact("owner", "ՎԱՀԵ ԴԱՆԻԵԼՅԱՆ ՍԱՐԳՍԻ", None);
+        assert!(printed_on_page(None, &owner, FactKind::Owner));
+    }
+
+    #[test]
+    fn a_handwritten_signatory_is_never_tested_against_the_print() {
+        let signatory = fact("signatory", "Ա. Բ.", None);
+        let page = text(TITLE_BLOCK);
+        assert!(printed_on_page(
+            page.as_deref(),
+            &signatory,
+            FactKind::Signatory
+        ));
     }
 }

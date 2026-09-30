@@ -175,7 +175,8 @@ that looked at the page.
       "related": [{"page": 7, "relation": "continues"}],
       "handwriting": {"extent": "fields", "script": ["hy"]},
       "facts": [{"kind": "signatory", "value": "name as the hand wrote it"},
-                {"kind": "identity_holder", "value": "name the passport prints"}],
+                {"kind": "identity_holder", "value": "name the passport prints"},
+                {"kind": "applicant", "value": "printed name", "label": "ՊԱՏՎԻՐԱՏՈՒ՝"}],
       "access": [{"kind": "certificate", "number": "…", "passcode": "…"}],
       "vlm": ["id_card_fields"],
       "declared_scale": 500,
@@ -200,7 +201,12 @@ only a look at the page can supply; `signatory` (the name written beside a
 signature) and `identity_holder` (whom a passport or ID card names) are the
 two the `signature` check compares, and `access[]` the credentials a scanned
 Committee header prints. Both are person-valued and canonicalised to the same
-`person:` ids the owner and applicant facts use. `groups` metadata is keyed by the ids
+`person:` ids the owner and applicant facts use. An `owner` or `applicant` fact
+may carry `label`, the words printed right before the name; an applicant whose
+label is not «Դիմող», «Պատվիրատու», «Կառուցապատող» or «հայտատու» (a title
+block's designer) is dropped, and on a page with an Armenian text layer either
+one is kept only when its surname or given name is in that text — a scan keeps what the model
+read. Answers recorded without labels meet only the text test. `groups` metadata is keyed by the ids
 pages reference, in the order the final report should list them; `people`
 supplies display values and roles for person/org entity ids. Pages without an
 answer keep their deterministic facts, so a partial answers file is a valid

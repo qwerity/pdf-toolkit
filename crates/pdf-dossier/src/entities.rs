@@ -55,7 +55,7 @@ pub fn entity_id(entity_type: &str, value: &str) -> String {
 /// made the person `arman-tigrani`. A given name in «-ուհի» is not a
 /// patronymic; when the first three words do not single one out, the first
 /// two are the name, as they always were.
-fn name_words(value: &str) -> Vec<&str> {
+pub(crate) fn name_words(value: &str) -> Vec<&str> {
     let words: Vec<&str> = value.split_whitespace().take(3).collect();
     if words.len() < 3 {
         return words;

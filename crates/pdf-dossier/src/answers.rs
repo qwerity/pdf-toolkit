@@ -98,7 +98,9 @@ pub struct AccessAnswer {
 /// One figure a vision answer states: `kind` is a `FactKind` name
 /// (`parcel_area`, `building_area`, `owner`, `applicant`, `address`,
 /// `cadastral_code`, `certificate_number`), `value` as printed, `unit` for
-/// an area (`ha` or `m2`), `subject` a building code or planned item.
+/// an area (`ha` or `m2`), `subject` a building code or planned item,
+/// `label` the words the page prints right before a person's name
+/// («Դիմող», «ՊԱՏՎԻՐԱՏՈՒ՝») — absent in answers recorded before it was asked.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FactAnswer {
     pub kind: String,
@@ -107,6 +109,8 @@ pub struct FactAnswer {
     pub unit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

@@ -191,7 +191,8 @@ Look at the page image and return ONLY a JSON object (no markdown fences) with:
              "signatory"|"identity_holder",
      "value": "...",     // the number or name exactly as printed
      "unit": "ha"|"m2",  // areas only
-     "subject": "..."}   // building_area: the building's code; planned_area: "fence"|"building"
+     "subject": "...",   // building_area: the building's code; planned_area: "fence"|"building"
+     "label": "..."}     // owner/applicant: the words printed right before the name, exactly
   ],
   "access": [            // the header line of an ownership certificate (ՎԿԱՅԱԿԱՆ) or a
                          // reference letter (ՏԵՂԵԿԱՆՔ): its number and the passcode after "գաղտնաբառ"
@@ -205,7 +206,12 @@ the facts are: section 4's "Մակերեսի չափը (հա)" as parcel_area wit
 section 1's subject(s) as owner, section 2's address as address, section 4's
 code as cadastral_code, and every row of section 5's buildings table as a
 building_area (subject = the row's code, unit m2). On a ՏԵՂԵԿԱՆՔ or fee table
-the "Դիմող" line is the applicant.
+the "Դիմող" line is the applicant. Report an applicant ONLY where the page prints
+a name after "Դիմող", "ՊԱՏՎԻՐԱՏՈՒ"/"Պատվիրատու", "Կառուցապատող" or an
+application form's applicant (հայտատու) line, and give those words as its label.
+The people in a drawing's title block — Տնօրեն, ՆԳՃ/ԳԻՊ, Նախագծեց, Ճարտարապետ,
+Ստուգեց, Կոնստրուկտոր — are the designers, never the applicant or the owner;
+when a page names no applicant, report none.
 
 WHO SIGNED, AND WHO THE PAPERS SAY THEY ARE. Where a page carries a HANDWRITTEN
 name next to a signature (a consent statement, a declaration), report that
@@ -254,6 +260,8 @@ struct RawFact {
     unit: Option<String>,
     #[serde(default)]
     subject: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -317,6 +325,7 @@ fn parse_reply(reply: &str) -> Result<(PageAnswer, IndexMap<String, PersonMeta>)
                 value: f.value,
                 unit: f.unit,
                 subject: f.subject,
+                label: f.label.filter(|l| !l.trim().is_empty()),
             })
             .collect(),
         access: raw

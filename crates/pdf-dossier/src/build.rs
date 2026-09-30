@@ -359,6 +359,7 @@ fn answered_page_facts(page: &facts::PageInput<'_>, answer: &PageAnswer) -> Vec<
                     fact.text = Some(entities::entity_id("person", f.value.trim()));
                 }
                 FactKind::Address => fact.text = Some(facts::address_key(&f.value)),
+                FactKind::CertificateNumber => fact.text = Some(facts::certificate_key(&f.value)),
                 _ => fact.text = Some(f.value.trim().to_string()),
             }
             Some(fact)

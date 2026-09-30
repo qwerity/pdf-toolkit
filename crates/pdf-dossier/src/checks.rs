@@ -604,17 +604,28 @@ fn check_applicant(facts: &[Fact], subject: &str, out: &mut Vec<Check>) {
     });
 }
 
-fn check_address(facts: &[Fact], subject: &str, out: &mut Vec<Check>) {
+/// Whether a page names two properties by design: a neighbour's consent
+/// states the neighbour's own address and certificate beside the subject's.
+/// Such a page's figure that is plainly not the subject's is the
+/// neighbour's, not a disagreement; a near miss there is still a typo.
+fn names_two_parcels(pages: &[PageView], page: usize) -> bool {
+    pages
+        .iter()
+        .any(|p| p.number == page && p.has("consent_statement"))
+}
+
+fn check_address(facts: &[Fact], subject: &str, pages: &[PageView], out: &mut Vec<Check>) {
     let official = official_about_subject(facts, FactKind::Address, subject);
     let copies: Vec<&Fact> = facts
         .iter()
         .filter(|f| f.kind == FactKind::Address && f.trust != Trust::Official)
         .collect();
-    let Some(reference) = official
-        .first()
-        .copied()
-        .or_else(|| copies.first().copied())
-    else {
+    let Some(reference) = official.first().copied().or_else(|| {
+        copies
+            .iter()
+            .find(|f| !names_two_parcels(pages, f.page))
+            .copied()
+    }) else {
         return;
     };
     let others: Vec<&Fact> = copies
@@ -636,7 +647,11 @@ fn check_address(facts: &[Fact], subject: &str, out: &mut Vec<Check>) {
             };
             witness(f, status, None)
         })
+        .filter(|w| !(w.status == CheckStatus::Disagree && names_two_parcels(pages, w.page)))
         .collect();
+    if witnesses.is_empty() {
+        return;
+    }
     let status = worst(witnesses.iter().map(|w| w.status));
     let bad: Vec<String> = witnesses
         .iter()
@@ -666,7 +681,12 @@ fn check_address(facts: &[Fact], subject: &str, out: &mut Vec<Check>) {
     });
 }
 
-fn check_certificate_number(facts: &[Fact], subject: &str, out: &mut Vec<Check>) {
+fn check_certificate_number(
+    facts: &[Fact],
+    subject: &str,
+    pages: &[PageView],
+    out: &mut Vec<Check>,
+) {
     let official = official_about_subject(facts, FactKind::CertificateNumber, subject);
     let Some(reference) = official.first().copied() else {
         return;
@@ -686,6 +706,7 @@ fn check_certificate_number(facts: &[Fact], subject: &str, out: &mut Vec<Check>)
             };
             witness(f, status, None)
         })
+        .filter(|w| !(w.status == CheckStatus::Disagree && names_two_parcels(pages, w.page)))
         .collect();
     if witnesses.is_empty() {
         return;
@@ -758,8 +779,8 @@ pub fn run(
     check_buildings(facts, &subject, &mut out);
     check_planned(facts, &mut out);
     check_applicant(facts, &subject, &mut out);
-    check_address(facts, &subject, &mut out);
-    check_certificate_number(facts, &subject, &mut out);
+    check_address(facts, &subject, pages, &mut out);
+    check_certificate_number(facts, &subject, pages, &mut out);
     out
 }
 
@@ -1276,6 +1297,92 @@ mod tests {
             signature[1].note.contains("page 5"),
             "{}",
             signature[1].note
+        );
+    }
+
+    /// A neighbour's consent: page 8 states the neighbour's own address and
+    /// certificate beside the subject's; page 1 is the applicant's form.
+    fn consent_facts(cited_subject_certificate: &str) -> (Vec<Fact>, Vec<PageView>) {
+        let address = |page, printed: &str| {
+            txt(
+                FactKind::Address,
+                page,
+                Trust::Applicant,
+                printed,
+                &crate::facts::address_key(printed),
+            )
+        };
+        let mut cert = txt(
+            FactKind::CertificateNumber,
+            5,
+            Trust::Official,
+            "03112023-01-0417",
+            "03112023-01-0417",
+        );
+        cert.about = Some("01-011-0912-0146".into());
+        let mut code = txt(
+            FactKind::CadastralCode,
+            5,
+            Trust::Official,
+            "01-011-0912-0146",
+            "01-011-0912-0146",
+        );
+        code.about = Some("01-011-0912-0146".into());
+        let cited = crate::facts::certificate_key(cited_subject_certificate);
+        let facts = vec![
+            code,
+            cert,
+            address(1, "Հաղթանակ թաղամաս 81/4"),
+            address(8, "Հաղթանակ թաղամաս 2-րդ փողոց 81/9"),
+            address(8, "Հաղթանակ թաղամաս 81/4"),
+            txt(
+                FactKind::CertificateNumber,
+                8,
+                Trust::Applicant,
+                "N14092022-01-0261",
+                &crate::facts::certificate_key("N14092022-01-0261"),
+            ),
+            txt(
+                FactKind::CertificateNumber,
+                8,
+                Trust::Applicant,
+                cited_subject_certificate,
+                &cited,
+            ),
+        ];
+        let pages = vec![
+            certificate_page(5),
+            page_view(8, &["consent_statement", "signature"], &[]),
+        ];
+        (facts, pages)
+    }
+
+    #[test]
+    fn a_neighbours_consent_names_its_own_parcel_without_a_disagreement() {
+        let (facts, pages) = consent_facts("N03112023-01-0417");
+        let checks = run(&facts, Some("01-011-0912-0146"), &pages, &[]);
+        let address = by_kind(&checks, CheckKind::Address);
+        assert_eq!(address.status, CheckStatus::Agree, "{}", address.note);
+        let certificate = by_kind(&checks, CheckKind::CertificateNumber);
+        // «N03112023-01-0417» is the certificate's own number.
+        assert_eq!(
+            certificate.status,
+            CheckStatus::Agree,
+            "{}",
+            certificate.note
+        );
+    }
+
+    #[test]
+    fn a_consent_citing_the_subjects_certificate_wrongly_is_still_a_near_miss() {
+        let (facts, pages) = consent_facts("N03112023-01-0471");
+        let checks = run(&facts, Some("01-011-0912-0146"), &pages, &[]);
+        let certificate = by_kind(&checks, CheckKind::CertificateNumber);
+        assert_eq!(
+            certificate.status,
+            CheckStatus::NearMiss,
+            "{}",
+            certificate.note
         );
     }
 

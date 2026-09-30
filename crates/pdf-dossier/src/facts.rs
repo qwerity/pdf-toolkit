@@ -148,6 +148,18 @@ static CERT_NUMBER: LazyLock<Regex> =
 static CERT_CITATION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:N|№|թիվ)\s*(\d{8}-\d{2}-\d{4})(?:$|[^\d-])").expect("valid regex")
 });
+static CERT_DIGITS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|[^\d-])(\d{8}-\d{2}-\d{4})(?:$|[^\d-])").expect("valid regex")
+});
+
+/// A certificate number as it is compared: the `########-##-####` itself,
+/// without the «N»/«№» a page or a vision reading puts before it. A value
+/// with no such number is kept as written.
+pub fn certificate_key(printed: &str) -> String {
+    CERT_DIGITS
+        .captures(printed)
+        .map_or_else(|| printed.trim().to_string(), |c| c[1].to_string())
+}
 /// A registered building's row: its code and, within reach, an area.
 static BUILDING_ROW: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(\d{2}-\d{3}-\d{4}-\d{4}-(\d{3}))[^\d]{0,60}?(\d+(?:[.,]\d+)?)\s*(?:քմ|ՔՄ|մ2|մ²)")

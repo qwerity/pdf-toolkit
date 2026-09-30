@@ -1058,7 +1058,11 @@ units (square metres, metres, a count); `text` the canonical form of a code,
 a person entity id or an address key; `printed` is verbatim. A person id is
 the name's surname and given name, transliterated and sorted, the father's
 name skipped wherever the page prints it («Արման Տիգրանի Զոհրաբյան» and «Զոհրաբյան
-Արման Տիգրանի» are both `person:arman-zohrabyan`). `subject` says
+Արման Տիգրանի» are both `person:arman-zohrabyan`). An owner or applicant whose
+name carries a legal form (ՍՊԸ, ՓԲԸ, ԲԲԸ) is a company and its id is `org:`
+the form and the name instead («ՆԱԽԱՏԻՊ» ՍՊԸ and << Նախատիպ ՍՊԸ>> are both
+`org:llc-nakhatip`), so a company owner and the same company applying compare
+as one party, never through its director. `subject` says
 what the fact is about where the kind needs it — a building's code for
 `building_area`, `fence` \| `building` for `planned_area`, `map` \| `mention`
 \| `partial` for a cadastral code a map labels a parcel with, a note names

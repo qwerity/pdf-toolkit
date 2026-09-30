@@ -32,6 +32,13 @@ const IDENTITY_LABELS: &[&str] = &["id_card", "passport", "social_card"];
 /// marker phrase on one of these names the Committee, it does not come from it.
 const APPLICANT_LABELS: &[&str] = &["table_of_contents", "application_form"];
 
+/// Labels a binary gives a page it could not read: the vector classifier's
+/// generic «a drawing» with no class, and a QR code found on it. Every such
+/// page in the test corpus with no text is a Committee map extract
+/// (plan3 p3, plan5 p10, plan6 p8, plan7 p4, plan12 p5, plan13 p5) or a
+/// scanned montage, and none of them is the architect's to vouch for.
+const UNREAD_LABELS: &[&str] = &["unknown", "cad_drawing", "qr"];
+
 /// Phrases printed on the Committee's map extracts and fee tables (matched
 /// on the legacy-decoded, lower-cased text).
 const OFFICIAL_MARKERS: &[&str] = &[
@@ -65,7 +72,7 @@ pub fn page_trust(labels: &[String], text: &str, readable: bool, extract: bool) 
     if !applicants && OFFICIAL_MARKERS.iter().any(|m| lower.contains(m)) {
         return Trust::Official;
     }
-    if !readable && labels.iter().all(|l| l == "unknown") {
+    if !readable && labels.iter().all(|l| UNREAD_LABELS.contains(&l.as_str())) {
         return Trust::Unknown;
     }
     Trust::Applicant
@@ -180,6 +187,16 @@ mod tests {
             page_trust(&labels(&["unknown"]), "", false, false),
             Trust::Unknown
         );
+    }
+
+    #[test]
+    fn an_unread_page_the_binary_only_saw_lines_on_vouches_for_nothing() {
+        let extract = labels(&["cad_drawing"]);
+        assert_eq!(page_trust(&extract, "", false, false), Trust::Unknown);
+        let montage = labels(&["unknown", "qr"]);
+        assert_eq!(page_trust(&montage, "", false, false), Trust::Unknown);
+        let elevation = labels(&["cad_drawing", "elevation_or_section"]);
+        assert_eq!(page_trust(&elevation, "", false, false), Trust::Applicant);
     }
 
     #[test]

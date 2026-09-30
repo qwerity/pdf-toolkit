@@ -412,7 +412,7 @@ fn answered_page_facts(page: &facts::PageInput<'_>, answer: &PageAnswer) -> Vec<
                 | FactKind::Applicant
                 | FactKind::Signatory
                 | FactKind::IdentityHolder => {
-                    fact.text = Some(entities::entity_id("person", f.value.trim()));
+                    fact.text = Some(entities::party_id(f.value.trim()));
                 }
                 FactKind::Address => fact.text = Some(facts::address_key(&f.value)),
                 FactKind::CertificateNumber => fact.text = Some(facts::certificate_key(&f.value)),

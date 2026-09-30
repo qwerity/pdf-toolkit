@@ -18,7 +18,6 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::Serialize;
 
-use crate::entities::entity_id;
 use crate::numbers::{parse_number, printed_areas};
 use crate::report::Via;
 use crate::trust::Trust;
@@ -179,11 +178,32 @@ static APPLICANT_LINE: LazyLock<Regex> = LazyLock::new(|| {
 });
 /// The application form's «NAMEից» line.
 static FROM_LINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^\s*\**([Ա-Ֆ][ա-ֆ]+\s+[Ա-Ֆ][ա-ֆ]+)ից\**\s*$").expect("valid regex")
+    Regex::new(r"(?m)^\s*\**([Ա-Ֆ][ա-ֆև]+\s+[Ա-Ֆ][ա-ֆև]+)ից\**\s*$").expect("valid regex")
+});
+/// A form filed by a company, «"NAME" ՍՊԸ-ից» (plan4).
+static COMPANY_FROM_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^\s*\**((?:«|<<)[^»>\n]+(?:»|>>)\s*(?:ՍՊԸ|ՓԲԸ|ԲԲԸ))[-–]?ից\**\s*$")
+        .expect("valid regex")
+});
+/// «Կառուցապատող - << NAME ՍՊԸ>> ի դեմս …» — the developer a note names is
+/// the company, not the director who signs for it (plan4 p8).
+static DEVELOPER_COMPANY_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[Կկ]առուցապատող\s*[՝`:\-–]\s*((?:«|<<)[^»>\n]*(?:ՍՊԸ|ՓԲԸ|ԲԲԸ)[^»>\n]*(?:»|>>))")
+        .expect("valid regex")
+});
+/// A form filed by a representative, «NAMEի ներկայացուցիչ AGENTից»: the
+/// applicant is the principal, printed in the genitive, never the agent
+/// (plan5, 6, 8, 10, 11 and 13).
+static PRINCIPAL_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^\s*\**([Ա-Ֆ][ա-ֆև]+\s+[Ա-Ֆ][ա-ֆև]+?)ի\s+ներկայացուցիչ\s+[^\n]+ից\**\s*$")
+        .expect("valid regex")
 });
 /// «ՊԱՏՎԻՐԱՏՈՒ՝ NAME» in a title block, and «NAMEին պատկանող» in a note.
+/// The label's case is spelled out and a separator must follow it, so a
+/// declined «պատվիրատուին» or «ՊԱՏՎԻՐԱՏՈՒԻ» is not a label and the word
+/// after it is not a name; a hyphen separates too (e.g. «ՊԱՏՎԻՐԱՏՈՒ - …»).
 static CLIENT_LINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)պատվիրատու[՝`'ª:\s]*([Ա-Ֆ][Ա-Ֆա-ֆ.]+[ \t]+[Ա-Ֆ][Ա-Ֆա-ֆ]+)")
+    Regex::new(r"(?:ՊԱՏՎԻՐԱՏՈՒ|[Պպ]ատվիրատու)[՝`'ª:\-–\s]+([Ա-Ֆ][Ա-Ֆա-ֆև.]+[ \t]+[Ա-Ֆ][Ա-Ֆա-ֆև]+)")
         .expect("valid regex")
 });
 static BELONGS_LINE: LazyLock<Regex> = LazyLock::new(|| {
@@ -257,7 +277,7 @@ fn has_label(page: &PageInput<'_>, label: &str) -> bool {
 
 /// A name as a person entity id, dative and genitive endings dropped.
 fn person_key(name: &str) -> String {
-    entity_id("person", name.trim())
+    crate::entities::party_id(name.trim())
 }
 
 /// An address reduced to what identifies it: its numbers (house, plot) and
@@ -515,7 +535,11 @@ fn name_facts(page: &PageInput<'_>, out: &mut Vec<Fact>) {
         out.push(f);
     };
     if has_label(page, "application_form") {
-        if let Some(c) = FROM_LINE.captures(page.text) {
+        if let Some(c) = FROM_LINE
+            .captures(page.text)
+            .or_else(|| PRINCIPAL_LINE.captures(page.text))
+            .or_else(|| COMPANY_FROM_LINE.captures(page.text))
+        {
             push(&c[1]);
         }
         return;
@@ -530,6 +554,9 @@ fn name_facts(page: &PageInput<'_>, out: &mut Vec<Fact>) {
         push(&c[1]);
     }
     for c in BELONGS_LINE.captures_iter(page.text) {
+        push(&c[1]);
+    }
+    for c in DEVELOPER_COMPANY_LINE.captures_iter(page.text) {
         push(&c[1]);
     }
 }
@@ -794,6 +821,55 @@ mod tests {
         assert!(facts.iter().any(|f| f.kind == FactKind::CadastralCode
             && f.subject.as_deref() == Some("partial")
             && f.text.as_deref() == Some("0731-0612")));
+    }
+
+    use crate::entities::entity_id;
+
+    fn applicants(facts: &[Fact]) -> Vec<&str> {
+        facts
+            .iter()
+            .filter(|f| f.kind == FactKind::Applicant)
+            .filter_map(|f| f.text.as_deref())
+            .collect()
+    }
+
+    #[test]
+    fn a_representative_files_for_the_principal_who_is_the_applicant() {
+        let l = labels(&["application_form", "text_document"]);
+        let text = "Ձև N 1-1\nԵՐԵՎԱՆԻ ՔԱՂԱՔԱՊԵՏ\nԱրման Հովհաննիսյանի ներկայացուցիչ Արամ Ղազարյանից\n(հայտատուի անվանումը)";
+        let facts = page_facts(&input(1, &l, text, Trust::Applicant), None, None);
+        assert_eq!(applicants(&facts), ["person:arman-hovhannisyan"]);
+    }
+
+    #[test]
+    fn a_client_line_takes_a_hyphen_and_the_ev_ligature() {
+        let l = labels(&["cad_drawing", "elevation_or_section"]);
+        let text = "ՊԱՏՎԻՐԱՏՈՒ - Լիանա Բալայան\nՃԱՐՏԱՐԱՊԵՏԱԿԱՆ ՄԱՍ";
+        let facts = page_facts(&input(9, &l, text, Trust::Applicant), None, None);
+        let owner = entity_id("person", "ԼԻԱՆԱ ԲԱԼԱՅԱՆ ԱՐՄԵՆԻ");
+        assert_eq!(applicants(&facts), [owner.as_str()]);
+    }
+
+    #[test]
+    fn a_company_applies_as_the_company_not_its_director() {
+        let form = labels(&["application_form", "text_document"]);
+        let text =
+            "Ձև N 1-1\n«ՆԱԽԱՏԻՊ» ՍՊԸ-ից\n(հայտատուի անվանումը)\nԿառուցապատող՝____Ա. Խաչատրյան____";
+        let facts = page_facts(&input(1, &form, text, Trust::Applicant), None, None);
+        assert_eq!(applicants(&facts), ["org:llc-nakhatip"]);
+        let note = labels(&["text_document"]);
+        let text = "Կառուցապատող - << Նախատիպ ՍՊԸ>> ի դեմս գլխավոր տնօրեն Արման Խաչատրյան Արսենի:";
+        let facts = page_facts(&input(8, &note, text, Trust::Applicant), None, None);
+        assert_eq!(applicants(&facts), ["org:llc-nakhatip"]);
+    }
+
+    #[test]
+    fn a_declined_client_word_is_not_a_label() {
+        let l = labels(&["text_document"]);
+        let text = "նախատեսվում է բնակելի 3 տների կառուցում պատվիրատուին սեփականության \
+                    իրավունքով պատկանող հողամասում\nՍՈՒՅՆ ՆԱԽԱԳԻԾԸ ԿԱՏԱՐՎԵԼ Է ՊԱՏՎԻՐԱՏՈՒԻ ԱՌԱՋԱԴՐԱՆՔԻ";
+        let facts = page_facts(&input(8, &l, text, Trust::Applicant), None, None);
+        assert!(applicants(&facts).is_empty(), "{:?}", applicants(&facts));
     }
 
     #[test]

@@ -48,6 +48,37 @@ pub fn entity_id(entity_type: &str, value: &str) -> String {
     }
 }
 
+/// Armenian legal forms a company's name carries, and the word its id uses.
+const LEGAL_FORMS: [(&str, &str); 3] = [("ՍՊԸ", "llc"), ("ՓԲԸ", "cjsc"), ("ԲԲԸ", "ojsc")];
+
+/// The id of a party to the permit: a company («ՆԱԽԱՏԻՊ» ՍՊԸ, << Նախատիպ
+/// ՍՊԸ>>) is `org:` its legal form and name, however it is quoted or cased,
+/// so the certificate's owner and the form's applicant land on one node; a
+/// person is `entity_id("person", …)`.
+pub fn party_id(name: &str) -> String {
+    let words: Vec<&str> = name
+        .split(|c: char| c.is_whitespace() || "«»<>\"'".contains(c))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let form = LEGAL_FORMS.iter().find(|(form, _)| {
+        words
+            .iter()
+            .any(|w| w.trim_end_matches(['-', '.']) == *form)
+    });
+    let Some((form, key)) = form else {
+        return entity_id("person", name);
+    };
+    let mut parts: Vec<String> = words
+        .iter()
+        .map(|w| w.trim_end_matches(['-', '.']))
+        .filter(|w| w != form && w.chars().any(char::is_alphabetic))
+        .map(transliterate)
+        .collect();
+    parts.push((*key).to_string());
+    parts.sort();
+    format!("org:{}", parts.join("-"))
+}
+
 /// A name's surname and given name: its first two words, the father's name
 /// skipped wherever it stands. Armenian papers print the patronymic, a
 /// genitive in «-ի», last («Մկրտչյան Արամ Սամվելի») or between the two
@@ -193,7 +224,7 @@ pub fn certificate_owners(text: &str) -> Vec<Found> {
                 return None;
             }
             Some(Found {
-                id: entity_id("person", name),
+                id: party_id(name),
                 value: name.to_string(),
             })
         })
@@ -266,6 +297,18 @@ pub fn transliterate(word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_company_is_one_party_however_it_is_quoted_or_cased() {
+        for printed in ["«ՆԱԽԱՏԻՊ» ՍՊԸ", "<< Նախատիպ ՍՊԸ>>", "«Նախատիպ» ՍՊԸ-"]
+        {
+            assert_eq!(party_id(printed), "org:llc-nakhatip", "{printed}");
+        }
+        assert_eq!(
+            party_id("ՎԱՀԵ ԴԱՆԻԵԼՅԱՆ ՍԱՐԳՍԻ"),
+            entity_id("person", "ՎԱՀԵ ԴԱՆԻԵԼՅԱՆ ՍԱՐԳՍԻ")
+        );
+    }
 
     #[test]
     fn cadastral_codes_with_and_without_building_suffix_are_found() {

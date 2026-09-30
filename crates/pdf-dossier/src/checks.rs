@@ -737,8 +737,10 @@ fn check_certificate_number(
 }
 
 /// Runs every comparison. `application_code` is the application form's
-/// cadastral code; `unread_official` lists official pages routed to the
-/// vision pass that no answer covers.
+/// cadastral code. `unread` lists the pages nothing has read (trust
+/// `unknown`): a photographed certificate is one of them (plan1, plan8,
+/// plan10), and so is a 3D render (plan2) — without the vision pass the two
+/// cannot be told apart, so the note says what is known, not "official".
 pub fn run(
     facts: &[Fact],
     application_code: Option<&str>,
@@ -751,14 +753,14 @@ pub fn run(
         .filter(|p| p.has("cadastral_certificate"))
         .map(|p| (p.number, p.trust))
         .collect();
-    let unread_official: Vec<usize> = pages
+    let unread: Vec<usize> = pages
         .iter()
         .filter(|p| p.trust == Trust::Unknown)
         .map(|p| p.number)
         .collect();
     check_certificate_access(&certificate_pages, access, &mut out);
     check_signatures(facts, pages, &mut out);
-    if !unread_official.is_empty() {
+    if !unread.is_empty() {
         out.push(Check {
             kind: CheckKind::OfficialReadability,
             subject: None,
@@ -766,8 +768,8 @@ pub fn run(
             reference: None,
             witnesses: Vec::new(),
             note: format!(
-                "official page(s) {} carry no readable text; their figures wait for the vision pass",
-                unread_official.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")
+                "page(s) {} carry no readable text and nothing has read them; an official document among them is unconfirmed until one does",
+                unread.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")
             ),
         });
     }

@@ -1,13 +1,13 @@
 # Working on pdf-toolkit
 
-Notes for anyone — human or model — changing this codebase.
-
 ## The one rule that is easy to break
 
 **`docs/json-api.md` is a contract with callers who cannot see the code.**
 
 Applications drive this tool by spawning it and parsing stdout, and none of
-them can tell that a field was renamed until it is in production.
+them can tell that a field was renamed until it is in production. The `serve` HTTP mode is a second contract of the
+same kind: `docs/service.md`, pinned by `tests/service_contract.rs`, changes in
+the same commit as any route or response shape.
 
 If a change alters what any command prints, update `docs/json-api.md` in the
 same commit. That means any of:
@@ -28,8 +28,9 @@ Practical checklist when you touch output:
    copied from real runs — regenerate rather than hand-edit:**
    `pdf-toolkit <command> … | jq`. Numbers typed from memory are how a contract
    quietly becomes fiction.
-3. If the shape changed incompatibly, bump `version` in the workspace
-   `Cargo.toml`. It is how a caller detects a schema change, and a   caller may gate startup on the installed version matching its
+3. If the shape changed incompatibly, say that a `version` bump is needed —
+   the user cuts versions; never bump `version` in the workspace `Cargo.toml`
+   yourself. It is how a caller detects a schema change, and a   caller may gate startup on the installed version matching its
    manifest. The reviewed dossiers in `data/annotations/<n>.json` carry the
    version they were reviewed against in `generated_by`; `dossier_e2e`
    ignores that version (it checks the output names the running one), so a
@@ -39,38 +40,16 @@ Practical checklist when you touch output:
 5. Re-read the "Integration notes" section of the contract. It makes promises
    about behaviour that code changes can invalidate.
 
-The serialisable types are all in one place, which makes this easy to check:
-
-| Shape | Defined in |
-|---|---|
-| `inspect`, `cut`, `render`, `text`, `structured` output | `crates/pdf-toolkit/src/cli_output.rs` |
-| `PageInfo`, `LlmReason` | `crates/pdf-inspect/src/page_info.rs` |
-| `vector` output | `crates/pdf-vector/src/report.rs` |
-| GeoJSON properties and `metadata` | `crates/pdf-geo/src/geojson.rs` |
-| `PageClass`, `Confidence` | `crates/pdf-classify/src/heuristic.rs` |
-| `GeoreferenceFailure` | `crates/pdf-geo/src/pipeline.rs` |
-| Errors and per-page warnings | `crates/pdf-core/src/{error,warning}.rs` |
-| `dossier` output | `crates/pdf-dossier/src/report.rs` |
-| `dossier` `facts[]` / `checks[]` / `trust` | `crates/pdf-dossier/src/facts.rs`, `checks.rs`, `trust.rs` |
-| `dossier --answers` input | `crates/pdf-dossier/src/answers.rs` |
-| `cadfix` output | `crates/pdf-vlm/src/cad.rs` |
-| `building` output | `crates/pdf-vlm/src/building.rs` |
-| `model` output | `crates/pdf-model/src/report.rs` |
-| `downsample` output and `unchanged` reasons | `crates/pdf-downsample/src/report.rs` |
-| `model` parameters (`params` / `--params`) | `crates/pdf-model/src/params.rs` |
-| `model.json` schema | `crates/pdf-model/src/model.rs` |
-| `SheetRole` (`classification.features.sheet_role`) | `crates/pdf-classify/src/sheet.rs` |
+The serialisable types are spread over the crates;
+`grep -rlE 'derive\([^)]*Serialize' crates/*/src` lists every file whose
+output a caller can see.
 
 ## What this tool is
 
-Eleven commands over one PDF: `inspect`, `cut`, `render`, `text`, `structured`,
-`vector`, `dossier`, `model`, `downsample`, and the experimental hosted-model
-pair `cadfix` and `building`. `model` is the deterministic storey-by-storey reconstruction
-(`crates/pdf-model`, the Rust port of the earlier prototype); its only
-networked corner is the opt-in `--llm-params` parameter proposal, which
-routes through `pdf-vlm` like everything else that talks to a model. `README.md` explains the pipeline and the crate layout;
-`docs/json-api.md` is the output contract, and `docs/annotation-schema.md` is
-the field reference for the `dossier` annotation.
+`pdf-toolkit --help` lists the commands. `README.md` explains the pipeline and
+the crate layout; `docs/json-api.md` is the output contract, `docs/service.md`
+the HTTP one, and `docs/annotation-schema.md` is the field reference for the
+`dossier` annotation.
 
 ## Principles worth keeping
 
@@ -94,11 +73,13 @@ operation so that clap rejects a nonsensical request instead of the program
 checking for one. When adding an option, put it on the command it applies to
 rather than adding a validation.
 
-**`pdf-core` depends on no other workspace crate.** That rule is what keeps the
-dependency graph acyclic; the two chains are in `README.md`. `llm-providers`
-is likewise leaf-free and is the only crate that opens a network connection —
-every networked surface (`--vlm`, `cadfix`, `building`, `model --llm-params`)
-is opt-in per invocation and routes through it. `pdf-model` never depends on
+**`pdf-core` depends on no workspace crate but the leaf `pdf-armscii`.** That
+rule is what keeps the dependency graph acyclic; the two chains are in
+`README.md`. `llm-providers` is likewise leaf-free and is the only crate that
+talks to a model — every model surface (`--vlm`, `cadfix`, `building`,
+`model --llm-params`) is opt-in per invocation and routes through it. The one
+other network connection is `pdf-ocr` downloading the OCR models
+(`fetch_models`). `pdf-model` never depends on
 `pdf-vlm`: the model proposes parameters through a callback the CLI injects,
 so the reconstruction crate stays offline and testable on its own.
 
@@ -111,13 +92,12 @@ model — against a per-document ledger of what a person says is on the page
 the reviewed annotation, a person then corrects it), and compares every
 number with the committed baseline (`tests/scorecard/baseline.json`, numbers
 only). A kind that scores below its baseline fails the test; a kind that
-rose is reported; `PDF_TOOLKIT_SCORECARD_UPDATE=1 cargo test --test scorecard`
-makes the new numbers the baseline. The golden tests beside it say whether
+rose is reported. The golden tests beside it say whether
 the output changed at all; this one says whether it got better or worse,
 per extraction, per document. **A ledger entry is truth, not output**: when
 the toolkit is wrong, fix the ledger to what the page says and let the score
-show the gap (two such entries are in the baseline today: a mis-read digit
-in dossier 10's entity, an unread hectare figure on dossier 14 p16).
+show the gap. Running it, accepting new scores and the text bench: the
+`scorecard` skill.
 
 **The ledgers are ground truth, and a failing test is never a reason to edit
 one.** A value in `data/expected/<n>.json` may change for exactly two reasons:
@@ -140,30 +120,15 @@ against the ledgers.
 
 ## Conventions
 
-- `cargo fmt --all` and `cargo clippy --all-targets --workspace -- -D warnings`
-  must both be clean.
-- Comments explain *why*. The code says what it does; a comment earns its place
-  by recording a constraint, an invariant, or a decision that is not obvious.
 - Numbers in the docs are measured, not estimated. If you quote one, say where
   it came from and re-measure when the code changes.
 
 ## Running things
 
 ```sh
-cargo test --workspace                      # ~490 tests
 PDF_TOOLKIT_REQUIRE_CORPUS=1 cargo test     # corpus tests must run, not skip
-cargo test -p pdf-toolkit --test scorecard -- --nocapture   # the extraction scorecard
-PDF_TOOLKIT_SCORECARD_UPDATE=1 cargo test -p pdf-toolkit --test scorecard  # accept new scores
-python3 scripts/seed-expected.py            # ledgers for documents that have none
 ./build.sh                                  # dist/ bundle; runs the full gate
 ```
-
-Integration tests spawn the built binary and share one serialized `Pdfium`
-handle: pdfium is not safe under interleaved multi-threaded use, and a panicking
-test would otherwise poison the global lock. The harness binds
-`<workspace>/dist/<library>` explicitly, because cargo runs an integration test
-with the working directory at the *package* root, where the runtime's own
-relative `./dist/` lookup cannot see it.
 
 **`data/` is the test data set, committed with the code.** `data/plan/` holds
 the fourteen real building-permit dossiers,
@@ -179,40 +144,13 @@ regenerates).
 
 The corpus tests skip themselves when the files are absent (a partial
 checkout), so `cargo test` still passes; `PDF_TOOLKIT_REQUIRE_CORPUS=1` turns
-that skip into a failure, and CI should set it now that the data ships with
-the clone.
+that skip into a failure. There is no CI test job, so set it yourself whenever
+a run has to prove the corpus was exercised.
 
 ## Releasing
 
-```sh
-./build.sh                                  # dist/ bundle for this machine
-./build.sh linux --with-artifacts           # plus artifacts/*.tar.gz + .sha256
-SKIP_BUILD=1 ./build.sh --with-artifacts    # repackage without re-running cargo
-SKIP_TESTS=1 ./build.sh --with-artifacts    # checks, clippy and build, no cargo test
-```
-
-`build.sh` runs `cargo fmt --check`, `clippy -D warnings`, `cargo test` and
-`cargo build --locked --release` before it packages, so a release cannot be cut
-from a tree that does not pass the gate. The archive carries the binary, the
-matching PDFium library, the `ocr-models/` directory, `README.md`,
-`docs/json-api.md` and `docs/annotation-schema.md` — consumers unpack
-it into their own `tools/` directory, where the contract is the thing they need
-and cannot otherwise see.
-
-**Tag with a bare version — `0.8.0`, not `v0.8.0`.** CI passes the tag through
-to the archive name, and callers construct
-`pdf-toolkit-<version>-<platform>-<arch>.tar.gz` (e.g. `…-linux-x64`,
-`…-macos-arm64`) from a bare version. A `v` prefix produces an asset name
-they cannot construct.
-
-Pushing a tag runs `.github/workflows/release.yml`, which builds Linux and macOS
-and creates the release. Windows is built on demand against a tag whose release
-already exists.
-
-**Release notes are written by hand, per tag**: add `.github/release-notes/<tag>.md`
-before pushing tag `<tag>`, in the `## Added` / `## Changed` / `## Fixed` shape
-already in that directory. Say there whatever `docs/json-api.md` records as a
-contract change.
-
-Callers that pin a version fetch the release asset, so a version bump is not
-live for them until their pins are bumped too.
+**The user cuts versions and releases** — never bump `version`, push a tag or
+publish a release yourself. **Tag with a bare version — `0.8.0`, not
+`v0.8.0`**: a `v` prefix produces an asset neither consumer can fetch. The
+build variants, what the archive carries and how consumers pick a release up
+are in the `release` skill.

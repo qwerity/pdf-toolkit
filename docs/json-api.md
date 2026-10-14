@@ -372,7 +372,9 @@ person reads it. What it does with each kind of content:
   of a table ("Loading Space: …") is written as paragraphs between two parts
   of the table, the header repeated above the second. Where the column layout
   changes within touching rules (a header block repeated with other widths),
-  each layout is its own table.
+  each layout is its own table. Rules drawn many to a path (Acrobat's export
+  of a spreadsheet draws a row's column rules as one path of thin bars) are
+  each a rule, so such a grid is read as one, its blank cells kept (0.19.4).
 - **A table continued on the next page** under the same header keeps the
   values the page break cut: a blank cell at the top of the continued table,
   where the previous page's last row had a merged cell, holds that cell's

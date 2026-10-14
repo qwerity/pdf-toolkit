@@ -10,8 +10,8 @@
 //! header is two lines high, and cannot see colour at all; the drawing can.
 
 use pdfium_render::prelude::{
-    PdfPage, PdfPageObjectCommon, PdfPageObjectsCommon, PdfPageRenderRotation, PdfPathFillMode,
-    PdfRect,
+    PdfMatrix, PdfPage, PdfPageObjectCommon, PdfPageObjectsCommon, PdfPagePathObject,
+    PdfPageRenderRotation, PdfPathFillMode, PdfPathSegmentType, PdfPathSegments, PdfRect,
 };
 
 /// Thicker than this, a filled rectangle is a box, not a rule. Browser-printed
@@ -101,6 +101,11 @@ pub(super) struct PageGraphics {
 
 /// The rules and fills drawn directly on the page.
 ///
+/// A path that draws several rectangles yields the rules among them:
+/// Acrobat's export of a spreadsheet draws a whole row of column rules as one
+/// path, and its bounds alone are one box over all of them (St. Johns
+/// County's use table, whose grid was lost).
+///
 /// Paths inside Form XObjects are not read: their bounds are in the form's own
 /// coordinate space, and a table drawn that way falls back to text alignment.
 /// A page carrying `/Rotate` yields nothing, since its text is mapped to visual
@@ -118,10 +123,6 @@ pub(super) fn collect(page: &PdfPage<'_>) -> PageGraphics {
         let Some(path) = object.as_path_object() else {
             continue;
         };
-        let Ok(bounds) = object.bounds() else {
-            continue;
-        };
-        let rect = Rect::from(bounds.to_rect());
         let filled = path
             .fill_mode()
             .is_ok_and(|mode| mode != PdfPathFillMode::None);
@@ -129,27 +130,108 @@ pub(super) fn collect(page: &PdfPage<'_>) -> PageGraphics {
         if !filled && !stroked {
             continue;
         }
-
-        if let Some(rule) = as_rule(&rect) {
-            graphics.rules.push(rule);
+        let Ok(bounds) = object.bounds() else {
             continue;
+        };
+        let rgb = object
+            .fill_color()
+            .ok()
+            .filter(|color| filled && color.alpha() > 0)
+            .map(|color| (color.red(), color.green(), color.blue()));
+
+        // A path of several rectangles: each thin one is a rule and each
+        // outlined one frames a cell. What else it fills is read by its
+        // extent, as a single shape's is: boxes of one fill set side by side
+        // (a column of panels and their headers) are one panel.
+        let Some(boxes) = boxes(path) else {
+            let rect = Rect::from(bounds.to_rect());
+            add_shape(&mut graphics, rect, stroked, rgb);
+            continue;
+        };
+        let mut rest: Option<Rect> = None;
+        for rect in boxes {
+            if let Some(rule) = as_rule(&rect) {
+                graphics.rules.push(rule);
+            } else {
+                if stroked {
+                    graphics.rules.extend(edges(&rect));
+                }
+                rest = Some(rest.map_or(rect, |r| r.union(&rect)));
+            }
         }
-        if stroked {
-            // An outlined box frames a cell or a text box: its edges are rules.
-            graphics.rules.extend(edges(&rect));
-        }
-        if filled
-            && let Ok(color) = object.fill_color()
-            && color.alpha() > 0
-        {
-            graphics.fills.push(Fill {
-                rect,
-                rgb: (color.red(), color.green(), color.blue()),
-            });
+        if let (Some(rect), Some(rgb)) = (rest, rgb) {
+            graphics.fills.push(Fill { rect, rgb });
         }
     }
 
     graphics
+}
+
+/// One shape: a thin one is a rule; an outlined one frames a cell or a text
+/// box, its edges rules; a filled one is a fill.
+fn add_shape(graphics: &mut PageGraphics, rect: Rect, stroked: bool, rgb: Option<(u8, u8, u8)>) {
+    if let Some(rule) = as_rule(&rect) {
+        graphics.rules.push(rule);
+        return;
+    }
+    if stroked {
+        graphics.rules.extend(edges(&rect));
+    }
+    if let Some(rgb) = rgb {
+        graphics.fills.push(Fill { rect, rgb });
+    }
+}
+
+/// The rectangles of a path made of two or more, in page space; `None` for a
+/// path of one shape, or one with any subpath that is not an axis-aligned
+/// rectangle (a curve, a diagonal, an open line), which is read by its bounds
+/// as before.
+fn boxes(path: &PdfPagePathObject<'_>) -> Option<Vec<Rect>> {
+    let matrix = path.matrix().unwrap_or(PdfMatrix::IDENTITY);
+    let mut subpaths: Vec<Vec<(f32, f32)>> = Vec::new();
+    for segment in path.segments().transform(matrix).iter() {
+        match segment.segment_type() {
+            PdfPathSegmentType::MoveTo => subpaths.push(Vec::new()),
+            PdfPathSegmentType::LineTo => {}
+            _ => return None,
+        }
+        let (x, y) = segment.point();
+        subpaths.last_mut()?.push((x.value, y.value));
+    }
+    if subpaths.len() < 2 {
+        return None;
+    }
+    subpaths.iter().map(|points| as_box(points)).collect()
+}
+
+/// Corners closer than this (points) are one corner, and an edge moving less
+/// than this across its axis is straight.
+const CORNER_SNAP: f32 = 0.5;
+
+/// A closed axis-aligned quadrilateral, its first corner possibly repeated.
+fn as_box(points: &[(f32, f32)]) -> Option<Rect> {
+    let near = |a: (f32, f32), b: (f32, f32)| {
+        (a.0 - b.0).abs() <= CORNER_SNAP && (a.1 - b.1).abs() <= CORNER_SNAP
+    };
+    let corners = match points {
+        [first, .., last] if points.len() == 5 && near(*first, *last) => &points[..4],
+        _ if points.len() == 4 => points,
+        _ => return None,
+    };
+    let axis_aligned = (0..4).all(|i| {
+        let (a, b) = (corners[i], corners[(i + 1) % 4]);
+        (a.0 - b.0).abs() <= CORNER_SNAP || (a.1 - b.1).abs() <= CORNER_SNAP
+    });
+    if !axis_aligned {
+        return None;
+    }
+    let (xs, ys) = (corners.iter().map(|p| p.0), corners.iter().map(|p| p.1));
+    Some(Rect {
+        left: xs.clone().fold(f32::INFINITY, f32::min),
+        right: xs.fold(f32::NEG_INFINITY, f32::max),
+        bottom: ys.clone().fold(f32::INFINITY, f32::min),
+        top: ys.fold(f32::NEG_INFINITY, f32::max),
+    })
 }
 
 /// A thin, long rectangle is a rule along its long axis.
@@ -255,6 +337,27 @@ mod tests {
             as_rule(&rect(0.0, 0.0, 2.0, 2.0)).is_none(),
             "a dot is not a rule"
         );
+    }
+
+    #[test]
+    fn a_subpath_is_a_box_only_when_closed_and_axis_aligned() {
+        // A column rule of St. Johns County's use table: four corners, the
+        // first repeated by the close.
+        let bar = [
+            (194.0, 622.9),
+            (194.6, 622.9),
+            (194.6, 503.0),
+            (194.0, 503.0),
+            (194.0, 622.9),
+        ];
+        let rect = as_box(&bar).expect("a box");
+        assert_eq!((rect.left, rect.right), (194.0, 194.6));
+        assert!(as_rule(&rect).is_some_and(|rule| !rule.horizontal));
+
+        assert!(as_box(&bar[..4]).is_some(), "an unrepeated first corner");
+        let diamond = [(0.0, 5.0), (5.0, 10.0), (10.0, 5.0), (5.0, 0.0)];
+        assert!(as_box(&diamond).is_none(), "a turned square");
+        assert!(as_box(&bar[..2]).is_none(), "an open line");
     }
 
     #[test]

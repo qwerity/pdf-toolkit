@@ -27,4 +27,4 @@ quoting them; they are dated.
 
 `scripts/text-bench.py` grades text extraction against other extractors.
 Always pass `--ocr-models <dir>`: without it the scan page is read with no OCR
-and the score drops to 1159/1204, against a baseline of 1204/1204.
+and the score drops to 1414/1459, against a baseline of 1459/1459.

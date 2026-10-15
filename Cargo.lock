@@ -2442,6 +2442,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "webpx",
 ]
 
 [[package]]

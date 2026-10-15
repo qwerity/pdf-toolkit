@@ -17,7 +17,7 @@ use std::path::Path;
 
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::error::{EncodingError, ImageFormatHint};
-use image::{DynamicImage, ImageEncoder, ImageError, ImageFormat};
+use image::{DynamicImage, ImageEncoder, ImageError, ImageFormat, RgbaImage};
 use pdfium_render::prelude::{PdfBitmap, PdfColor, PdfPage, PdfRenderConfig};
 use webpx::{EncoderConfig, Unstoppable};
 
@@ -90,7 +90,9 @@ pub fn dimensions_px(page: &PdfPage<'_>, size: PngSize) -> (u32, u32) {
 ///
 /// The background is set explicitly because PDFium renders an unpainted page
 /// transparent, and a transparent PNG of a line drawing is unreadable wherever
-/// it is later composited onto something dark.
+/// it is later composited onto something dark. Reversing the byte order —
+/// pdfium-render's default, made explicit — has PDFium write RGBA, so reading
+/// the bitmap as RGBA needs no conversion copy.
 pub fn render_page<'page>(page: &'page PdfPage<'page>, size: PngSize) -> Result<PdfBitmap<'page>> {
     size.validate()?;
     limits::check(page.width().value, page.height().value, size)?;
@@ -110,7 +112,8 @@ pub fn render_page<'page>(page: &'page PdfPage<'page>, size: PngSize) -> Result<
             }
         }
     }
-    .set_clear_color(PdfColor::WHITE);
+    .set_clear_color(PdfColor::WHITE)
+    .set_reverse_byte_order(true);
 
     page.render_with_config(&render_config)
         .map_err(|source| PdfError::RenderPage { source })
@@ -173,29 +176,35 @@ const WEBP_LOSSLESS_MAX_BITS_PER_PIXEL: u64 = 1;
 /// [`WEBP_LOSSLESS_MAX_BITS_PER_PIXEL`] is also encoded lossy, and the smaller
 /// of the two is written.
 ///
-/// `path` names the destination only so a failure can say which file it was.
+/// The pixels go to libwebp as RGBA, which it imports without the alpha scan
+/// and RGB copy a PNG needs, and leaves the alpha out itself when every pixel
+/// is opaque. `path` names the destination only so a failure can say which
+/// file it was.
 pub fn write_webp<W: Write>(
     bitmap: &PdfBitmap<'_>,
     writer: &mut W,
     path: &Path,
     contains_images: bool,
 ) -> Result<()> {
-    let image = opaque_image(bitmap)?;
+    let pixels = bitmap
+        .as_image()
+        .map(DynamicImage::into_rgba8)
+        .map_err(|source| PdfError::RenderPage { source })?;
     let save_error = |source| PdfError::SaveImage {
         format: "WebP",
         path: path.to_path_buf(),
         source,
     };
-    let webp = encode_webp(&image, contains_images).map_err(save_error)?;
+    let webp = encode_webp(&pixels, contains_images).map_err(save_error)?;
     writer
         .write_all(&webp)
         .map_err(|source| save_error(ImageError::IoError(source)))
 }
 
-fn encode_webp(image: &DynamicImage, contains_images: bool) -> image::ImageResult<Vec<u8>> {
+fn encode_webp(pixels: &RgbaImage, contains_images: bool) -> image::ImageResult<Vec<u8>> {
     let lossy = || {
         encode_webp_with(
-            image,
+            pixels,
             &EncoderConfig::new()
                 .quality(WEBP_LOSSY_QUALITY)
                 .method(WEBP_LOSSY_METHOD),
@@ -206,13 +215,13 @@ fn encode_webp(image: &DynamicImage, contains_images: bool) -> image::ImageResul
     }
 
     let lossless = encode_webp_with(
-        image,
+        pixels,
         &EncoderConfig::new_lossless()
             .method(WEBP_LOSSLESS_METHOD)
             .quality(WEBP_LOSSLESS_QUALITY),
     )?;
-    let pixels = u64::from(image.width()) * u64::from(image.height());
-    if (lossless.len() as u64) * 8 <= WEBP_LOSSLESS_MAX_BITS_PER_PIXEL * pixels {
+    let pixel_count = u64::from(pixels.width()) * u64::from(pixels.height());
+    if (lossless.len() as u64) * 8 <= WEBP_LOSSLESS_MAX_BITS_PER_PIXEL * pixel_count {
         return Ok(lossless);
     }
     let lossy = lossy()?;
@@ -223,21 +232,20 @@ fn encode_webp(image: &DynamicImage, contains_images: bool) -> image::ImageResul
     })
 }
 
-fn encode_webp_with(image: &DynamicImage, config: &EncoderConfig) -> image::ImageResult<Vec<u8>> {
-    let (width, height) = (image.width(), image.height());
-    match image {
-        DynamicImage::ImageRgb8(rgb) => config.encode_rgb(rgb.as_raw(), width, height, Unstoppable),
-        DynamicImage::ImageRgba8(rgba) => {
-            config.encode_rgba(rgba.as_raw(), width, height, Unstoppable)
-        }
-        other => config.encode_rgba(other.to_rgba8().as_raw(), width, height, Unstoppable),
-    }
-    .map_err(|error| {
-        ImageError::Encoding(EncodingError::new(
-            ImageFormatHint::Exact(ImageFormat::WebP),
-            error.to_string(),
-        ))
-    })
+fn encode_webp_with(pixels: &RgbaImage, config: &EncoderConfig) -> image::ImageResult<Vec<u8>> {
+    config
+        .encode_rgba(
+            pixels.as_raw(),
+            pixels.width(),
+            pixels.height(),
+            Unstoppable,
+        )
+        .map_err(|error| {
+            ImageError::Encoding(EncodingError::new(
+                ImageFormatHint::Exact(ImageFormat::WebP),
+                error.to_string(),
+            ))
+        })
 }
 
 /// The bitmap as an image, without the alpha channel when it is fully opaque.
@@ -339,14 +347,14 @@ mod tests {
         &webp[12..16]
     }
 
-    fn text_like_page() -> DynamicImage {
-        let mut page = image::RgbImage::from_pixel(400, 300, image::Rgb([255, 255, 255]));
+    fn text_like_page() -> RgbaImage {
+        let mut page = RgbaImage::from_pixel(400, 300, image::Rgba([255, 255, 255, 255]));
         for y in (20..280).step_by(12) {
             for x in 30..370 {
-                page.put_pixel(x, y, image::Rgb([0, 0, 0]));
+                page.put_pixel(x, y, image::Rgba([0, 0, 0, 255]));
             }
         }
-        DynamicImage::ImageRgb8(page)
+        page
     }
 
     #[test]
@@ -366,22 +374,22 @@ mod tests {
     #[test]
     fn a_page_without_images_that_codes_poorly_lossless_falls_back_to_lossy() {
         let mut state: u32 = 0x2545_f491;
-        let noise = image::RgbImage::from_fn(300, 300, |_, _| {
+        let noise = RgbaImage::from_fn(300, 300, |_, _| {
             state ^= state << 13;
             state ^= state >> 17;
             state ^= state << 5;
             let [r, g, b, _] = state.to_le_bytes();
-            image::Rgb([r, g, b])
+            image::Rgba([r, g, b, 255])
         });
-        let webp = encode_webp(&DynamicImage::ImageRgb8(noise), false).expect("encodes");
+        let webp = encode_webp(&noise, false).expect("encodes");
         assert_eq!(webp_bitstream(&webp), b"VP8 ");
     }
 
     #[test]
     fn a_translucent_image_is_encoded_with_its_alpha() {
-        let mut rgba = image::RgbaImage::from_pixel(16, 16, image::Rgba([0, 0, 0, 255]));
+        let mut rgba = RgbaImage::from_pixel(16, 16, image::Rgba([0, 0, 0, 255]));
         rgba.put_pixel(0, 0, image::Rgba([0, 0, 0, 0]));
-        let webp = encode_webp(&DynamicImage::ImageRgba8(rgba), false).expect("encodes");
+        let webp = encode_webp(&rgba, false).expect("encodes");
         assert_eq!(webp_bitstream(&webp), b"VP8L");
     }
 }

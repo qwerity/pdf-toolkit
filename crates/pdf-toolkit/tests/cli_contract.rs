@@ -404,6 +404,37 @@ fn render_webp_has_the_png_result_shape_and_writes_a_lossless_webp() {
     assert_eq!(&bytes[12..16], b"VP8L", "a page without images is lossless");
 }
 
+/// The image fixture is a red (200, 30, 30) square from x 100 to 500 pt and
+/// y 400 to 800 pt on an A4 page. Decoded, the WebP must still be red there:
+/// a swapped red and blue channel leaves black-on-white text untouched and
+/// shows only in colour.
+#[test]
+fn render_webp_keeps_the_page_colours() {
+    let out = out_dir("webp_colours");
+    let output = json_argv(&[
+        "render".into(),
+        as_str(&fixtures().image).into(),
+        "--output".into(),
+        as_str(&out).into(),
+        "--scale".into(),
+        "1".into(),
+        "--format".into(),
+        "webp".into(),
+    ]);
+    let page = &output["pages"]["1"];
+    assert_eq!(page["contains_images"], true);
+
+    let webp = std::fs::read(page["path"].as_str().expect("path")).expect("rendered WebP");
+    let (rgb, width, _) = webpx::decode_rgb(&webp).expect("decodes");
+    // Centre of the square: x 300 pt; y 600 pt from the bottom of an 842 pt page.
+    let offset = ((242 * width + 300) * 3) as usize;
+    let [r, g, b] = [rgb[offset], rgb[offset + 1], rgb[offset + 2]];
+    assert!(
+        r.abs_diff(200) <= 12 && g.abs_diff(30) <= 12 && b.abs_diff(30) <= 12,
+        "expected the fixture's red, decoded ({r}, {g}, {b})"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // plain text
 // ---------------------------------------------------------------------------

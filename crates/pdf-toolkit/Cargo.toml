@@ -40,3 +40,4 @@ tempfile.workspace = true
 socket2 = { version = "0.6", default-features = false }
 image.workspace = true
 pdfium-render.workspace = true
+webpx = { workspace = true, features = ["decode"] }

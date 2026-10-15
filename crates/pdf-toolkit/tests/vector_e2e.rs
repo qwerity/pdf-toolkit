@@ -112,6 +112,7 @@ const PLACEMENTS: &[(&str, u32, u64, f64, f64, &str)] = &[
     // second pass this page does not place at all.
     ("10.pdf", 12, 4, 0.3675, 645.0, "text_layer"),
     ("13.pdf", 4, 8, 0.0031, 500.0, "text_layer"),
+    ("15.pdf", 5, 6, 0.0049, 500.0, "text_layer"),
     // Placed by a table lent from the document's survey sheet
     // (georeference.source "document_table"): the sheet draws the same
     // parcel and matched it by shape, under the borrowed-fit credibility
@@ -139,6 +140,10 @@ const PLACEMENTS: &[(&str, u32, u64, f64, f64, &str)] = &[
     ("9.pdf", 13, 7, 0.0015, 100.0, "document_table"),
     ("10.pdf", 5, 6, 0.0116, 2000.0, "document_table"),
     ("13.pdf", 3, 8, 0.0181, 2000.0, "document_table"),
+    ("15.pdf", 6, 6, 0.0113, 2000.0, "document_table"),
+    // The site plan copies the survey points exactly, so the borrowed table
+    // fits it with no residual.
+    ("15.pdf", 9, 6, 0.0000, 200.0, "document_table"),
 ];
 
 /// Every dossier in the corpus, in numeric order.

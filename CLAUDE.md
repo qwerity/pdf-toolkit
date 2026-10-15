@@ -131,7 +131,7 @@ PDF_TOOLKIT_REQUIRE_CORPUS=1 cargo test     # corpus tests must run, not skip
 ```
 
 **`data/` is the test data set, committed with the code.** `data/plan/` holds
-the fourteen real building-permit dossiers,
+the fifteen real building-permit dossiers,
 `data/annotations/` the reviewed annotations the `dossier` tests replay, with
 the vision-pass answers, the cadastre parcels, the recorded `building` reports
 and the accepted `model` parameters beside them, and

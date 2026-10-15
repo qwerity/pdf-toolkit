@@ -471,7 +471,7 @@ fn recorded_building(n: u32) -> Option<Value> {
 
 #[test]
 fn extractions_score_no_worse_than_the_baseline() {
-    let ledgers: Vec<u32> = (1..=14)
+    let ledgers: Vec<u32> = (1..=15)
         .filter(|n| {
             expected_path(*n).is_file()
                 && common::data_dir()

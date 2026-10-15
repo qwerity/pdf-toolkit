@@ -709,6 +709,6 @@ adding a dossier needs no code change — but one that places a page fails
 `the_corpus_places_exactly_the_recorded_pages` until that placement is recorded
 in `PLACEMENTS`, which is deliberate: a new placement is a new claim about the
 world and should be written down. The `dossier` parity tests are stricter
-still: they replay the fourteen reviewed annotations by number, so a new
+still: they replay the fifteen reviewed annotations by number, so a new
 dossier joins them only once its annotation is reviewed into
 `data/annotations/`.

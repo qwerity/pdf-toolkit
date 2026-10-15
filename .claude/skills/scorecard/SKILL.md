@@ -19,8 +19,11 @@ Accept new scores only when every kind held or rose; the update makes the new
 numbers the committed baseline (`tests/scorecard/baseline.json`).
 
 Known gaps the baseline carries on purpose — the ledger is right and the
-toolkit is wrong: a mis-read digit in dossier 10's entity, and an unread
-hectare figure on dossier 14 p16. Re-check both against the pages before
+toolkit is wrong: a mis-read digit in dossier 10's entity, an unread
+hectare figure on dossier 14 p16, and dossier 15 p7's total usable floor
+area («Կառուցապատման ընդհանուր օգտագործման մակերես 619 քմ») read as a
+footprint because it contains «կառուցապատման» — there is no fact kind for
+it, so the ledger leaves it out. Re-check them against the pages before
 quoting them; they are dated.
 
 ## Text bench

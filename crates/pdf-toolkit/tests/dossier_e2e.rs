@@ -69,7 +69,7 @@ fn page(report: &Value, number: u64) -> &Value {
 /// blessed annotation byte-for-byte (as parsed JSON). GeoJSON is written to a
 /// temp dir so the `cad.geojson` relative paths are exercised too.
 ///
-/// This is deliberately one test over all fourteen dossiers: the annotations
+/// This is deliberately one test over all fifteen dossiers: the annotations
 /// were reviewed as a set, and a regression in any of them is the same
 /// failure — the command no longer produces what was reviewed.
 #[test]
@@ -79,7 +79,7 @@ fn merged_dossier_reproduces_the_reviewed_annotations() {
     }
     let out = tempfile::tempdir().expect("temp dir");
 
-    for n in 1..=14 {
+    for n in 1..=15 {
         let (pdf, annotation, answers) = (corpus_pdf(n), annotation(n), answers(n));
         assert!(
             pdf.is_file() && annotation.is_file() && answers.is_file(),

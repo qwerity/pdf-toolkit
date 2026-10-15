@@ -54,6 +54,7 @@ const MIN_STOREY_M: f64 = 2.4;
 const DEFAULT_STOREY_M: f64 = 3.0;
 
 /// What one sheet says about itself, gathered from the vector pass.
+#[derive(Clone)]
 struct SheetFacts {
     page: usize,
     class: PageClass,
@@ -146,17 +147,15 @@ pub fn detect(
         ));
     }
 
-    // Storeys: the floor plans, ordered by the level their titles name.
-    let mut floors: Vec<&SheetFacts> = sheets
-        .iter()
-        .filter(|s| s.role == Some(SheetRole::FloorPlan) || s.class == PageClass::FloorPlan)
-        .collect();
-    floors.sort_by(|a, b| {
-        a.level_m
-            .unwrap_or(f64::INFINITY)
-            .total_cmp(&b.level_m.unwrap_or(f64::INFINITY))
-            .then(a.page.cmp(&b.page))
-    });
+    // Storeys: the floor plans, one per storey, ordered by the level their titles name.
+    let floors = storeys(
+        sheets
+            .iter()
+            .filter(|s| s.role == Some(SheetRole::FloorPlan) || s.class == PageClass::FloorPlan)
+            .cloned()
+            .collect(),
+        &mut notes,
+    );
     if floors.is_empty() {
         return Err(anyhow!(
             "no sheet is titled as a floor plan; pass --params naming the plan pages"
@@ -290,6 +289,31 @@ pub fn detect(
         ));
     }
 
+    // A roof plan that names no level, over storeys whose titles do: the
+    // template's roof is an office default, and where it does not clear the top
+    // storey it would cut it, so the roof stands a storey above the top one.
+    let top_level = floors
+        .iter()
+        .filter_map(|f| f.level_m)
+        .max_by(f64::total_cmp);
+    if titled > 0
+        && roof_sheet.is_none_or(|r| r.level_m.is_none())
+        && let Some(top) = top_level
+        && params.roof_level_m < top + MIN_STOREY_M
+    {
+        let storey = storey_height(floors.iter().filter_map(|f| f.level_m));
+        let parapet_height = (template.parapet_level_m - template.roof_level_m).max(0.1);
+        params.roof_level_m = round_mm(top + storey);
+        if params.parapet_level_m <= params.roof_level_m {
+            params.parapet_level_m = round_mm(params.roof_level_m + parapet_height);
+        }
+        notes.push(format!(
+            "roof level {} a storey ({storey}) above the top storey at {top}: the roof plan names \
+             none and the template's {} would cut it",
+            params.roof_level_m, template.roof_level_m
+        ));
+    }
+
     params.floors = Vec::new();
     let level_of = |index: usize| -> Option<f64> { floors[index].level_m.or(derived[index]) };
     let top_of = |index: usize| -> f64 {
@@ -376,6 +400,95 @@ pub fn detect(
 
     params.validate()?;
     Ok(Detection { params, notes })
+}
+
+/// One sheet per storey, each at the level it stands at, ascending.
+///
+/// TWO SHEETS, ONE STOREY. A set may draw each storey twice in a row -- once
+/// dimensioned, once furnished -- and both name the same level: consecutive
+/// plan sheets at one level are one storey, drawn on the first.
+///
+/// A TITLE THAT NAMES THE WRONG LEVEL. Plans run up the set in page order. A
+/// storey whose title puts it no higher than the one before it, between two
+/// that climb by at least two storeys, is a misprint -- one corpus set titles
+/// its second floor `-3,960`, its basement's level -- and stands halfway
+/// between its neighbours. Read before the sheets are grouped by level, or the
+/// misprint would be taken for another drawing of the basement.
+fn storeys(mut plans: Vec<SheetFacts>, notes: &mut Vec<String>) -> Vec<SheetFacts> {
+    plans.sort_by_key(|p| p.page);
+    let same = |a: Option<f64>, b: Option<f64>| matches!((a, b), (Some(a), Some(b)) if (a - b).abs() < 0.005);
+
+    let mut floors: Vec<SheetFacts> = Vec::new();
+    let mut last_page = 0;
+    for plan in plans {
+        if let Some(storey) = floors.last()
+            && plan.page == last_page + 1
+            && same(storey.level_m, plan.level_m)
+        {
+            notes.push(format!(
+                "page {} draws the storey of page {} again (level {}); one storey",
+                plan.page,
+                storey.page,
+                plan.level_m.unwrap_or_default()
+            ));
+            last_page = plan.page;
+            continue;
+        }
+        last_page = plan.page;
+        floors.push(plan);
+    }
+
+    for i in 1..floors.len().saturating_sub(1) {
+        let (Some(below), Some(level), Some(above)) = (
+            floors[i - 1].level_m,
+            floors[i].level_m,
+            floors[i + 1].level_m,
+        ) else {
+            continue;
+        };
+        if level <= below && above - below >= 2.0 * MIN_STOREY_M {
+            let between = round_mm((below + above) / 2.0);
+            notes.push(format!(
+                "page {}: its title names level {level}, no higher than page {}'s {below} though \
+                 drawn after it; taken as {between}, between that and page {}'s {above}",
+                floors[i].page,
+                floors[i - 1].page,
+                floors[i + 1].page
+            ));
+            floors[i].level_m = Some(between);
+        }
+    }
+
+    floors.sort_by(|a, b| {
+        a.level_m
+            .unwrap_or(f64::INFINITY)
+            .total_cmp(&b.level_m.unwrap_or(f64::INFINITY))
+            .then(a.page.cmp(&b.page))
+    });
+    floors
+}
+
+/// The storey height the levels climb by: the median step between distinct
+/// levels at least [`MIN_STOREY_M`] apart, or [`DEFAULT_STOREY_M`].
+fn storey_height(levels: impl Iterator<Item = f64>) -> f64 {
+    let mut levels: Vec<f64> = levels.collect();
+    levels.sort_by(f64::total_cmp);
+    levels.dedup_by(|a, b| (*a - *b).abs() < 0.005);
+    let mut steps: Vec<f64> = levels
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .filter(|step| *step >= MIN_STOREY_M)
+        .collect();
+    if steps.is_empty() {
+        return DEFAULT_STOREY_M;
+    }
+    steps.sort_by(f64::total_cmp);
+    round_mm(steps[steps.len() / 2])
+}
+
+/// Metres to the millimetre, the precision a drawing prints a level at.
+fn round_mm(metres: f64) -> f64 {
+    (metres * 1000.0).round() / 1000.0
 }
 
 /// Distinct level marks on the elevation and section sheets, ascending.
@@ -751,5 +864,82 @@ mod tests {
             None,
             "ground has no soffit"
         );
+    }
+
+    fn plan(page: usize, level_m: Option<f64>) -> SheetFacts {
+        SheetFacts {
+            page,
+            class: PageClass::FloorPlan,
+            role: Some(SheetRole::FloorPlan),
+            title: None,
+            level_m,
+            scale: None,
+        }
+    }
+
+    #[test]
+    fn a_storey_drawn_on_two_sheets_in_a_row_is_one_storey() {
+        let mut notes = Vec::new();
+        let floors = storeys(
+            vec![
+                plan(10, Some(-7.92)),
+                plan(11, Some(-7.92)),
+                plan(12, Some(0.0)),
+            ],
+            &mut notes,
+        );
+        assert_eq!(
+            floors.iter().map(|f| f.page).collect::<Vec<_>>(),
+            vec![10, 12]
+        );
+        assert!(notes[0].contains("page 11 draws the storey of page 10"));
+    }
+
+    #[test]
+    fn a_title_that_names_a_lower_level_between_climbing_neighbours_is_a_misprint() {
+        let mut notes = Vec::new();
+        let floors = storeys(
+            vec![
+                plan(12, Some(-3.96)),
+                plan(14, Some(0.0)),
+                plan(16, Some(-3.96)),
+                plan(17, Some(-3.96)),
+                plan(18, Some(7.92)),
+            ],
+            &mut notes,
+        );
+        let levels: Vec<(usize, Option<f64>)> =
+            floors.iter().map(|f| (f.page, f.level_m)).collect();
+        assert_eq!(
+            levels,
+            vec![
+                (12, Some(-3.96)),
+                (14, Some(0.0)),
+                (16, Some(3.96)),
+                (18, Some(7.92))
+            ]
+        );
+    }
+
+    #[test]
+    fn the_same_level_on_sheets_apart_is_left_alone_when_nothing_climbs_around_it() {
+        let mut notes = Vec::new();
+        // Two wings at one level, a sheet between: no climb either side, no repair.
+        let floors = storeys(
+            vec![plan(5, Some(0.0)), plan(6, Some(3.0)), plan(8, Some(0.0))],
+            &mut notes,
+        );
+        assert_eq!(floors.len(), 3);
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn storey_height_is_the_median_step_of_the_levels() {
+        assert_eq!(
+            storey_height([-7.92, -3.96, 0.0, 3.96, 7.92].into_iter()),
+            3.96
+        );
+        assert_eq!(storey_height([0.0].into_iter()), DEFAULT_STOREY_M);
+        assert_eq!(storey_height([0.0, 0.3, 3.3].into_iter()), 3.0);
     }
 }

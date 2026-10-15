@@ -63,7 +63,7 @@
       "georeference": 1.0,
       "groups": 1.0,
       "labels": 1.0,
-      "model": 0.0,
+      "model": 0.5,
       "request": 1.0,
       "route": 1.0,
       "trust": 0.975
@@ -211,7 +211,7 @@
     "georeference": 1.0,
     "groups": 0.9806,
     "labels": 1.0,
-    "model": 0.375,
+    "model": 0.4375,
     "request": 1.0,
     "route": 1.0,
     "trust": 0.9727

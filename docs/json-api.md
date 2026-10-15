@@ -612,6 +612,16 @@ sentence is not a name, and a page naming three or more different sheet
 kinds is the sheet list rather than any of them. Only a page whose line work
 already marks it a drawing is read this way.
 
+Where no single line names the sheet, a name WRAPPED over stacked lines is
+read as one — `ԵՐՐՈՐԴ ՀԱՐԿԻ` / `ՀԱՏԱԿԱԳԻԾ 7920` / `ՆԻՇՈՒՄ` — taking up to three
+lines that share a left edge and a type size, each within a line and a half of
+the one above; `sheet_title` is then the joined name. A whole number of
+millimetres the name calls a mark (`7920 նիշում`) is its `sheet_level_m`
+(7.92). A level mark is found with the line's spacing kept as well as taken
+out, so a number printed after it on the same baseline cannot run into it
+(`-0,000 0250`), and text placed further off the page than the page is across
+is not read into any line.
+
 A sheet may also name the storey and never the word "plan" at all —
 `ԱՌԱՋԻՆ ՀԱՐԿ`, first storey — and that is read as `floor_plan`. It is the
 narrowest of these rules: the line must be short and must END on the storey
@@ -1456,6 +1466,17 @@ its filled drawing when the sheet prints no grid labels
 (`sheets[].origin_source: "fill_centre"`); and a building box derived from
 the outline of the walls and rooms when the sheet draws no light fill big
 enough to hold its own walls.
+
+Plan sheets become storeys by three rules, each named in `params_notes`.
+Consecutive plan sheets at the same titled level are **one storey** drawn
+twice (a dimensioned and a furnished sheet): the storey is built from the
+first, so `floors[]` holds one entry per storey. In page order the plans climb,
+so a storey whose title puts it no higher than the one before it, between two
+that climb by at least two storeys (4.8 m), is a **misprinted title** and
+stands halfway between its neighbours. And where the roof plan names no level
+and the template's roof would not clear the top storey by a storey (2.4 m),
+the **roof** stands one storey height — the median step between the storey
+levels — above the top storey, the parapet the template's height above that.
 Each is approximate where the drawing is unusual — a set whose "floor
 plans" include existing-state or ceiling plans gets too many storeys — which
 is what `--llm-params` is for: the proposal names the plan pages, the levels,

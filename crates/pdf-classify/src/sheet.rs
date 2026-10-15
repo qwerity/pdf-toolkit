@@ -155,19 +155,57 @@ fn levels_in(text: &str) -> impl Iterator<Item = f64> + '_ {
     })
 }
 
+fn millimetre_level_regex() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?:^|[^\d.,])([+±\-−–]?)\s?(\d{3,5})\s*նիշ").expect("static regex")
+    })
+}
+
+/// The level a sheet's NAME gives: a level mark (`-3,960`), or a whole number
+/// of millimetres the name calls a mark (`7920 նիշում` → 7.92), which is how
+/// one corpus set titles the storey its other titles write as `-3,960`.
+fn title_level(title: &str) -> Option<f64> {
+    levels_in(title).next().or_else(|| {
+        let caps = millimetre_level_regex().captures(title)?;
+        let millimetres: f64 = caps[2].parse().ok()?;
+        let negative = matches!(&caps[1], "-" | "−" | "–");
+        Some(if negative { -millimetres } else { millimetres } / 1000.0)
+    })
+}
+
 /// A line of text as printed: items on one baseline, left to right.
 struct Line {
     y: f64,
+    /// The left edge: the first item's origin.
+    x: f64,
     size: f64,
     text: String,
 }
 
 /// Groups horizontal text items into lines by baseline.
-fn lines(page: &PageContent) -> Vec<Line> {
+///
+/// A run placed further off the page than the page is across is not part of
+/// the sheet's text: one corpus plan carries a stray `0250` thirty pages to the
+/// right of its title, on the title's baseline, where it joined the title line.
+///
+/// With `same_size`, a run joins a line only in that line's type size: a wrapped
+/// title's rows then stay apart from the grid numbers and section marks a
+/// plan prints at nearly the same baselines in smaller type.
+fn lines(page: &PageContent, same_size: bool) -> Vec<Line> {
+    let page_box = page.media_box;
+    let reach = page_box.width().hypot(page_box.height());
+    let on_page = |t: &TextItem| {
+        page_box.width() <= 0.0
+            || (t.origin.x >= page_box.min_x - reach
+                && t.origin.x <= page_box.max_x + reach
+                && t.origin.y >= page_box.min_y - reach
+                && t.origin.y <= page_box.max_y + reach)
+    };
     let mut items: Vec<&TextItem> = page
         .texts
         .iter()
-        .filter(|t| t.angle.abs() < 0.05 && !t.text.trim().is_empty())
+        .filter(|t| t.angle.abs() < 0.05 && !t.text.trim().is_empty() && on_page(t))
         .collect();
     items.sort_by(|a, b| {
         b.origin
@@ -178,7 +216,10 @@ fn lines(page: &PageContent) -> Vec<Line> {
     let mut lines: Vec<(f64, f64, Vec<&TextItem>)> = Vec::new();
     for item in items {
         match lines.last_mut() {
-            Some((y, size, members)) if (item.origin.y - *y).abs() <= 0.4 * size.max(item.size) => {
+            Some((y, size, members))
+                if (item.origin.y - *y).abs() <= 0.4 * size.max(item.size)
+                    && (!same_size || (item.size - *size).abs() <= 0.05 * size.max(item.size)) =>
+            {
                 members.push(item);
             }
             _ => lines.push((item.origin.y, item.size, vec![item])),
@@ -196,7 +237,8 @@ fn lines(page: &PageContent) -> Vec<Line> {
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ");
-            Line { y, size, text }
+            let x = members.first().map_or(0.0, |t| t.origin.x);
+            Line { y, x, size, text }
         })
         .collect()
 }
@@ -213,7 +255,8 @@ pub fn parse_level(text: &str) -> Option<f64> {
             c => c,
         })
         .collect();
-    cleaned.parse::<f64>().ok()
+    // `-0,000` is the ground level, not a negative zero to print as `-0`.
+    cleaned.parse::<f64>().ok().map(|level| level + 0.0)
 }
 
 /// Every distinct level mark printed on the page, ascending.
@@ -403,8 +446,12 @@ fn heading_role(line: &str) -> Option<SheetRole> {
                 && !says(STOREY_WORDS)
                 && !says(&["նիշ", "отм"])
                 // A level mark carries its own sign and separator, so it
-                // reads the same with the spacing gone.
-                && levels_in(&lower).next().is_none() =>
+                // reads the same with the spacing gone -- unless a number
+                // printed after it on the same baseline runs into it once
+                // the spaces are out (`-0,000 0250` → `-0,0000250`), so the
+                // spaced line is asked too.
+                && levels_in(&lower).next().is_none()
+                && levels_in(&line.to_lowercase()).next().is_none() =>
         {
             None
         }
@@ -431,15 +478,28 @@ fn heading_role(line: &str) -> Option<SheetRole> {
 /// evidence about a drawing, and the same words run through the prose of
 /// the application letter.
 pub fn sheet_heading(page: &PageContent) -> Option<SheetTitle> {
-    let lines = lines(page);
+    let lines = lines(page, false);
     // `lines` has already collapsed each line's whitespace and trimmed it, so
     // `text` is the normalised form throughout this function.
-    let named: Vec<(&Line, SheetRole)> = lines
+    let named: Vec<(String, SheetRole)> = lines
         .iter()
         .filter(|line| (3..=MAX_HEADING_CHARS).contains(&line.text.chars().count()))
-        .filter_map(|line| heading_role(&line.text).map(|role| (line, role)))
+        .filter_map(|line| heading_role(&line.text).map(|role| (line.text.clone(), role)))
         .filter(|(_, role)| names_a_drawing(*role))
         .collect();
+    // A NAME WRAPPED OVER STACKED LINES -- `ԵՐՐՈՐԴ ՀԱՐԿԻ` / `ՀԱՏԱԿԱԳԻԾ 7920` /
+    // `ՆԻՇՈՒՄ` -- names its sheet only read as one. Tried only where no line
+    // does on its own, so a page whose heading already reads is decided as
+    // before.
+    let named = if named.is_empty() {
+        stacked_headings(&self::lines(page, true))
+            .into_iter()
+            .filter_map(|text| heading_role(&text).map(|role| (text, role)))
+            .filter(|(_, role)| names_a_drawing(*role))
+            .collect()
+    } else {
+        named
+    };
 
     // How many DIFFERENT kinds of drawing the page names: a sheet index lists
     // several, a sheet names its own. Counted by scanning the handful of
@@ -458,15 +518,14 @@ pub fn sheet_heading(page: &PageContent) -> Option<SheetTitle> {
     // ROLE_RULES is ordered by precedence, so the earliest rule that any
     // heading on the page matches is the page's kind — the same order that
     // decides a title block naming a fence elevation.
-    let (line, role) = named.into_iter().min_by_key(|(_, role)| {
+    let (title, role) = named.into_iter().min_by_key(|(_, role)| {
         ROLE_RULES
             .iter()
             .position(|(r, _)| r == role)
             .unwrap_or(usize::MAX)
     })?;
 
-    let title = line.text.clone();
-    let level_m = levels_in(&title).next();
+    let level_m = title_level(&title);
     Some(SheetTitle {
         role: Some(role),
         level_m,
@@ -474,9 +533,50 @@ pub fn sheet_heading(page: &PageContent) -> Option<SheetTitle> {
     })
 }
 
+/// Lines stacked as one wrapped name: the same left edge and type size, each
+/// baseline within a line and a half of the one above. From each line, the
+/// longest such stack of up to three, joined, within [`MAX_HEADING_CHARS`]:
+/// the whole wrapped name, so a level its last line names (`… 7920` /
+/// `ՆԻՇՈՒՄ`) is read with it.
+fn stacked_headings(lines: &[Line]) -> Vec<String> {
+    let stacked = |a: &Line, b: &Line| {
+        let size = a.size.max(b.size);
+        (a.x - b.x).abs() <= 0.5 * size
+            && (a.size - b.size).abs() <= 0.1 * size
+            && a.y > b.y
+            && a.y - b.y <= 1.8 * size
+    };
+    let mut out = Vec::new();
+    for (i, first) in lines.iter().enumerate() {
+        let mut text = first.text.clone();
+        let mut last = first;
+        let mut joined = 0;
+        let mut longest = None;
+        // `lines` runs top to bottom, so the next stacked line is the first
+        // below `last` that lines up with it; anything further down than a
+        // line and a half ends the name.
+        for next in &lines[i + 1..] {
+            if joined == 2 || next.y < last.y - 1.8 * last.size.max(next.size) {
+                break;
+            }
+            if !stacked(last, next) {
+                continue;
+            }
+            text = format!("{text} {}", next.text);
+            last = next;
+            joined += 1;
+            if text.chars().count() <= MAX_HEADING_CHARS {
+                longest = Some(text.clone());
+            }
+        }
+        out.extend(longest);
+    }
+    out
+}
+
 /// Reads the sheet name off the title block, when the page prints one.
 pub fn sheet_title(page: &PageContent) -> Option<SheetTitle> {
-    let lines = lines(page);
+    let lines = lines(page, false);
     let index = lines.iter().position(|line| {
         let lower = line.text.to_lowercase();
         TITLE_LABELS.iter().any(|label| {
@@ -513,7 +613,7 @@ pub fn sheet_title(page: &PageContent) -> Option<SheetTitle> {
     if title.is_empty() {
         return None;
     }
-    let level_m = levels_in(&title).next();
+    let level_m = title_level(&title);
     Some(SheetTitle {
         role: role_of(&title),
         level_m,
@@ -750,5 +850,53 @@ mod tests {
         assert_eq!(title.title, "Գլխավոր հատակագիծ քանդվող շնություն");
         assert_eq!(title.role, Some(SheetRole::SitePlan));
         assert!(title.level_m.is_none());
+    }
+
+    #[test]
+    fn a_level_mark_is_read_when_a_stray_number_runs_into_it_despaced() {
+        let content = page(vec![
+            text("հատակագիծ", 896.0, 66.0),
+            text("  -0,000", 1018.0, 66.0),
+            text("0250", 1500.0, 66.0),
+        ]);
+        let heading = sheet_heading(&content).expect("the plan's heading");
+        assert_eq!(heading.role, Some(SheetRole::FloorPlan));
+        assert_eq!(heading.level_m, Some(0.0));
+    }
+
+    #[test]
+    fn a_run_far_off_the_page_does_not_join_the_title_line() {
+        let content = page(vec![
+            text("հատակագիծ", 896.0, 66.0),
+            text("  -3,960", 1018.0, 66.0),
+            text("0250", 33_363.0, 66.0),
+        ]);
+        let heading = sheet_heading(&content).expect("the plan's heading");
+        assert_eq!(heading.title, "հատակագիծ -3,960");
+    }
+
+    #[test]
+    fn a_name_wrapped_over_stacked_lines_is_read_as_one_with_its_millimetre_level() {
+        let content = page(vec![
+            text("Երրորդ", 896.0, 96.0),
+            text("հարկի", 976.0, 96.0),
+            text("հատակագիծ", 896.0, 81.0),
+            text("  7920", 1018.0, 81.0),
+            text("նիշում/չափադրում", 896.0, 66.0),
+        ]);
+        let heading = sheet_heading(&content).expect("the wrapped name");
+        assert_eq!(heading.role, Some(SheetRole::FloorPlan));
+        assert_eq!(heading.level_m, Some(7.92));
+        assert!(heading.title.starts_with("Երրորդ հարկի հատակագիծ 7920"));
+    }
+
+    #[test]
+    fn a_millimetre_level_needs_the_word_for_a_mark() {
+        assert_eq!(title_level("հատակագիծ 7920 նիշում"), Some(7.92));
+        assert_eq!(title_level("հատակագիծ -3960 նիշում"), Some(-3.96));
+        assert_eq!(title_level("հատակագիծ 7920"), None);
+        assert_eq!(title_level("+3,60 նիշով հարկի հատակագիծ"), Some(3.6));
+        assert_eq!(parse_level("-0,000"), Some(0.0));
+        assert!(parse_level("-0,000").is_some_and(f64::is_sign_positive));
     }
 }

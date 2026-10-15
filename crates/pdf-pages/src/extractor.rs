@@ -10,6 +10,7 @@ use pdf_core::page::{
 use pdf_core::page_selection::PageSelection;
 use pdf_core::warning::ExtractionWarning;
 use pdf_inspect::{PageInfo, page_info_for_page};
+use pdf_render::PngSize;
 use pdfium_render::prelude::*;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
@@ -36,9 +37,10 @@ struct OutputContext<'a> {
     stem: &'a str,
     page_number: NonZeroU16,
     output_format: OutputFormat,
+    contains_images: bool,
 }
 
-/// Extracts selected pages from a PDF into single-page PDF or PNG files.
+/// Extracts selected pages from a PDF into single-page PDF, PNG or WebP files.
 pub fn extract_pages(
     pdfium: &Pdfium,
     pdf_path: &Path,
@@ -133,6 +135,7 @@ pub fn extract_pages(
                 stem: &stem,
                 page_number,
                 output_format,
+                contains_images: page_info.contains_images,
             },
         ) {
             Ok(saved_page) => {
@@ -164,7 +167,9 @@ pub fn extract_pages(
 fn output_dimensions_px(page: &PdfPage<'_>, output_format: OutputFormat) -> (u32, u32) {
     match output_format {
         OutputFormat::Pdf { .. } => page_dimensions_px(page, 1.0),
-        OutputFormat::Png { size } => pdf_render::dimensions_px(page, size),
+        OutputFormat::Png { size } | OutputFormat::Webp { size } => {
+            pdf_render::dimensions_px(page, size)
+        }
     }
 }
 
@@ -255,7 +260,9 @@ fn save_page(
 ) -> Result<SavedPage> {
     match output_context.output_format {
         OutputFormat::Pdf { .. } => save_pdf_page(pdfium, source_document, &output_context),
-        OutputFormat::Png { .. } => save_png_page(source_page, &output_context),
+        OutputFormat::Png { size } | OutputFormat::Webp { size } => {
+            save_image_page(source_page, &output_context, size)
+        }
     }
 }
 
@@ -303,9 +310,10 @@ fn save_pdf_page(
     })
 }
 
-fn save_png_page(
+fn save_image_page(
     source_page: &PdfPage<'_>,
     output_context: &OutputContext<'_>,
+    size: PngSize,
 ) -> Result<SavedPage> {
     let mut reserved_output = reserve_output_file_with_extension(
         output_context.output_dir,
@@ -313,12 +321,15 @@ fn save_png_page(
         output_context.page_number,
         output_context.output_format.extension(),
     )?;
-    let OutputFormat::Png { size } = output_context.output_format else {
-        unreachable!("PNG pages must use PNG output format");
-    };
 
     let bitmap = pdf_render::render_page(source_page, size)?;
-    pdf_render::write_png(&bitmap, &mut reserved_output.file, &reserved_output.path)?;
+    let (file, path) = (&mut reserved_output.file, &reserved_output.path);
+    match output_context.output_format {
+        OutputFormat::Webp { .. } => {
+            pdf_render::write_webp(&bitmap, file, path, output_context.contains_images)?
+        }
+        _ => pdf_render::write_png(&bitmap, file, path)?,
+    }
     let size_kb = file_size_kb(&reserved_output.file, &reserved_output.path)?;
 
     Ok(SavedPage {

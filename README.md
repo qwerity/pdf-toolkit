@@ -107,6 +107,7 @@ pdf-toolkit <COMMAND> <INPUT> [OPTIONS]
 ```bash
 ./dist/pdf-toolkit render input.pdf --pages 1-3 --scale 2 -o out
 ./dist/pdf-toolkit render input.pdf --pages 1-3 --scale-width-px 1400 -o out
+./dist/pdf-toolkit render input.pdf --pages 1 --format webp --scale-long-edge-px 3200 -o out
 ```
 
 With neither sizing option, `render` uses scale `2.0`.
@@ -389,9 +390,13 @@ GeoJSON `building` emits. The shapes are the `model` section of
 - `--concat` / `-c`: `cut` merges the selection into one PDF; `text` merges it
   into one `.txt` file. `text` also merges when the selection is `all`, which is
   the default — so only an explicit page selection yields per-page files.
-- `--scale` / `-s` and `--scale-width-px`: `render` only, and mutually
-  exclusive. `--scale-width-px` sets the output width and preserves the aspect
-  ratio.
+- `--scale` / `-s`, `--scale-width-px` and `--scale-long-edge-px`: `render`
+  only, and mutually exclusive. `--scale-width-px` sets the output width and
+  `--scale-long-edge-px` the length of the longer side; both preserve the
+  aspect ratio.
+- `--format`: `render` only; `png` (default) or `webp`. WebP is lossless for
+  a page without raster images and lossy (quality 90) for one with them; the
+  encoder is libwebp, compiled in, whose licence ships in `licenses/`.
 - `--structured-format`: `structured` only; `full` (default) includes spans and
   markdown, `markdown` emits markdown only.
 - extracted text starts each page with a `____PageN____` marker

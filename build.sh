@@ -356,6 +356,9 @@ main() {
         mkdir -p "${package_dir}/docs"
         cp "docs/json-api.md" "${package_dir}/docs/json-api.md"
         cp "docs/annotation-schema.md" "${package_dir}/docs/annotation-schema.md"
+        # libwebp is compiled into the binary; its BSD licence and patent
+        # grant must travel with every copy of it.
+        cp -R "licenses" "${package_dir}/licenses"
 
         archive_path="$(create_archive "${artifacts_dir}" "${package_root}" "${package_dir_name}" "${PLATFORM}")"
         checksum_path="$(write_checksum "${archive_path}")"

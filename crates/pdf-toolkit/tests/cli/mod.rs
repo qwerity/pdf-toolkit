@@ -149,6 +149,32 @@ pub mod argv {
         ]
     }
 
+    /// Render pages to PNG at a fixed length of the longer side.
+    pub fn render_png_long_edge(input: &str, pages: &str, out: &str, edge_px: &str) -> Vec<String> {
+        vec![
+            "render".into(),
+            input.into(),
+            "--pages".into(),
+            pages.into(),
+            "--output".into(),
+            out.into(),
+            "--scale-long-edge-px".into(),
+            edge_px.into(),
+        ]
+    }
+
+    /// Render pages to WebP at a fixed length of the longer side.
+    pub fn render_webp_long_edge(
+        input: &str,
+        pages: &str,
+        out: &str,
+        edge_px: &str,
+    ) -> Vec<String> {
+        let mut args = render_png_long_edge(input, pages, out, edge_px);
+        args.extend(["--format".into(), "webp".into()]);
+        args
+    }
+
     /// Resample raster images into a new PDF at `dpi`.
     pub fn downsample(input: &str, output: &str, dpi: &str) -> Vec<String> {
         vec![

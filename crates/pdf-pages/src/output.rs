@@ -20,11 +20,20 @@ pub struct PageResult {
 ///
 /// `concat` rides on the PDF variant rather than standing beside the format
 /// because merging is only meaningful for PDF: a set of pages becomes one
-/// document, whereas PNGs stay one file per page whatever is asked.
+/// document, whereas images stay one file per page whatever is asked.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum OutputFormat {
-    Pdf { concat: bool },
-    Png { size: PngSize },
+    Pdf {
+        concat: bool,
+    },
+    Png {
+        size: PngSize,
+    },
+    /// Lossless for a page without raster images, lossy otherwise; see
+    /// [`pdf_render::write_webp`].
+    Webp {
+        size: PngSize,
+    },
 }
 
 impl OutputFormat {
@@ -32,15 +41,17 @@ impl OutputFormat {
         match self {
             Self::Pdf { .. } => "pdf",
             Self::Png { .. } => "png",
+            Self::Webp { .. } => "webp",
         }
     }
 
     /// Rejects a request that cannot be rendered. PDF output has nothing to
-    /// check; PNG defers to the renderer, which owns the bounds it can meet.
+    /// check; an image defers to the renderer, which owns the bounds it can
+    /// meet.
     pub fn validate(self) -> Result<()> {
         match self {
             Self::Pdf { .. } => Ok(()),
-            Self::Png { size } => size.validate(),
+            Self::Png { size } | Self::Webp { size } => size.validate(),
         }
     }
 }
@@ -62,6 +73,13 @@ mod tests {
             .extension(),
             "png"
         );
+        assert_eq!(
+            OutputFormat::Webp {
+                size: PngSize::Scale(1.0)
+            }
+            .extension(),
+            "webp"
+        );
     }
 
     #[test]
@@ -72,8 +90,10 @@ mod tests {
             PngSize::Scale(2.0),
             PngSize::WidthPx(1),
             PngSize::WidthPx(MAX_IMAGE_WIDTH_PX),
+            PngSize::LongEdgePx(1),
         ] {
             assert!(OutputFormat::Png { size }.validate().is_ok());
+            assert!(OutputFormat::Webp { size }.validate().is_ok());
         }
     }
 

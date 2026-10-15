@@ -41,6 +41,7 @@ fn check_dimensions(width: f32, height: f32, size: PngSize, limit: u64) -> Resul
     let scale = match size {
         PngSize::Scale(scale) => f64::from(scale),
         PngSize::WidthPx(target) => f64::from(target) / width,
+        PngSize::LongEdgePx(target) => f64::from(target) / width.max(height),
     };
     let (pixels_x, pixels_y) = ((width * scale).ceil(), (height * scale).ceil());
     if !pixels_x.is_finite()
@@ -67,6 +68,9 @@ mod tests {
         assert!(check_dimensions(1.0, 1_000_000.0, PngSize::WidthPx(100), 32_000_000).is_err());
         assert!(check_dimensions(100.0, 100.0, PngSize::Scale(f32::MAX), u64::MAX).is_err());
         assert!(check_dimensions(0.0, 100.0, PngSize::WidthPx(100), u64::MAX).is_err());
+        assert!(check_dimensions(100.0, 200.0, PngSize::LongEdgePx(200), 20_000).is_ok());
+        assert!(check_dimensions(200.0, 100.0, PngSize::LongEdgePx(200), 19_999).is_err());
+        assert!(check_dimensions(0.0, 0.0, PngSize::LongEdgePx(100), u64::MAX).is_err());
         assert!(check_dimensions(f32::NAN, 100.0, PngSize::Scale(1.0), u64::MAX).is_err());
     }
 

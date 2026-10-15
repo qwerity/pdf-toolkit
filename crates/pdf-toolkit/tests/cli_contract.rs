@@ -335,6 +335,75 @@ fn render_png_at_target_width_reports_that_width_and_preserves_aspect() {
     );
 }
 
+#[test]
+fn render_png_at_target_long_edge_sizes_the_longer_side_and_preserves_aspect() {
+    let out = out_dir("png_long_edge");
+    let output = json_argv(&argv::render_png_long_edge(
+        as_str(simple()),
+        "1",
+        as_str(&out),
+        "1400",
+    ));
+
+    assert_keys(&output, &["scale_long_edge_px", "pages"]);
+    assert_eq!(output["scale_long_edge_px"], 1400);
+
+    let page = &output["pages"]["1"];
+    assert_eq!(
+        page["height_px"], 1400,
+        "A4 portrait: the long edge is the height"
+    );
+    let width = page["width_px"].as_f64().expect("width");
+    let expected = 1400.0 * A4_WIDTH_PT / A4_HEIGHT_PT;
+    assert!(
+        (width - expected).abs() <= 1.0,
+        "aspect ratio must be preserved: got {width}, expected about {expected}"
+    );
+}
+
+/// A rendered page is drawn onto white, so its PNG carries no alpha channel:
+/// the IHDR colour type (byte 25) is 2, truecolour, not 6, truecolour + alpha.
+#[test]
+fn a_rendered_png_is_opaque_rgb() {
+    let out = out_dir("png_rgb");
+    let output = json_argv(&argv::render_png_scale(
+        as_str(simple()),
+        "1",
+        as_str(&out),
+        "1",
+    ));
+    let path = output["pages"]["1"]["path"].as_str().expect("path");
+    let bytes = std::fs::read(path).expect("rendered PNG");
+
+    assert_eq!(&bytes[1..4], b"PNG");
+    assert_eq!(bytes[25], 2, "colour type must be RGB without alpha");
+}
+
+/// WebP output has the same result shape as PNG; only the file differs. The
+/// fixture page carries no raster image, so it is encoded lossless (`VP8L`).
+#[test]
+fn render_webp_has_the_png_result_shape_and_writes_a_lossless_webp() {
+    let out = out_dir("webp_long_edge");
+    let output = json_argv(&argv::render_webp_long_edge(
+        as_str(simple()),
+        "1",
+        as_str(&out),
+        "1400",
+    ));
+
+    assert_keys(&output, &["scale_long_edge_px", "pages"]);
+    let page = &output["pages"]["1"];
+    assert_eq!(page["height_px"], 1400);
+    assert_eq!(page["contains_images"], false);
+    let path = page["path"].as_str().expect("path");
+    assert!(path.ends_with("_page_1.webp"), "unexpected path {path}");
+
+    let bytes = std::fs::read(path).expect("rendered WebP");
+    assert_eq!(&bytes[0..4], b"RIFF");
+    assert_eq!(&bytes[8..12], b"WEBP");
+    assert_eq!(&bytes[12..16], b"VP8L", "a page without images is lossless");
+}
+
 // ---------------------------------------------------------------------------
 // plain text
 // ---------------------------------------------------------------------------
@@ -651,6 +720,7 @@ fn an_option_that_does_not_belong_to_a_command_is_refused() {
 
     assert_rejected(&["cut", input, "--scale", "2"]);
     assert_rejected(&["cut", input, "--scale-width-px", "800"]);
+    assert_rejected(&["cut", input, "--scale-long-edge-px", "800"]);
     assert_rejected(&["render", input, "--concat"]);
     assert_rejected(&["text", input, "--scale", "2"]);
     assert_rejected(&["structured", input, "--concat"]);
@@ -667,6 +737,22 @@ fn png_sizing_options_are_mutually_exclusive() {
         "--scale-width-px",
         "800",
     ]);
+    assert_rejected(&[
+        "render",
+        as_str(simple()),
+        "--scale-width-px",
+        "800",
+        "--scale-long-edge-px",
+        "800",
+    ]);
+    assert_rejected(&[
+        "render",
+        as_str(simple()),
+        "--scale",
+        "2",
+        "--scale-long-edge-px",
+        "800",
+    ]);
 }
 
 #[test]
@@ -676,6 +762,7 @@ fn a_non_positive_scale_is_refused() {
     assert_rejected(&["render", input, "--scale", "0"]);
     assert_rejected(&["render", input, "--scale", "-1"]);
     assert_rejected(&["render", input, "--scale-width-px", "0"]);
+    assert_rejected(&["render", input, "--scale-long-edge-px", "0"]);
 }
 
 #[test]

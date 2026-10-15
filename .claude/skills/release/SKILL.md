@@ -20,9 +20,11 @@ SKIP_TESTS=1 ./build.sh --with-artifacts    # checks, clippy and build, no cargo
 gated by `cargo test`: the CI release build sets `SKIP_TESTS: "1"`
 (`.github/workflows/release.yml`), so run `./build.sh` locally before tagging.
 The archive carries the binary, the matching PDFium library, the
-`ocr-models/` directory, `README.md`, `docs/json-api.md` and
-`docs/annotation-schema.md` — consumers unpack it into their own `tools/`
-directory, where the contract is the thing they need and cannot otherwise see.
+`ocr-models/` directory, `README.md`, `docs/json-api.md`,
+`docs/annotation-schema.md` and `licenses/` (libwebp's BSD licence and patent
+grant, which must ship with the binary it is compiled into) — consumers
+unpack it into their own `tools/` directory, where the contract is the thing
+they need and cannot otherwise see.
 
 **Tag with a bare version — `0.8.0`, not `v0.8.0`.** CI passes the tag through
 to the archive name, and callers construct

@@ -131,12 +131,34 @@ pub struct RenderArgs {
 
     /// Scale factor applied to the page's own size. Defaults to `2.0` when
     /// no sizing option is given.
-    #[arg(short, long, value_parser = parse_scale, conflicts_with = "scale_width_px")]
+    #[arg(
+        short,
+        long,
+        value_parser = parse_scale,
+        conflicts_with_all = ["scale_width_px", "scale_long_edge_px"]
+    )]
     pub scale: Option<f32>,
 
     /// Target width in pixels. Preserves the aspect ratio.
-    #[arg(long = "scale-width-px", value_parser = parse_scale_width_px)]
+    #[arg(
+        long = "scale-width-px",
+        value_parser = parse_scale_width_px,
+        conflicts_with = "scale_long_edge_px"
+    )]
     pub scale_width_px: Option<u32>,
+
+    /// Target length in pixels of the page's longer side. Preserves the
+    /// aspect ratio.
+    #[arg(
+        long = "scale-long-edge-px",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    pub scale_long_edge_px: Option<u32>,
+
+    /// Image format: `png`, or `webp` — lossless for a page without raster
+    /// images, lossy (quality 90) for one with them.
+    #[arg(long, default_value = "png")]
+    pub format: ImageFormatArg,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -469,19 +491,23 @@ impl CutArgs {
 impl RenderArgs {
     /// The size to render at.
     ///
-    /// `--scale` and `--scale-width-px` are declared as conflicting, so at
-    /// most one is present; neither means the default scale.
+    /// `--scale`, `--scale-width-px` and `--scale-long-edge-px` are declared
+    /// as conflicting, so at most one is present; none means the default
+    /// scale.
     pub fn png_size(&self) -> PngSize {
-        match (self.scale, self.scale_width_px) {
-            (Some(scale), _) => PngSize::Scale(scale),
-            (None, Some(width_px)) => PngSize::WidthPx(width_px),
-            (None, None) => PngSize::Scale(DEFAULT_PNG_SCALE),
+        match (self.scale, self.scale_width_px, self.scale_long_edge_px) {
+            (Some(scale), _, _) => PngSize::Scale(scale),
+            (None, Some(width_px), _) => PngSize::WidthPx(width_px),
+            (None, None, Some(edge_px)) => PngSize::LongEdgePx(edge_px),
+            (None, None, None) => PngSize::Scale(DEFAULT_PNG_SCALE),
         }
     }
 
     pub fn output_format(&self) -> OutputFormat {
-        OutputFormat::Png {
-            size: self.png_size(),
+        let size = self.png_size();
+        match self.format {
+            ImageFormatArg::Png => OutputFormat::Png { size },
+            ImageFormatArg::Webp => OutputFormat::Webp { size },
         }
     }
 }
@@ -505,6 +531,12 @@ impl OcrArg {
             Self::All => Some(OcrPages::All),
         }
     }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ImageFormatArg {
+    Png,
+    Webp,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -780,11 +812,68 @@ mod tests {
             panic!("expected render");
         };
         assert_eq!(args.png_size(), PngSize::WidthPx(800));
+
+        let Command::Render(args) =
+            parse(&["render", "a.pdf", "--scale-long-edge-px", "3200"]).command
+        else {
+            panic!("expected render");
+        };
+        assert_eq!(args.png_size(), PngSize::LongEdgePx(3200));
     }
 
     #[test]
-    fn render_refuses_both_sizing_options_at_once() {
+    fn render_writes_png_unless_webp_is_asked_for() {
+        let Command::Render(args) = parse(&["render", "a.pdf"]).command else {
+            panic!("expected render");
+        };
+        assert_eq!(
+            args.output_format(),
+            OutputFormat::Png {
+                size: PngSize::Scale(2.0)
+            }
+        );
+
+        let Command::Render(args) = parse(&[
+            "render",
+            "a.pdf",
+            "--format",
+            "webp",
+            "--scale-long-edge-px",
+            "3200",
+        ])
+        .command
+        else {
+            panic!("expected render");
+        };
+        assert_eq!(
+            args.output_format(),
+            OutputFormat::Webp {
+                size: PngSize::LongEdgePx(3200)
+            }
+        );
+        rejects(&["render", "a.pdf", "--format", "jpeg"]);
+        rejects(&["cut", "a.pdf", "--format", "webp"]);
+    }
+
+    #[test]
+    fn render_refuses_two_sizing_options_at_once() {
         rejects(&["render", "a.pdf", "--scale", "2", "--scale-width-px", "800"]);
+        rejects(&[
+            "render",
+            "a.pdf",
+            "--scale",
+            "2",
+            "--scale-long-edge-px",
+            "800",
+        ]);
+        rejects(&[
+            "render",
+            "a.pdf",
+            "--scale-width-px",
+            "800",
+            "--scale-long-edge-px",
+            "800",
+        ]);
     }
 
     #[test]
@@ -793,6 +882,7 @@ mod tests {
             rejects(&["render", "a.pdf", "--scale", scale]);
         }
         rejects(&["render", "a.pdf", "--scale-width-px", "0"]);
+        rejects(&["render", "a.pdf", "--scale-long-edge-px", "0"]);
     }
 
     /// The combinations the flag-based surface had to reject at runtime are
@@ -802,6 +892,7 @@ mod tests {
     fn options_do_not_exist_on_commands_they_never_applied_to() {
         rejects(&["cut", "a.pdf", "--scale", "2"]);
         rejects(&["cut", "a.pdf", "--scale-width-px", "800"]);
+        rejects(&["cut", "a.pdf", "--scale-long-edge-px", "800"]);
         rejects(&["render", "a.pdf", "--concat"]);
         rejects(&["text", "a.pdf", "--scale", "2"]);
         rejects(&["structured", "a.pdf", "--concat"]);

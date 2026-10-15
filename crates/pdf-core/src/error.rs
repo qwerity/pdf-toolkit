@@ -27,6 +27,8 @@ pub enum PdfError {
     InvalidImageScale { value: f32 },
     #[error("image width must be an integer in 1..={max}, got {value}")]
     InvalidImageWidth { value: u32, max: u32 },
+    #[error("image long edge must be an integer in 1..={max}, got {value}")]
+    InvalidImageLongEdge { value: u32, max: u32 },
     #[error("render dimensions exceed the limit of {max_pixels} pixels or PDFium dimension bounds")]
     RenderTooLarge { max_pixels: u64 },
     #[error("invalid resource limit {name}: {value}")]
@@ -162,6 +164,13 @@ mod tests {
                     max: 10_000,
                 },
                 &["1..=10000", "0"],
+            ),
+            (
+                PdfError::InvalidImageLongEdge {
+                    value: 0,
+                    max: 10_000,
+                },
+                &["long edge", "1..=10000", "0"],
             ),
             (PdfError::EmptyDocument, &["no pages"]),
             (

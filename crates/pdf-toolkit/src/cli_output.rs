@@ -262,13 +262,16 @@ fn is_aggregate_text_output(report: &TextExtractionReport) -> bool {
 }
 
 fn add_png_settings(output: &mut Map<String, Value>, output_format: OutputFormat) {
-    if let OutputFormat::Png { size } = output_format {
+    if let OutputFormat::Png { size } | OutputFormat::Webp { size } = output_format {
         match size {
             PngSize::Scale(scale) => {
                 output.insert("scale".to_string(), json!(scale));
             }
             PngSize::WidthPx(width_px) => {
                 output.insert("scale_width_px".to_string(), json!(width_px));
+            }
+            PngSize::LongEdgePx(edge_px) => {
+                output.insert("scale_long_edge_px".to_string(), json!(edge_px));
             }
         }
     }
@@ -455,6 +458,19 @@ mod tests {
         )
         .expect("json output");
         assert_eq!(width["scale_width_px"], 640);
+
+        let long_edge = page_output_json(
+            "all",
+            false,
+            OutputFormat::Png {
+                size: PngSize::LongEdgePx(3200),
+            },
+            &report,
+        )
+        .expect("json output");
+        assert_eq!(long_edge["scale_long_edge_px"], 3200);
+        assert!(long_edge.get("scale").is_none());
+        assert!(long_edge.get("scale_width_px").is_none());
     }
 
     #[test]

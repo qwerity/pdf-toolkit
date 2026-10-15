@@ -33,7 +33,7 @@ pdf-toolkit <command> <input.pdf> [options]
 |---|---|---|
 | `inspect` | Page count and per-page metadata | no |
 | `cut` | Selected pages as single-page PDFs, or one merged PDF | yes |
-| `render` | Selected pages as PNG images | yes |
+| `render` | Selected pages as PNG or WebP images | yes |
 | `text` | Plain text into `.txt` files | yes |
 | `structured` | Positioned spans and a markdown reconstruction | no |
 | `vector` | CAD geometry, classification and georeferenced GeoJSON | with `--output` |
@@ -52,6 +52,8 @@ pdf-toolkit <command> <input.pdf> [options]
 | `--concat`, `-c` | `cut`, `text` | Merge the selection into one file |
 | `--scale`, `-s` | `render` | Scale factor. Default `2.0`. |
 | `--scale-width-px` | `render` | Exact output width in pixels; preserves aspect ratio |
+| `--scale-long-edge-px` | `render` | Exact length in pixels of the page's longer side (width if landscape or square, height if portrait); preserves aspect ratio |
+| `--format` | `render` | `png` (default) or `webp`; see `render` below |
 | `--structured-format` | `structured` | `full` (default) or `markdown` |
 | `--ocr` | `structured` | `off` (default), `scans` or `all`: which pages to read by OCR; see below |
 | `--ocr-models` | `structured` | Directory of the OCR models; defaults to `PDF_TOOLKIT_OCR_MODELS`, then `ocr-models/` beside the executable |
@@ -226,8 +228,8 @@ mutually exclusive: a concat run has no per-page map.
 
 ## `render`
 
-Same per-page shape as `cut`, plus the sizing that was used — `scale` or
-`scale_width_px`, never both:
+Same per-page shape as `cut`, plus the sizing that was used — exactly one of
+`scale`, `scale_width_px` or `scale_long_edge_px`:
 
 ```json
 {
@@ -246,6 +248,41 @@ Same per-page shape as `cut`, plus the sizing that was used — `scale` or
   }
 }
 ```
+
+```json
+{
+  "scale_long_edge_px": 3200,
+  "pages": {
+    "2": { "path": "/abs/out/input_page_2.png", "size_kb": 2083, "width_px": 3200, "height_px": 2071, "contains_images": true }
+  }
+}
+```
+
+The PNG is 8-bit RGB without an alpha channel: pages are drawn onto opaque
+white, so there is no transparency to keep.
+
+### `--format webp`
+
+The result has exactly the PNG shape above; only the files differ, named
+`<stem>_page_<n>.webp`:
+
+```json
+{
+  "scale_long_edge_px": 3200,
+  "pages": {
+    "1": { "path": "/abs/out/input_page_1.webp", "size_kb": 287, "width_px": 2473, "height_px": 3200, "contains_images": false }
+  }
+}
+```
+
+The encoding follows `contains_images`:
+
+- **`false`** (text and vector paths only): **lossless** (`VP8L`), at libwebp's
+  effort preset 1. Pixel-identical to the PNG.
+- **`true`**: **lossy** (`VP8 `) at quality 90, method 4.
+- A page without images whose lossless file exceeds 1 bit per pixel — a dense
+  colour drawing rather than text — is also encoded lossy, and the smaller
+  file is written.
 
 For `render`, `width_px`/`height_px` are the **rendered image's** dimensions.
 For `inspect` and `cut` they are the page at scale `1.0`. A page is not an exact

@@ -32,9 +32,12 @@ to the archive name, and callers construct
 `…-macos-arm64`) from a bare version. A `v` prefix produces an asset name
 they cannot construct.
 
-Pushing a tag runs `.github/workflows/release.yml`, which builds Linux and
-macOS and creates the GitHub release with the bundles attached. Windows is
-built on demand against a tag whose release already exists.
+Pushing to `main` runs `.github/workflows/release.yml`. It releases the
+workspace version for Linux and macOS once — a version that already has a
+GitHub release is skipped, so only a version bump reaching `main` publishes —
+building from that version's tag when it exists and otherwise tagging `main`'s
+commit. Pushing a tag builds nothing. Windows is built on demand
+(`workflow_dispatch`) against a tag whose release already exists.
 
 **Release notes are written by hand, per tag**: add
 `.github/release-notes/<tag>.md` before pushing tag `<tag>`, in the

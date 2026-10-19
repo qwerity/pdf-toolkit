@@ -8,8 +8,8 @@ facts.
 The command runs deterministically; pages only a vision model can read carry
 an `extraction.vlm` work order. Running again with `--answers <file>` merges
 the vision pass's results — the answers file format is at the end of this
-document. The reviewed reference corpus is the committed test data set
-(`data/plan/` + `data/annotations/`; personal data, private repository), and
+document. The reviewed reference corpus is a local test data set, not distributed
+(`data/plan/` + `data/annotations/`; personal data), and
 the corpus test requires `dossier --answers` to reproduce those annotations
 exactly.
 

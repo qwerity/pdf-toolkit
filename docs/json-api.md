@@ -15,7 +15,8 @@ are wiring it into a service, this is all you need.
   JSON at all** — the message is on stderr. Do not parse stdout without first
   checking the exit code.
 
-Examples below are copied from real runs. Regenerate rather than hand-edit:
+Examples below are from real runs, with identifying values replaced by synthetic
+ones. Regenerate rather than hand-edit:
 
 ```bash
 pdf-toolkit <command> … | jq

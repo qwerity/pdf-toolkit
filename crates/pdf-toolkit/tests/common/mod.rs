@@ -85,9 +85,8 @@ fn bind_pdfium() -> Pdfium {
     })
 }
 
-/// The test corpus root (`data/`): real building-permit submissions,
-/// committed as the test data set (personal data; the repository is
-/// private).
+/// The test corpus root (`data/`): real building-permit submissions, kept
+/// locally and never committed (personal data).
 pub fn data_dir() -> std::path::PathBuf {
     workspace_root().join("data")
 }

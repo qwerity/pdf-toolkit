@@ -6,9 +6,9 @@
 //! exercise a Gauss-Krüger datum shift or a coordinate table that a CAD
 //! exporter turned into glyph outlines.
 //!
-//! **The dossiers are personal data**, committed as the test data set of a
-//! private repository. Everything here skips itself when they are absent —
-//! see [`corpus_available`].
+//! **The dossiers are personal data** and are not part of this repository.
+//! Everything here skips itself when they are absent — see
+//! [`corpus_available`].
 //!
 //! The centrepiece is [`known_placements_reproduce_to_the_millimetre`], which
 //! pins every page the corpus can place and the residual it places to. A

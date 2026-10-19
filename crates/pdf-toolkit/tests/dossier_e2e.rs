@@ -9,9 +9,8 @@
 //! pins what must hold *before* any vision pass: placements, decoded QR
 //! payloads, template-parsed entities, mis-encoding flags.
 //!
-//! **The corpus is personal data**, committed as the test data set of a
-//! private repository; everything here skips itself when it is absent (a
-//! partial checkout), and `PDF_TOOLKIT_REQUIRE_CORPUS=1` turns the skip into
+//! **The corpus is personal data** and is not part of this repository;
+//! everything here skips itself when it is absent, and `PDF_TOOLKIT_REQUIRE_CORPUS=1` turns the skip into
 //! a failure — the same contract as `vector_e2e`.
 
 mod cli;

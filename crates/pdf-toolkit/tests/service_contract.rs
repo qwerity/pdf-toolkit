@@ -252,6 +252,14 @@ fn rendering_rejects_oversized_bitmaps_before_allocation() {
 fn stalled_response_reader_releases_capacity_without_disconnecting() {
     use std::io::{Read, Write};
     use std::time::{Duration, Instant};
+    // A response large enough to outlast a 1 KiB receive window.
+    let pdf = common::data_dir().join("plan/3.pdf");
+    if !common::corpus_available(
+        "stalled_response_reader_releases_capacity_without_disconnecting",
+        std::slice::from_ref(&pdf),
+    ) {
+        return;
+    }
     let server = Server::start(
         &[
             "--max-workers",
@@ -270,7 +278,7 @@ fn stalled_response_reader_releases_capacity_without_disconnecting() {
     client
         .set_read_timeout(Some(Duration::from_secs(30)))
         .expect("read timeout");
-    let body = json!({"args": [common::workspace_root().join("data/plan/3.pdf")]}).to_string();
+    let body = json!({"args": [pdf]}).to_string();
     write!(client, "POST /v1/vector HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).expect("request");
     let mut headers = Vec::new();
     while !headers.ends_with(b"\r\n\r\n") {

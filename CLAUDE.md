@@ -130,17 +130,15 @@ PDF_TOOLKIT_REQUIRE_CORPUS=1 cargo test     # corpus tests must run, not skip
 ./build.sh                                  # dist/ bundle; runs the full gate
 ```
 
-**`data/` is the test data set, committed with the code.** `data/plan/` holds
-the fifteen real building-permit dossiers,
+**`data/` is the local test data set, gitignored and never committed.**
+`data/plan/` holds the real building-permit dossiers,
 `data/annotations/` the reviewed annotations the `dossier` tests replay, with
 the vision-pass answers, the cadastre parcels, the recorded `building` reports
 and the accepted `model` parameters beside them, and
 `data/expected/` the scorecard ledgers. **It is personal data** — owners,
-addresses, identity documents — in a private repository: never publish it,
-never copy it into another repository, never quote a person or a parcel from
-it in a commit message or a doc. Only what no test reads is gitignored
-(`data/misc/`, run logs, and the per-page GeoJSON exports `dossier -o`
-regenerates).
+addresses, identity documents: never commit it, never publish it, never
+quote a person, a parcel, a code or a coordinate from it in code, a commit
+message or a doc — test fixtures use synthetic values.
 
 The corpus tests skip themselves when the files are absent (a partial
 checkout), so `cargo test` still passes; `PDF_TOOLKIT_REQUIRE_CORPUS=1` turns

@@ -693,10 +693,9 @@ annotations and vision-pass answers beside them (`data/annotations/`,
 `data/annotations/answers/`), and require the command to reproduce the
 annotations exactly.
 
-**Those dossiers are committed as the test data set** (`data/`), and they are
-personal data in a private repository: never published, never copied
-elsewhere, never quoted. Only unrelated files (`data/misc/`), run logs and the
-regenerable per-page GeoJSON exports stay gitignored.
+**Those dossiers are not part of this repository** (`data/` is gitignored):
+they are personal data, never published, never copied elsewhere, never
+quoted.
 
 Everything that needs them skips itself when they are absent, printing `SKIP`,
 so `cargo test` passes on a partial checkout; `PDF_TOOLKIT_REQUIRE_CORPUS=1`
@@ -709,6 +708,6 @@ adding a dossier needs no code change — but one that places a page fails
 `the_corpus_places_exactly_the_recorded_pages` until that placement is recorded
 in `PLACEMENTS`, which is deliberate: a new placement is a new claim about the
 world and should be written down. The `dossier` parity tests are stricter
-still: they replay the fifteen reviewed annotations by number, so a new
+still: they replay the reviewed annotations by number, so a new
 dossier joins them only once its annotation is reviewed into
 `data/annotations/`.

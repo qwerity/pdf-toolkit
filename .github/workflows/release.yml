@@ -253,8 +253,17 @@ jobs:
               "${files[@]}"
               --title "${RELEASE_NAME}"
               --generate-notes
-              --target "${target_sha}"
             )
+
+            # An existing tag already names the commit. Passing it as the
+            # target anyway is refused (403) whenever the commits between it
+            # and the branch head touch workflow files, which GITHUB_TOKEN
+            # may not do; only a new tag needs a target, and that is the head.
+            if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null; then
+              release_args+=(--verify-tag)
+            else
+              release_args+=(--target "${target_sha}")
+            fi
 
             if [[ -n "${CUSTOM_NOTES:-}" ]]; then
               release_args+=(--notes "${CUSTOM_NOTES}")
